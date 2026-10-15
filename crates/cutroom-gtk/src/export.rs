@@ -222,9 +222,18 @@ fn configure_encoder(element: &gst::Element, encoder: &Encoder, kbps: u32, fps: 
 }
 
 /// The video half of the pipeline, from raw pictures to H.264.
+/// How many threads picture conversion may use (colour conversion of a
+/// 1080x1920 picture is a real share of an export's time).
+fn convert_threads() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .clamp(1, 4)
+}
+
 fn video_chain(encoder: &Encoder) -> String {
     format!(
-        "videoconvert ! capsfilter caps=\"video/x-raw,colorimetry=bt709\" ! {} name=venc ! h264parse",
+        "videoconvert n-threads={} ! capsfilter caps=\"video/x-raw,colorimetry=bt709\" ! {} name=venc ! h264parse",
+        convert_threads(),
         encoder.element
     )
 }
@@ -276,7 +285,20 @@ pub fn working_encoders() -> &'static [Encoder] {
         if gst::init().is_err() {
             return Vec::new();
         }
-        candidates().into_iter().filter(|e| probe(*e)).collect()
+        candidates()
+            .into_iter()
+            .filter(|e| {
+                let t = std::time::Instant::now();
+                let ok = probe(*e);
+                eprintln!(
+                    "kani: tested encoder {}: {} ({:.1} s)",
+                    e.label,
+                    if ok { "works" } else { "not usable" },
+                    t.elapsed().as_secs_f64()
+                );
+                ok
+            })
+            .collect()
     })
 }
 
@@ -385,6 +407,13 @@ pub struct Report {
     pub frames: u64,
     /// Things that did not go perfectly (a clip that could not be read ...).
     pub warnings: Vec<String>,
+    /// Real time the export took, start to finish.
+    pub elapsed: Duration,
+    /// Where that time went: waiting for decoded video, compositing, handing
+    /// pictures to the encoder.
+    pub decode: Duration,
+    pub compose: Duration,
+    pub handoff: Duration,
 }
 
 // -------------------------------------------------------- reading pictures
@@ -417,9 +446,10 @@ impl VideoReader {
             .map_err(|e| ExportError::Failed(e.to_string()))?;
         let bin = gst::parse::bin_from_description(
             &format!(
-                "videoconvert ! videoscale ! capsfilter caps=\"video/x-raw,format=RGBA,width=[1,{m}],height=[1,{m}],pixel-aspect-ratio=1/1\" \
+                "videoconvert n-threads={t} ! videoscale n-threads={t} ! capsfilter caps=\"video/x-raw,format=RGBA,width=[1,{m}],height=[1,{m}],pixel-aspect-ratio=1/1\" \
                  ! appsink name=exportsink sync=false max-buffers=3 drop=false",
-                m = max_edge
+                m = max_edge,
+                t = convert_threads()
             ),
             true,
         )
@@ -1007,6 +1037,10 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
         encoder: encoder.label.to_string(),
         frames,
         warnings: renderer.warnings,
+        elapsed: Duration::ZERO, // filled in by export()
+        decode: renderer.decode_time,
+        compose: renderer.compose_time,
+        handoff: push_time,
     })
 }
 
@@ -1062,6 +1096,7 @@ pub fn export(job: &Job, progress: &Progress) -> Result<Report> {
     };
     let mut notes = Vec::new();
     let mut outcome = fail("No encoder worked.");
+    let started = std::time::Instant::now();
     for encoder in &job.encoders {
         let _ = std::fs::remove_file(&temp);
         match run_with(job, encoder, progress, &temp) {
@@ -1069,6 +1104,17 @@ pub fn export(job: &Job, progress: &Progress) -> Result<Report> {
                 report.warnings.splice(0..0, notes);
                 std::fs::rename(&temp, &job.output)
                     .map_err(|e| format!("could not save {}: {e}", job.output.display()))?;
+                report.elapsed = started.elapsed();
+                let video = job.duration().as_seconds_f64();
+                eprintln!(
+                    "kani: exported {video:.1} s of video in {:.1} s ({:.2}x real time) with {}; waiting for decoded video {:.1} s, compositing {:.1} s, handing to the encoder {:.1} s",
+                    report.elapsed.as_secs_f64(),
+                    video / report.elapsed.as_secs_f64().max(0.001),
+                    report.encoder,
+                    report.decode.as_secs_f64(),
+                    report.compose.as_secs_f64(),
+                    report.handoff.as_secs_f64(),
+                );
                 return Ok(report);
             }
             Err(ExportError::Cancelled) => {
@@ -1492,6 +1538,75 @@ mod tests {
             report.encoder,
             started.elapsed().as_secs_f64(),
             report.warnings
+        );
+    }
+
+    fn env_number(name: &str, default: u32) -> u32 {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    }
+
+    /// Speed check: one plain 1080x1920 clip with its sound, as a vertical
+    /// phone project is. `KANI_CLIP` is the file, `KANI_REAL_OUT` the result.
+    #[test]
+    #[ignore]
+    fn timed_vertical_clip() {
+        let (Some(clip), Some(out)) = (
+            std::env::var_os("KANI_CLIP").map(PathBuf::from),
+            std::env::var_os("KANI_REAL_OUT").map(PathBuf::from),
+        ) else {
+            return;
+        };
+        let seconds: f64 = std::env::var("KANI_SECONDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(20.0);
+        gst::init().unwrap();
+        let mut sources = HashMap::new();
+        sources.insert(
+            MediaId(1),
+            Source {
+                path: clip,
+                kind: MediaKind::Video,
+                has_audio: true,
+            },
+        );
+        let mut tl = Timeline::new();
+        let v = tl.new_track(TrackKind::Video, "V1");
+        let vid = v.id;
+        apply(&mut tl, Edit::InsertTrack { index: 0, track: v }).unwrap();
+        let a = tl.new_track(TrackKind::Audio, "A1");
+        let aid = a.id;
+        apply(&mut tl, Edit::InsertTrack { index: 1, track: a }).unwrap();
+        for track in [vid, aid] {
+            let c = tl.new_clip(MediaId(1), s(0.0), s(0.0), s(seconds));
+            apply(&mut tl, Edit::InsertClip { track, clip: c }).unwrap();
+        }
+        let job = Job {
+            timeline: tl,
+            sources,
+            width: env_number("KANI_W", 1080),
+            height: env_number("KANI_H", 1920),
+            fps: FrameRate::FPS_30,
+            sample_rate: 48_000,
+            video_kbps: bitrate_kbps(1080, 1920, 30.0, Quality::Small),
+            audio_kbps: 192,
+            encoders: candidates()
+                .into_iter()
+                .filter(|e| e.element == "x264enc")
+                .collect(),
+            output: out,
+            limit_seconds: None,
+        };
+        let report = export(&job, &Progress::default()).expect("export");
+        eprintln!(
+            "RESULT: {seconds} s of video in {:.1} s elapsed; decode {:.1} s, compose {:.1} s, encoder hand-off {:.1} s",
+            report.elapsed.as_secs_f64(),
+            report.decode.as_secs_f64(),
+            report.compose.as_secs_f64(),
+            report.handoff.as_secs_f64()
         );
     }
 

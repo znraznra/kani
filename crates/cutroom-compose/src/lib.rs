@@ -196,6 +196,18 @@ impl Canvas {
         for y in y0..y1 {
             let src_row = ((y - top) * fw) as usize * 4;
             let dst_row = (y * cw) as usize * 4;
+            // Video is opaque: when a whole row is, copy it in one go. (The
+            // canvas is opaque too, so copying the alpha bytes changes nothing.)
+            if opacity >= 1.0 {
+                let from = src_row + ((x0 - left) as usize) * 4;
+                let len = (x1 - x0) as usize * 4;
+                let src = &frame.rgba[from..from + len];
+                if src.chunks_exact(4).all(|p| p[3] == 255) {
+                    let to = dst_row + x0 as usize * 4;
+                    self.rgba[to..to + len].copy_from_slice(src);
+                    continue;
+                }
+            }
             for x in x0..x1 {
                 let s = src_row + ((x - left) as usize) * 4;
                 let src = &frame.rgba[s..s + 4];

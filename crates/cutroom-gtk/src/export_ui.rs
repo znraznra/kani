@@ -100,6 +100,18 @@ fn clock(seconds: f64) -> String {
     }
 }
 
+/// "6 min 03 s", "42 s" or "1 h 02 min 10 s".
+fn elapsed_words(seconds: f64) -> String {
+    let s = seconds.max(0.0).round() as u64;
+    if s >= 3600 {
+        format!("{} h {:02} min {:02} s", s / 3600, (s / 60) % 60, s % 60)
+    } else if s >= 60 {
+        format!("{} min {:02} s", s / 60, s % 60)
+    } else {
+        format!("{s} s")
+    }
+}
+
 fn megabytes(bytes: f64) -> String {
     let mb = bytes / 1_000_000.0;
     if mb >= 1000.0 {
@@ -178,6 +190,7 @@ fn default_folder(app: &App) -> PathBuf {
 
 /// Open the Export window.
 pub fn open(app: &Rc<App>) {
+    let clicked = Instant::now();
     if let Some(existing) = active() {
         existing.window.present();
         return;
@@ -448,23 +461,89 @@ pub fn open(app: &Rc<App>) {
         });
     }
     {
-        // If the window has not appeared after a few seconds, say so instead of hanging.
+        // If the window has not appeared after a few seconds, try once more as
+        // a plain window (no parent, not modal); if that fails too, say so
+        // instead of leaving the app stuck.
         let (app, d) = (app.clone(), Rc::downgrade(&dialog));
         glib::timeout_add_local_once(Duration::from_secs(3), move || {
-            if let Some(d) = d.upgrade() {
-                if !d.window.is_mapped() {
-                    eprintln!("kani: the Export window did not appear within 3 s; closing it");
+            let Some(strong) = d.upgrade() else { return };
+            if strong.window.is_mapped() {
+                return;
+            }
+            eprintln!(
+                "kani: the Export window did not appear within 3 s ({:.1} s since the click); trying it as a plain window",
+                clicked.elapsed().as_secs_f64()
+            );
+            strong.window.set_modal(false);
+            strong.window.set_transient_for(None::<&gtk::Window>);
+            strong.window.present();
+            let app = app.clone();
+            glib::timeout_add_local_once(Duration::from_secs(3), move || {
+                let Some(strong) = d.upgrade() else { return };
+                if !strong.window.is_mapped() {
+                    eprintln!(
+                        "kani: the Export window still did not appear ({:.1} s since the click); closing it",
+                        clicked.elapsed().as_secs_f64()
+                    );
                     app.set_status("The Export window could not be shown. Run kani from a terminal and send me any messages it prints.");
                     app.update_status();
-                    close(&d);
+                    close(&strong);
                 }
+            });
+        });
+    }
+    {
+        // Report any time the interface freezes while the window opens.
+        let (d, last) = (Rc::downgrade(&dialog), Rc::new(Cell::new(Instant::now())));
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            let gap = last.get().elapsed().as_secs_f64();
+            last.set(Instant::now());
+            if gap > 1.0 {
+                eprintln!("kani: the interface was frozen for {gap:.1} s");
+            }
+            match d.upgrade() {
+                Some(d) if d.window.is_visible() || clicked.elapsed().as_secs() < 10 => {
+                    glib::ControlFlow::Continue
+                }
+                _ => glib::ControlFlow::Break,
             }
         });
     }
-    eprintln!("kani: opening the Export window");
+    eprintln!(
+        "kani: opening the Export window (prepared in {:.0} ms)",
+        clicked.elapsed().as_secs_f64() * 1000.0
+    );
+    // The encoder test starts once the window is on screen (or, failing that,
+    // after a few seconds), so it does not compete with the window for the
+    // graphics driver while it opens.
+    {
+        let started = Rc::new(Cell::new(false));
+        let begin = {
+            let (app, d, started) = (app.clone(), dialog.clone(), started.clone());
+            Rc::new(move |delay_ms: u64| {
+                if started.replace(true) {
+                    return;
+                }
+                let (app, d) = (app.clone(), d.clone());
+                glib::timeout_add_local_once(Duration::from_millis(delay_ms), move || {
+                    find_encoders(&app, &d);
+                });
+            })
+        };
+        {
+            let begin = begin.clone();
+            dialog.window.connect_map(move |_| {
+                eprintln!(
+                    "kani: the Export window is on screen ({:.1} s since the click)",
+                    clicked.elapsed().as_secs_f64()
+                );
+                begin(400);
+            });
+        }
+        glib::timeout_add_local_once(Duration::from_secs(4), move || begin(0));
+    }
     dialog.window.present();
     dialog.name.grab_focus();
-    find_encoders(app, &dialog);
 }
 
 /// Test the encoders on a worker thread (a second or two), then offer them.
@@ -770,8 +849,11 @@ fn start(
                 } else {
                     String::new()
                 };
-                d.bar
-                    .set_text(Some(&format!("{:.0}%{left}", fraction * 100.0)));
+                d.bar.set_text(Some(&format!(
+                    "{:.0}% - {} elapsed{left}",
+                    fraction * 100.0,
+                    clock(elapsed)
+                )));
                 if total > 0 {
                     d.note
                         .set_text(&format!("Frame {done} of {total}. {}", output.display()));
@@ -818,6 +900,10 @@ fn finish(app: &Rc<App>, d: &Rc<Dialog>, result: Result<Report, ExportError>, ou
                 report.frames,
                 report.encoder
             );
+            text.push_str(&format!(
+                "\nTook {} (time elapsed).",
+                elapsed_words(report.elapsed.as_secs_f64())
+            ));
             for warning in &report.warnings {
                 text.push_str(&format!("\nNote: {warning}"));
             }
@@ -875,6 +961,13 @@ pub fn set_folder_for_tests(d: &Dialog, folder: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn elapsed_time_is_written_in_words() {
+        assert_eq!(elapsed_words(42.4), "42 s");
+        assert_eq!(elapsed_words(363.0), "6 min 03 s");
+        assert_eq!(elapsed_words(3730.0), "1 h 02 min 10 s");
+    }
 
     #[test]
     fn file_names_are_made_safe() {
