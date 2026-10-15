@@ -258,7 +258,7 @@ pub fn open(app: &Rc<App>) {
         .modal(true)
         .destroy_with_parent(true)
         .default_width(460)
-        .default_height(380)
+        .default_height(-1)
         .build();
 
     let form = gtk::Box::new(gtk::Orientation::Vertical, 10);
