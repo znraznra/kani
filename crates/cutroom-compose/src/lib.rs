@@ -236,9 +236,11 @@ pub struct Canvas {
 
 impl Canvas {
     pub fn new(width: u32, height: u32) -> Canvas {
-        let mut rgba = vec![0u8; width as usize * height as usize * 4];
+        // Opaque black, written a whole pixel at a time (one 32-bit store each).
+        let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+        rgba.resize(width as usize * height as usize * 4, 0u8);
         for pixel in rgba.chunks_exact_mut(4) {
-            pixel[3] = 255;
+            pixel.copy_from_slice(&[0, 0, 0, 255]);
         }
         Canvas {
             width,

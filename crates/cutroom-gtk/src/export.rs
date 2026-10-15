@@ -443,6 +443,14 @@ pub struct Report {
 /// A line about the state of the machine, printed at the start of every export,
 /// so renders that took different times can be told apart (power saving,
 /// battery, other work running).
+/// Measured on an Intel Iris Xe laptop: the card beats the processor for turned
+/// and slanted pictures (about 6.5 ms against 22 ms) but not for a picture that
+/// is only scaled or moved (about 5.9 ms against 5.0 ms), which the processor
+/// resamples row by row. Only the first kind is sent to the card.
+fn card_is_faster(p: &Placement) -> bool {
+    p.rotation != 0.0 || p.skew_x != 0.0 || p.skew_y != 0.0 || p.persp_x != 0.0 || p.persp_y != 0.0
+}
+
 fn machine_state() -> String {
     let read = |path: &str| {
         std::fs::read_to_string(path)
@@ -776,6 +784,8 @@ struct Renderer<'a> {
     gpu_problem: Option<String>,
     /// Layer pictures put together on the card.
     gpu_layers: u64,
+    /// Time spent making the empty (black) canvas for each picture.
+    canvas_time: Duration,
     /// Stills and text that stay where they are from frame to frame, drawn once.
     static_layers: HashMap<ClipId, StaticLayer>,
     /// Compositing time per kind of layer: (kind, width, height, scale in
@@ -824,6 +834,7 @@ impl<'a> Renderer<'a> {
             gpu: None,
             gpu_problem: None,
             gpu_layers: 0,
+            canvas_time: Duration::ZERO,
             static_layers: HashMap::new(),
             layer_time: HashMap::new(),
         }
@@ -972,6 +983,7 @@ impl<'a> Renderer<'a> {
                 && self.job.gpu
                 && self.gpu_problem.is_none()
                 && !is_plain_copy(width, height, frame.width, frame.height, &placement)
+                && card_is_faster(&placement)
             {
                 if self.gpu.is_none() {
                     match crate::gpu_compose::GpuCompositor::new(width, height) {
@@ -1045,7 +1057,9 @@ impl<'a> Renderer<'a> {
         self.readers.retain(|clip, _| used.contains(clip));
         self.static_layers.retain(|clip, _| used.contains(clip));
         let started = std::time::Instant::now();
+        let canvas_started = std::time::Instant::now();
         let mut canvas = Canvas::new(width, height);
+        self.canvas_time += canvas_started.elapsed();
         for (item, key) in &picked {
             let t = std::time::Instant::now();
             match item {
@@ -1068,11 +1082,17 @@ impl<'a> Renderer<'a> {
     fn slowest_layers(&self) -> String {
         let mut rows: Vec<_> = self.layer_time.iter().collect();
         rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
-        rows.iter()
+        let mut lines: Vec<String> = rows
+            .iter()
             .take(8)
             .map(|((kind, w, h, milli, cached, flags), (time, frames))| {
                 let mut notes = String::new();
-                for (bit, name) in [(1, "turned"), (2, "skewed/perspective"), (4, "see-through"), (8, "mirrored")] {
+                for (bit, name) in [
+                    (1, "turned"),
+                    (2, "skewed/perspective"),
+                    (4, "see-through"),
+                    (8, "mirrored"),
+                ] {
                     if flags & bit != 0 {
                         notes.push_str(&format!(", {name}"));
                     }
@@ -1085,8 +1105,17 @@ impl<'a> Renderer<'a> {
                     time.as_secs_f64() * 1000.0 / (*frames).max(1) as f64
                 )
             })
-            .collect::<Vec<_>>()
-            .join("\n")
+            .collect();
+        let rest: Duration = rows.iter().skip(8).map(|(_, (t, _))| *t).sum();
+        let shown: Duration = rows.iter().take(8).map(|(_, (t, _))| *t).sum();
+        lines.push(format!(
+            "  {} other kinds of layer: {:.1} s; the eight above: {:.1} s; making the empty canvas: {:.1} s",
+            rows.len().saturating_sub(8),
+            rest.as_secs_f64(),
+            shown.as_secs_f64(),
+            self.canvas_time.as_secs_f64()
+        ));
+        lines.join("\n")
     }
 
     fn video_frame(
