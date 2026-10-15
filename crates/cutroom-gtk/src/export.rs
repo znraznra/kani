@@ -1619,6 +1619,12 @@ mod tests {
             spec.content = "Caption test".into();
             t.text = Some(spec);
             t.transform.y = cutroom_timeline::text::CAPTION_Y;
+            if std::env::var_os("KANI_WARP").is_some() {
+                // Skewed and in perspective, like the project that was slow.
+                t.transform.skew_x = 100;
+                t.transform.persp_x = 200;
+                t.transform.scale = 663;
+            }
             apply(
                 &mut tl,
                 Edit::InsertClip {

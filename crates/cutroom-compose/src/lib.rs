@@ -299,8 +299,19 @@ impl Canvas {
         let reach_y = hw * sin.abs() + hh * cos.abs();
         let warped = placement.is_warped();
         let (x0, x1, y0, y1) = if warped {
-            // A slanted or tilted picture can reach anywhere: look at it all.
-            (0, self.width as usize, 0, self.height as usize)
+            // A slanted or tilted picture: where its four corners land bounds it
+            // (it falls back to the whole canvas when they cannot be placed).
+            let whole = (0, self.width as usize, 0, self.height as usize);
+            #[cfg(test)]
+            let search_all = SEARCH_ALL.with(|f| f.get());
+            #[cfg(not(test))]
+            let search_all = false;
+            if search_all {
+                whole
+            } else {
+                warped_bounds(placement, sw, sh, scale, (sin, cos), (cx, cy), (cw, ch))
+                    .unwrap_or(whole)
+            }
         } else {
             (
                 ((cx - reach_x - 1.0).floor().max(0.0)) as usize,
@@ -432,6 +443,69 @@ impl Canvas {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests turn this on to compare the bounded search with the whole canvas.
+    static SEARCH_ALL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The canvas rows and columns a slanted or tilted picture can touch, from where
+/// its four corners land (the picture is a convex four-sided shape, and the
+/// perspective is a projective map, so the corners bound it). `None` when a
+/// corner is too close to the horizon of the perspective to be placed.
+fn warped_bounds(
+    placement: &Placement,
+    sw: f32,
+    sh: f32,
+    scale: f32,
+    (sin, cos): (f32, f32),
+    (cx, cy): (f32, f32),
+    (cw, ch): (f32, f32),
+) -> Option<(usize, usize, usize, usize)> {
+    let (skew_x, skew_y) = (
+        placement.skew_x.to_radians().tan(),
+        placement.skew_y.to_radians().tan(),
+    );
+    let (mut lo_x, mut hi_x, mut lo_y, mut hi_y) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    for (ux, uy) in [
+        (-sw / 2.0, -sh / 2.0),
+        (sw / 2.0, -sh / 2.0),
+        (-sw / 2.0, sh / 2.0),
+        (sw / 2.0, sh / 2.0),
+    ] {
+        // Forward through the same steps `draw` undoes: slant, then perspective,
+        // then turn and scale.
+        let qx = ux - skew_x * uy;
+        let qy = uy + skew_y * qx;
+        let (qnx, qny) = (qx / sw, qy / sh);
+        let divisor = 1.0 + placement.persp_x * qnx + placement.persp_y * qny;
+        if !divisor.is_finite() || divisor < 0.05 {
+            return None;
+        }
+        let (u0x, u0y) = (qnx / divisor * sw, qny / divisor * sh);
+        let (dx, dy) = (
+            scale * (u0x * cos - u0y * sin),
+            scale * (u0x * sin + u0y * cos),
+        );
+        let (x, y) = (cx + dx, cy + dy);
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        lo_x = lo_x.min(x);
+        hi_x = hi_x.max(x);
+        lo_y = lo_y.min(y);
+        hi_y = hi_y.max(y);
+    }
+    // A little room for the soft edge and rounding.
+    let margin = 3.0;
+    Some((
+        (lo_x - margin).floor().max(0.0) as usize,
+        (hi_x + margin).ceil().min(cw).max(0.0) as usize,
+        (lo_y - margin).floor().max(0.0) as usize,
+        (hi_y + margin).ceil().min(ch).max(0.0) as usize,
+    ))
+}
+
 /// Stack layers, bottom first, onto a black canvas.
 pub fn compose<'a>(
     width: u32,
@@ -552,6 +626,51 @@ mod tests {
                     .unwrap();
                 assert!(worst <= 1, "flip {flip_h} {flip_v}: differs by {worst}");
             }
+        }
+    }
+
+    #[test]
+    fn a_warped_picture_is_found_inside_its_bounds() {
+        // The bounded search must give exactly what searching the whole canvas gives.
+        let (w, h) = (40usize, 24usize);
+        let mut frame = Frame::solid(w as u32, h as u32, [0, 0, 0, 255]);
+        for i in 0..w * h {
+            let v = (i * 91 % 253) as u8;
+            frame.rgba[i * 4..i * 4 + 4].copy_from_slice(&[v, 255 - v, v / 2, 255]);
+        }
+        let cases = [
+            (200.0, 0.0, 0.0, 0.0, 0.0, false),
+            (0.0, 25.0, 0.0, 0.0, 0.0, false),
+            (-30.0, 20.0, 0.0, 0.0, 0.0, false),
+            (0.0, 0.0, 0.0, 0.4, 0.0, false),
+            (0.0, 0.0, 0.0, 0.0, -0.5, false),
+            (15.0, -10.0, 33.0, 0.3, 0.2, true),
+            (0.0, 0.0, 90.0, 0.2, 0.0, true),
+        ];
+        for (skew_x, skew_y, rotation, persp_x, persp_y, flip) in cases {
+            let placement = Placement {
+                x: 0.1,
+                y: -0.15,
+                scale: 0.7,
+                rotation,
+                skew_x: skew_x / 10.0,
+                skew_y: skew_y / 10.0,
+                persp_x,
+                persp_y,
+                flip_h: flip,
+                natural: true,
+                ..Placement::default()
+            };
+            SEARCH_ALL.with(|f| f.set(false));
+            let bounded = draw((120, 200), &frame, placement);
+            SEARCH_ALL.with(|f| f.set(true));
+            let whole = draw((120, 200), &frame, placement);
+            SEARCH_ALL.with(|f| f.set(false));
+            assert!(
+                bounded.rgba == whole.rgba,
+                "differs for skew {skew_x},{skew_y} rotation {rotation} perspective {persp_x},{persp_y}"
+            );
+            assert!(count(&whole, BLACK) < 120 * 200, "something was drawn");
         }
     }
 
