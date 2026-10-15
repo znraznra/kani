@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libclang-dev libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav xvfb
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      # Report-only until the first run shows what clippy thinks.
+      - run: cargo clippy --workspace --all-targets
+        continue-on-error: true
+      - name: Tests (with a virtual display for the window test)
+        run: xvfb-run -a env GSK_RENDERER=cairo cargo test --workspace
+
+  # Best-effort: neither has been tried yet. See README for the Windows setup.
+  windows:
+    name: Windows (MSYS2)
+    runs-on: windows-latest
+    continue-on-error: true
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain mingw-w64-x86_64-pkgconf mingw-w64-x86_64-rust
+            mingw-w64-x86_64-gtk4 mingw-w64-x86_64-gstreamer mingw-w64-x86_64-gst-plugins-base
+            mingw-w64-x86_64-gst-plugins-good mingw-w64-x86_64-gst-plugins-bad
+      - run: cargo test --workspace
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install gtk4 gstreamer pkgconf
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace

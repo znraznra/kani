@@ -1,0 +1,23 @@
+[package]
+name = "cutroom-captions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[features]
+# Local speech recognition (whisper.cpp). Needs cmake, a C++ compiler and
+# libclang to build. Without it everything else still works and the caption
+# panel says transcription is not built in.
+default = ["whisper"]
+whisper = ["dep:whisper-rs", "dep:whisper-rs-sys"]
+
+[dependencies]
+thiserror.workspace = true
+ureq = "3"
+whisper-rs = { version = "0.16", optional = true }
+whisper-rs-sys = { version = "0.15", optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true

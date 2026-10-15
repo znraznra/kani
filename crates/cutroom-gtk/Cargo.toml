@@ -1,0 +1,35 @@
+[package]
+name = "cutroom-gtk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+authors.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "kani"
+path = "src/main.rs"
+
+[dependencies]
+cutroom-timeline = { path = "../cutroom-timeline" }
+cutroom-project = { path = "../cutroom-project" }
+cutroom-platform = { path = "../cutroom-platform" }
+cutroom-compose = { path = "../cutroom-compose" }
+cutroom-core = { path = "../cutroom-core" }
+cutroom-captions = { path = "../cutroom-captions", default-features = false }
+gtk4 = { version = "0.10", features = ["v4_12"] }
+gstreamer = "0.24"
+gstreamer-video = "0.24"
+gstreamer-pbutils = "0.24"
+gstreamer-app = "0.24"
+gst-plugin-gtk4 = "0.14"
+pangocairo = "0.21"
+
+[features]
+default = ["whisper"]
+whisper = ["cutroom-captions/whisper"]
+
+[dev-dependencies]
+tempfile.workspace = true

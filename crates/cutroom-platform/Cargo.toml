@@ -1,0 +1,13 @@
+[package]
+name = "cutroom-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+cutroom-timeline = { path = "../cutroom-timeline" }
+serde.workspace = true
+thiserror.workspace = true
+directories.workspace = true

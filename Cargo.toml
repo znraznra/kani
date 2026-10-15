@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cutroom-timeline",
+    "crates/cutroom-project",
+    "crates/cutroom-platform",
+    "crates/cutroom-captions",
+    "crates/cutroom-compose",
+    "crates/cutroom-core",
+    "crates/cutroom-gtk",
+]
+
+[workspace.package]
+version = "0.5.1"
+edition = "2021"
+rust-version = "1.90"
+publish = false
+authors = ["znraznra"]
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+blake3 = "1"
+directories = "6"
+tempfile = "3"
+
+# The compositor works on every pixel; keep it fast even in test and debug builds.
+[profile.dev.package.cutroom-compose]
+opt-level = 3
