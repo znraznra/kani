@@ -377,8 +377,8 @@ impl Canvas {
         // Scaled and moved but not turned or slanted (a clip that is not the
         // canvas size, a zoomed clip): everything that depends on the column is
         // worked out once here, and everything that depends on the row once per row.
-        let columns: Option<Vec<(i64, f32, f32)>> =
-            (!warped && placement.rotation == 0.0).then(|| {
+        let columns: Option<Vec<(i64, f32, f32, u32)>> = (!warped && placement.rotation == 0.0)
+            .then(|| {
                 (x0..x1)
                     .map(|px| {
                         let mut ux = (px as f32 + 0.5 - cx) / scale;
@@ -389,11 +389,16 @@ impl Canvas {
                         let cover = ((sx.min(sw - sx)) * scale + 0.5).clamp(0.0, 1.0);
                         let fx = sx - 0.5;
                         let xi = fx.floor();
-                        (xi as i64, fx - xi, cover)
+                        (xi as i64, fx - xi, cover, ((fx - xi) * 256.0) as u32)
                     })
                     .collect()
             });
         let opacity = placement.opacity.min(1.0);
+        // A picture with no see-through pixel, drawn at full strength, is just
+        // resampled where it is well inside its edges: no blending at all.
+        let opaque_picture =
+            columns.is_some() && opacity >= 1.0 && frame.rgba.chunks_exact(4).all(|p| p[3] == 255);
+        let (fw, fh) = (frame.width as i64, frame.height as i64);
         let render_rows = |first_row: usize, chunk: &mut [u8]| {
             for (r, row) in chunk.chunks_exact_mut(width * 4).enumerate() {
                 let py = (first_row + r) as f32 + 0.5;
@@ -410,7 +415,31 @@ impl Canvas {
                     let fy = sy - 0.5;
                     let yi = fy.floor();
                     let ty = fy - yi;
-                    for (i, &(xi, tx, cover_x)) in columns.iter().enumerate() {
+                    let ty8 = (ty * 256.0) as u32;
+                    let row_inside =
+                        opaque_picture && cover_y >= 1.0 && yi >= 0.0 && (yi as i64) + 1 < fh;
+                    let stride = fw as usize * 4;
+                    for (i, &(xi, tx, cover_x, tx8)) in columns.iter().enumerate() {
+                        if row_inside && cover_x >= 1.0 && xi >= 0 && xi + 1 < fw {
+                            // Whole numbers all the way: four pixels, four weights
+                            // that add up to 65536, nothing to blend.
+                            let base = yi as usize * stride + xi as usize * 4;
+                            let (w00, w01) = ((256 - tx8) * (256 - ty8), tx8 * (256 - ty8));
+                            let (w10, w11) = ((256 - tx8) * ty8, tx8 * ty8);
+                            let p = &frame.rgba[base..base + 8];
+                            let q = &frame.rgba[base + stride..base + stride + 8];
+                            let o = (x0 + i) * 4;
+                            for c in 0..3 {
+                                row[o + c] = ((u32::from(p[c]) * w00
+                                    + u32::from(p[c + 4]) * w01
+                                    + u32::from(q[c]) * w10
+                                    + u32::from(q[c + 4]) * w11
+                                    + 32768)
+                                    >> 16) as u8;
+                            }
+                            row[o + 3] = 255;
+                            continue;
+                        }
                         let coverage = cover_x.min(cover_y);
                         if coverage <= 0.0 {
                             continue;
@@ -721,6 +750,45 @@ mod tests {
     }
 
     #[test]
+    fn an_opaque_scaled_picture_matches_the_general_path() {
+        let (w, h) = (53usize, 41usize);
+        let mut frame = Frame::solid(w as u32, h as u32, [0, 0, 0, 255]);
+        for i in 0..w * h {
+            let v = (i * 97 % 251) as u8;
+            frame.rgba[i * 4..i * 4 + 4].copy_from_slice(&[v, v.wrapping_mul(5), 255 - v, 255]);
+        }
+        for (scale, x, y, flip_h, flip_v) in [
+            (1.0f32, 0.0f32, 0.0f32, false, false),
+            (1.371, 0.05, -0.04, false, true),
+            (2.554, -0.1, 0.1, true, false),
+            (0.6, 0.2, 0.0, true, true),
+        ] {
+            let fast = Placement {
+                scale,
+                x,
+                y,
+                flip_h,
+                flip_v,
+                ..Placement::default()
+            };
+            let general = Placement {
+                rotation: 0.0001,
+                ..fast
+            };
+            let a = draw((60, 90), &frame, fast);
+            let b = draw((60, 90), &frame, general);
+            let worst = a
+                .rgba
+                .iter()
+                .zip(&b.rgba)
+                .map(|(p, q)| p.abs_diff(*q))
+                .max()
+                .unwrap();
+            assert!(worst <= 2, "scale {scale}: differs by {worst}");
+        }
+    }
+
+    #[test]
     fn a_warped_picture_is_found_inside_its_bounds() {
         // The bounded search must give exactly what searching the whole canvas gives.
         let (w, h) = (40usize, 24usize);
@@ -831,6 +899,34 @@ mod tests {
             ..Placement::default()
         };
         assert!(render_layer(10, 10, &frame, &nothing).is_none());
+    }
+
+    /// Speed check (run with `cargo test --release -p cutroom-compose -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn bench_scaled_video_layer() {
+        let (w, h) = (1440usize, 1080usize);
+        let mut frame = Frame::solid(w as u32, h as u32, [0, 0, 0, 255]);
+        for i in 0..w * h {
+            let v = (i * 73 % 251) as u8;
+            frame.rgba[i * 4..i * 4 + 4].copy_from_slice(&[v, v.wrapping_mul(3), 255 - v, 255]);
+        }
+        for scale in [1.0f32, 1.371, 2.554] {
+            let placement = Placement {
+                scale,
+                ..Placement::default()
+            };
+            let mut canvas = Canvas::new(1080, 1920);
+            let start = std::time::Instant::now();
+            let runs = 20;
+            for _ in 0..runs {
+                canvas.draw(&frame, &placement);
+            }
+            eprintln!(
+                "BENCH scale {scale}: {:.2} ms per draw",
+                start.elapsed().as_secs_f64() * 1000.0 / f64::from(runs)
+            );
+        }
     }
 
     #[test]

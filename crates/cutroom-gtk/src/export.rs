@@ -670,7 +670,7 @@ struct Renderer<'a> {
     static_layers: HashMap<ClipId, StaticLayer>,
     /// Compositing time per kind of layer: (kind, width, height, scale in
     /// thousandths, cached) -> (time, frames).
-    layer_time: HashMap<(&'static str, u32, u32, i32, bool), (Duration, u64)>,
+    layer_time: HashMap<(&'static str, u32, u32, i32, bool, u8), (Duration, u64)>,
 }
 
 /// A still or text layer that has been seen in the same place on consecutive frames.
@@ -766,7 +766,7 @@ impl<'a> Renderer<'a> {
             let resolve = self.resolve();
             find_targets(&self.job.timeline, at, &resolve)
         };
-        let mut picked: Vec<(Item, (&'static str, u32, u32, i32, bool))> = Vec::new();
+        let mut picked: Vec<(Item, (&'static str, u32, u32, i32, bool, u8))> = Vec::new();
         let mut used: HashSet<ClipId> = HashSet::new();
         // Topmost first in the list; the compositor wants the bottom first.
         for layer in targets.layers.iter().rev() {
@@ -804,7 +804,13 @@ impl<'a> Renderer<'a> {
             } else {
                 "video"
             };
-            let milli = layer.transform.clamped().scale;
+            let t = layer.transform.clamped();
+            let milli = t.scale;
+            // What else is special about this layer (shown in the timing table).
+            let flags = u8::from(t.rotation != 0)
+                | u8::from(t.skew_x != 0 || t.skew_y != 0 || t.persp_x != 0 || t.persp_y != 0) << 1
+                | u8::from(t.opacity < 1000) << 2
+                | u8::from(t.flip_h || t.flip_v) << 3;
             let mut cached = None;
             if still_or_text {
                 // The same picture in the same place as on the last frame: draw
@@ -835,11 +841,11 @@ impl<'a> Renderer<'a> {
             picked.push(match cached {
                 Some(layer) => (
                     Item::Cached(layer),
-                    (kind, frame.width, frame.height, milli, true),
+                    (kind, frame.width, frame.height, milli, true, flags),
                 ),
                 None => (
                     Item::Draw(frame.clone(), placement),
-                    (kind, frame.width, frame.height, milli, false),
+                    (kind, frame.width, frame.height, milli, false, flags),
                 ),
             });
         }
@@ -868,9 +874,15 @@ impl<'a> Renderer<'a> {
         rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
         rows.iter()
             .take(8)
-            .map(|((kind, w, h, milli, cached), (time, frames))| {
+            .map(|((kind, w, h, milli, cached, flags), (time, frames))| {
+                let mut notes = String::new();
+                for (bit, name) in [(1, "turned"), (2, "skewed/perspective"), (4, "see-through"), (8, "mirrored")] {
+                    if flags & bit != 0 {
+                        notes.push_str(&format!(", {name}"));
+                    }
+                }
                 format!(
-                    "  {kind} {w}x{h} at scale {:.3}{}: {:.1} s over {frames} frames ({:.1} ms each)",
+                    "  {kind} {w}x{h} at scale {:.3}{notes}{}: {:.1} s over {frames} frames ({:.1} ms each)",
                     f64::from(*milli) / 1000.0,
                     if *cached { " (drawn once)" } else { "" },
                     time.as_secs_f64(),
