@@ -226,9 +226,9 @@ pub fn open(app: &Rc<App>) {
         .title("Export video")
         .transient_for(&app.window)
         .modal(true)
-        .resizable(false)
         .destroy_with_parent(true)
         .default_width(460)
+        .default_height(380)
         .build();
 
     let form = gtk::Box::new(gtk::Orientation::Vertical, 10);
@@ -407,11 +407,61 @@ pub fn open(app: &Rc<App>) {
     ACTIVE.with(|a| *a.borrow_mut() = Rc::downgrade(&dialog));
     connect(app, &dialog, timeline, sources);
     update_summary(&dialog);
-    let dimmed = app.window.child();
-    if let Some(w) = &dimmed {
-        w.set_opacity(0.4);
+    // Dim the workspace only once the window is really on screen, so a window
+    // that fails to appear can never leave the app greyed out and stuck.
+    {
+        let (app, d) = (app.clone(), dialog.clone());
+        dialog.window.connect_map(move |_| {
+            if d.dimmed.borrow().is_none() {
+                let dimmed = app.window.child();
+                if let Some(w) = &dimmed {
+                    w.set_opacity(0.4);
+                }
+                *d.dimmed.borrow_mut() = dimmed;
+            }
+        });
     }
-    *dialog.dimmed.borrow_mut() = dimmed;
+    {
+        // Esc closes it (or cancels a running export).
+        let d = dialog.clone();
+        let keys = gtk::EventControllerKey::new();
+        keys.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape {
+                if d.running.borrow().is_some() {
+                    stop_export(&d);
+                } else {
+                    close(&d);
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        dialog.window.add_controller(keys);
+    }
+    {
+        // However it goes away, the workspace comes back to full strength.
+        let d = dialog.clone();
+        dialog.window.connect_destroy(move |_| {
+            if let Some(w) = d.dimmed.borrow_mut().take() {
+                w.set_opacity(1.0);
+            }
+        });
+    }
+    {
+        // If the window has not appeared after a few seconds, say so instead of hanging.
+        let (app, d) = (app.clone(), Rc::downgrade(&dialog));
+        glib::timeout_add_local_once(Duration::from_secs(3), move || {
+            if let Some(d) = d.upgrade() {
+                if !d.window.is_mapped() {
+                    eprintln!("kani: the Export window did not appear within 3 s; closing it");
+                    app.set_status("The Export window could not be shown. Run kani from a terminal and send me any messages it prints.");
+                    app.update_status();
+                    close(&d);
+                }
+            }
+        });
+    }
+    eprintln!("kani: opening the Export window");
     dialog.window.present();
     dialog.name.grab_focus();
     find_encoders(app, &dialog);
@@ -525,7 +575,7 @@ fn connect(
         d.window.connect_close_request(move |_| {
             if d2.running.borrow().is_some() {
                 // Closing the window mid-export is the same as Cancel.
-                stop(&d2);
+                stop_export(&d2);
             } else {
                 close(&d2);
             }
@@ -534,7 +584,7 @@ fn connect(
     }
     {
         let d2 = d.clone();
-        d.stop.connect_clicked(move |_| stop(&d2));
+        d.stop.connect_clicked(move |_| stop_export(&d2));
     }
     {
         let (app, d2) = (app.clone(), d.clone());
@@ -585,7 +635,7 @@ fn close(d: &Rc<Dialog>) {
     d.window.destroy();
 }
 
-fn stop(d: &Rc<Dialog>) {
+fn stop_export(d: &Rc<Dialog>) {
     if let Some(run) = d.running.borrow().as_ref() {
         run.progress.cancel.store(true, Ordering::Relaxed);
     }
