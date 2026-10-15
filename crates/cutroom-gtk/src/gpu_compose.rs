@@ -439,7 +439,9 @@ impl Drop for GpuCompositor {
         let _ = self.egl.make_current(self.display, None, None, None);
         let _ = self.egl.destroy_surface(self.display, self.surface);
         let _ = self.egl.destroy_context(self.display, self.context);
-        let _ = self.egl.terminate(self.display);
+        // The display is left open on purpose: when the surfaceless platform is
+        // not offered, it is the desktop's own display, which GTK is still using,
+        // and terminating it would pull it out from under the interface.
     }
 }
 

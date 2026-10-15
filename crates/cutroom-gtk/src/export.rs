@@ -440,6 +440,45 @@ pub struct Report {
 
 // -------------------------------------------------------- reading pictures
 
+/// A line about the state of the machine, printed at the start of every export,
+/// so renders that took different times can be told apart (power saving,
+/// battery, other work running).
+fn machine_state() -> String {
+    let read = |path: &str| {
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|s| s.trim().to_string())
+    };
+    let threads = std::thread::available_parallelism().map_or(0, |n| n.get());
+    let governor = read("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor");
+    let preference = read("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference");
+    let mhz = read("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq")
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|khz| khz / 1000.0);
+    let load =
+        read("/proc/loadavg").map(|l| l.split_whitespace().take(3).collect::<Vec<_>>().join(" "));
+    let battery = std::fs::read_dir("/sys/class/power_supply")
+        .ok()
+        .and_then(|dir| {
+            dir.flatten().find_map(|entry| {
+                let path = entry.path();
+                let kind = std::fs::read_to_string(path.join("type")).ok()?;
+                (kind.trim() == "Mains")
+                    .then(|| std::fs::read_to_string(path.join("online")).ok())
+                    .flatten()
+                    .map(|v| v.trim() == "1")
+            })
+        });
+    format!(
+        "{threads} threads, governor {}, power preference {}, core 0 at {} MHz, load {}, mains power {}",
+        governor.as_deref().unwrap_or("unknown"),
+        preference.as_deref().unwrap_or("unknown"),
+        mhz.map_or("unknown".to_string(), |m| format!("{m:.0}")),
+        load.as_deref().unwrap_or("unknown"),
+        battery.map_or("unknown", |on| if on { "yes" } else { "NO (on battery)" })
+    )
+}
+
 fn seconds_of(ts: Option<gst::ClockTime>) -> f64 {
     ts.map_or(0.0, |t| t.nseconds() as f64 / 1e9)
 }
@@ -1395,6 +1434,7 @@ pub fn export(job: &Job, progress: &Progress) -> Result<Report> {
     if job.encoders.is_empty() {
         return fail("No H.264 video encoder is available. Install GStreamer's x264 plug-in (gst-plugins-ugly) or a hardware encoder plug-in.");
     }
+    eprintln!("kani: export starting - {}", machine_state());
     if let Some(parent) = job.output.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
