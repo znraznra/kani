@@ -26,6 +26,10 @@ gstreamer-pbutils = "0.24"
 gstreamer-app = "0.24"
 gst-plugin-gtk4 = "0.14"
 pangocairo = "0.21"
+# Optional GPU compositing for export: a headless OpenGL ES context via EGL,
+# loaded at run time (no EGL means the processor is used instead).
+glow = "0.18"
+khronos-egl = { version = "6", features = ["dynamic"] }
 
 [features]
 default = ["whisper"]

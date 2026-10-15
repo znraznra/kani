@@ -249,7 +249,7 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
 name = "cutroom-captions"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "tempfile",
  "thiserror",
@@ -260,14 +260,14 @@ dependencies = [
 
 [[package]]
 name = "cutroom-compose"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "cutroom-timeline",
 ]
 
 [[package]]
 name = "cutroom-core"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "cutroom-captions",
  "cutroom-project",
@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "cutroom-gtk"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "cutroom-captions",
  "cutroom-compose",
@@ -288,19 +288,21 @@ dependencies = [
  "cutroom-platform",
  "cutroom-project",
  "cutroom-timeline",
+ "glow",
  "gst-plugin-gtk4",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-pbutils",
  "gstreamer-video",
  "gtk4",
+ "khronos-egl",
  "pangocairo",
  "tempfile",
 ]
 
 [[package]]
 name = "cutroom-platform"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "cutroom-timeline",
  "directories",
@@ -310,7 +312,7 @@ dependencies = [
 
 [[package]]
 name = "cutroom-project"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "blake3",
  "cutroom-timeline",
@@ -322,7 +324,7 @@ dependencies = [
 
 [[package]]
 name = "cutroom-timeline"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "serde",
  "serde_json",
@@ -682,6 +684,18 @@ name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
+
+[[package]]
+name = "glow"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "263218b0ba2b0715c3370fb04674f5f8aa331594b521c94ff0a8e4a8472d1386"
+dependencies = [
+ "js-sys",
+ "slotmap",
+ "wasm-bindgen",
+ "web-sys",
+]
 
 [[package]]
 name = "gobject-sys"
@@ -1133,6 +1147,16 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "khronos-egl"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
+dependencies = [
+ "libc",
+ "libloading",
 ]
 
 [[package]]
@@ -1605,6 +1629,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
+name = "slotmap"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdd58c3c93c3d278ca835519292445cb4b0d4dc59ccfdf7ceadaab3f8aeb4038"
+dependencies = [
+ "version_check",
+]
+
+[[package]]
 name = "smallvec"
 version = "1.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1801,6 +1834,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03c2856837ef78f57382f06b2b8563a2f512f7185d732608fd9176cb3b8edf0e"
 
 [[package]]
+name = "version_check"
+version = "0.9.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
 name = "wasi"
 version = "0.11.1+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1849,6 +1888,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23f0c9c52aa7cd7d77769a4cfe2a9adb1b331f489a41d912ce14513d5ab995c6"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "web-sys"
+version = "0.3.106"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88261b9deccee56594c11a3460c462c41f58d148598fe70ad77070126a68aba4"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]

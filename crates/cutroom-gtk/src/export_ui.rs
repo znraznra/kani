@@ -26,6 +26,8 @@ pub struct Dialog {
     pub rate: gtk::DropDown,
     pub quality: gtk::DropDown,
     pub encoder: gtk::DropDown,
+    /// Put video layers together on the graphics card (a test switch).
+    pub gpu_on: gtk::CheckButton,
     pub summary: gtk::Label,
     pub export: gtk::Button,
     pub cancel: gtk::Button,
@@ -365,19 +367,22 @@ pub fn open(app: &Rc<App>) {
 
     // Does the graphics card work for compositing? (Export does not use it
     // yet; this button measures it and says.)
-    let gpu_button = gtk::Button::with_label("Test GPU compositing");
+    let gpu_button = gtk::Button::with_label("Test the graphics card");
     gpu_button.set_halign(gtk::Align::Start);
-    let gpu_note = gtk::Label::new(Some(if crate::gpu::available() {
-        "OpenGL plug-ins found. Not used for export yet."
-    } else {
-        "OpenGL plug-ins not found."
-    }));
+    let gpu_on = gtk::CheckButton::with_label(
+        "Use the graphics card to put pictures together (experimental)",
+    );
+    gpu_on.set_tooltip_text(Some(
+        "Off: the processor does it all. On: video layers that are scaled, turned or slanted are drawn on the graphics card; anything it cannot do falls back to the processor.",
+    ));
+    let gpu_note = gtk::Label::new(Some("Not tested yet. Press the button to try it."));
     gpu_note.set_xalign(0.0);
     gpu_note.set_wrap(true);
     gpu_note.set_max_width_chars(48);
     gpu_note.add_css_class("dim-label");
     gpu_note.add_css_class("caption");
     let gpu_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    gpu_box.append(&gpu_on);
     gpu_box.append(&gpu_button);
     gpu_box.append(&gpu_note);
     grid.attach(&label("Graphics card"), 0, 6, 1, 1);
@@ -470,6 +475,7 @@ pub fn open(app: &Rc<App>) {
         rate,
         quality,
         encoder,
+        gpu_on,
         summary,
         export,
         cancel,
@@ -872,6 +878,7 @@ fn start(
         encoders,
         output: output.clone(),
         limit_seconds: test_limit(),
+        gpu: d.gpu_on.is_active(),
     };
     let progress = Arc::new(Progress::default());
     let outcome: Outcome = Arc::new(Mutex::new(None));

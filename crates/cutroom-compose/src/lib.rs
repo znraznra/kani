@@ -196,6 +196,33 @@ pub fn covers_canvas(width: u32, height: u32, frame_w: u32, frame_h: u32, p: &Pl
     cx - half_w <= 0.0 && cx + half_w >= cw && cy - half_h <= 0.0 && cy + half_h >= ch
 }
 
+/// Is this layer a picture that lands pixel for pixel on the canvas (unturned,
+/// unslanted, unscaled, on whole pixels)? Those are copied row by row and are
+/// not worth sending anywhere else.
+pub fn is_plain_copy(width: u32, height: u32, frame_w: u32, frame_h: u32, p: &Placement) -> bool {
+    if frame_w == 0 || frame_h == 0 {
+        return false;
+    }
+    if p.is_warped() || p.rotation != 0.0 || p.flip_h || p.flip_v {
+        return false;
+    }
+    let (cw, ch) = (width as f32, height as f32);
+    let (sw, sh) = (frame_w as f32, frame_h as f32);
+    let fit = if p.natural {
+        1.0
+    } else {
+        (cw / sw).min(ch / sh)
+    };
+    if (fit * p.scale - 1.0).abs() >= 1e-6 {
+        return false;
+    }
+    let (left, top) = (
+        cw / 2.0 + p.x * cw - sw / 2.0,
+        ch / 2.0 + p.y * ch - sh / 2.0,
+    );
+    p.natural || ((left - left.round()).abs() < 1e-3 && (top - top.round()).abs() < 1e-3)
+}
+
 /// The finished picture. It starts opaque black.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Canvas {
@@ -288,16 +315,33 @@ impl Canvas {
                 .chunks_exact(4)
                 .rposition(|p| p[3] != 0)
                 .unwrap_or(first);
-            for x in (x0 + first as i64)..=(x0 + last as i64) {
+            let mut x = x0 + first as i64;
+            let end = x0 + last as i64;
+            while x <= end {
                 let s = src_row + ((x - left) as usize) * 4;
                 let src = &frame.rgba[s..s + 4];
                 if src[3] == 0 || opacity <= 0.0 {
+                    x += 1;
                     continue;
                 }
                 let o = dst_row + x as usize * 4;
+                // A run of solid pixels (the inside of a turned picture) is one copy.
+                if opacity >= 1.0 && src[3] == 255 && !store {
+                    let mut run = 1i64;
+                    while x + run <= end
+                        && frame.rgba[src_row + ((x + run - left) as usize) * 4 + 3] == 255
+                    {
+                        run += 1;
+                    }
+                    let len = run as usize * 4;
+                    self.rgba[o..o + len].copy_from_slice(&frame.rgba[s..s + len]);
+                    x += run;
+                    continue;
+                }
                 let alpha = opacity * (f32::from(src[3]) / 255.0);
                 if alpha >= 1.0 && !store {
                     self.rgba[o..o + 3].copy_from_slice(&src[..3]);
+                    x += 1;
                     continue;
                 }
                 put(
@@ -306,6 +350,7 @@ impl Canvas {
                     alpha,
                     store,
                 );
+                x += 1;
             }
         }
     }
@@ -415,11 +460,50 @@ impl Canvas {
                     })
                     .collect()
             });
+        // Turned and/or slanted but with no perspective: where a canvas pixel
+        // lands in the picture is a straight-line (affine) function of its
+        // position, so work it out at three points and step along each row
+        // instead of redoing the geometry (and the divide) for every pixel.
+        #[cfg(test)]
+        let allow_affine = !NO_AFFINE.with(|f| f.get());
+        #[cfg(not(test))]
+        let allow_affine = true;
+        let affine = (allow_affine
+            && columns.is_none()
+            && placement.persp_x == 0.0
+            && placement.persp_y == 0.0)
+            .then(|| {
+                let back = |qx: f32, qy: f32| -> (f32, f32) {
+                    let (dx, dy) = (qx - cx, qy - cy);
+                    let mut ux = (dx * cos + dy * sin) / scale;
+                    let mut uy = (-dx * sin + dy * cos) / scale;
+                    if warped {
+                        uy -= skew_y_tan * ux;
+                        ux += skew_x_tan * uy;
+                    }
+                    if placement.flip_h {
+                        ux = -ux;
+                    }
+                    if placement.flip_v {
+                        uy = -uy;
+                    }
+                    (ux + sw / 2.0, uy + sh / 2.0)
+                };
+                let origin = back(0.0, 0.0);
+                let step_x = back(1.0, 0.0);
+                let step_y = back(0.0, 1.0);
+                (
+                    origin,
+                    (step_x.0 - origin.0, step_x.1 - origin.1),
+                    (step_y.0 - origin.0, step_y.1 - origin.1),
+                )
+            });
         let opacity = placement.opacity.min(1.0);
         // A picture with no see-through pixel, drawn at full strength, is just
         // resampled where it is well inside its edges: no blending at all.
-        let opaque_picture =
-            columns.is_some() && opacity >= 1.0 && frame.rgba.chunks_exact(4).all(|p| p[3] == 255);
+        let opaque_picture = (columns.is_some() || affine.is_some())
+            && opacity >= 1.0
+            && frame.rgba.chunks_exact(4).all(|p| p[3] == 255);
         let (fw, fh) = (frame.width as i64, frame.height as i64);
         let render_rows = |first_row: usize, chunk: &mut [u8]| {
             for (r, row) in chunk.chunks_exact_mut(width * 4).enumerate() {
@@ -476,6 +560,52 @@ impl Canvas {
                     }
                     continue;
                 }
+                if let Some((origin, along_x, along_y)) = affine {
+                    let (row_x, row_y) = (origin.0 + along_y.0 * py, origin.1 + along_y.1 * py);
+                    let stride = fw as usize * 4;
+                    for px in x0..x1 {
+                        let centre = px as f32 + 0.5;
+                        let (sx, sy) = (row_x + along_x.0 * centre, row_y + along_x.1 * centre);
+                        let inside = sx.min(sw - sx).min(sy.min(sh - sy)) * scale;
+                        let coverage = (inside + 0.5).clamp(0.0, 1.0);
+                        if coverage <= 0.0 {
+                            continue;
+                        }
+                        let o = px * 4;
+                        if opaque_picture && coverage >= 1.0 {
+                            let (fx, fy) = (sx - 0.5, sy - 0.5);
+                            let (xf, yf) = (fx.floor(), fy.floor());
+                            let (xi, yi) = (xf as i64, yf as i64);
+                            if xi >= 0 && yi >= 0 && xi + 1 < fw && yi + 1 < fh {
+                                let (tx8, ty8) =
+                                    (((fx - xf) * 256.0) as u32, ((fy - yf) * 256.0) as u32);
+                                let base = yi as usize * stride + xi as usize * 4;
+                                let (w00, w01) = ((256 - tx8) * (256 - ty8), tx8 * (256 - ty8));
+                                let (w10, w11) = ((256 - tx8) * ty8, tx8 * ty8);
+                                let p = &frame.rgba[base..base + 8];
+                                let q = &frame.rgba[base + stride..base + stride + 8];
+                                for c in 0..3 {
+                                    row[o + c] = ((u32::from(p[c]) * w00
+                                        + u32::from(p[c + 4]) * w01
+                                        + u32::from(q[c]) * w10
+                                        + u32::from(q[c + 4]) * w11
+                                        + 32768)
+                                        >> 16)
+                                        as u8;
+                                }
+                                row[o + 3] = 255;
+                                continue;
+                            }
+                        }
+                        let src = frame.sample(sx, sy);
+                        let alpha = coverage * opacity * (src[3] / 255.0);
+                        if alpha <= 0.0 {
+                            continue;
+                        }
+                        put(&mut row[o..o + 4], [src[0], src[1], src[2]], alpha, store);
+                    }
+                    continue;
+                }
                 for px in x0..x1 {
                     let (dx, dy) = (px as f32 + 0.5 - cx, py - cy);
                     // Back into the picture: undo the turn, then the scale.
@@ -526,6 +656,12 @@ impl Canvas {
             });
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests turn this on to force the per-pixel geometry (no stepping along rows).
+    static NO_AFFINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -773,6 +909,56 @@ mod tests {
     }
 
     #[test]
+    fn a_turned_and_slanted_picture_steps_along_rows_like_the_general_path() {
+        let (w, h) = (41usize, 33usize);
+        let mut frame = Frame::solid(w as u32, h as u32, [0, 0, 0, 255]);
+        for i in 0..w * h {
+            let v = (i * 61 % 253) as u8;
+            frame.rgba[i * 4..i * 4 + 3].copy_from_slice(&[v, v.wrapping_mul(5), 255 - v]);
+        }
+        let mut see_through = frame.clone();
+        for i in 0..w * h {
+            see_through.rgba[i * 4 + 3] = 120 + (i % 130) as u8;
+        }
+        for (picture, opacity) in [(&frame, 1.0), (&see_through, 0.8)] {
+            for (rotation, skew_x, skew_y, flip) in [
+                (0.0, 12.0, 0.0, false),
+                (0.0, 0.0, -9.0, true),
+                (23.0, 10.0, 6.0, false),
+                (-40.0, 0.0, 0.0, true),
+            ] {
+                let p = Placement {
+                    x: 0.04,
+                    y: -0.02,
+                    scale: 1.4,
+                    rotation,
+                    skew_x,
+                    skew_y,
+                    flip_h: flip,
+                    opacity,
+                    ..Placement::default()
+                };
+                NO_AFFINE.with(|f| f.set(false));
+                let fast = draw((90, 120), picture, p);
+                NO_AFFINE.with(|f| f.set(true));
+                let slow = draw((90, 120), picture, p);
+                NO_AFFINE.with(|f| f.set(false));
+                let worst = fast
+                    .rgba
+                    .iter()
+                    .zip(&slow.rgba)
+                    .map(|(a, b)| a.abs_diff(*b))
+                    .max()
+                    .unwrap();
+                assert!(
+                    worst <= 2,
+                    "rot {rotation} skew {skew_x},{skew_y}: differs by {worst}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn the_scaled_fast_path_agrees_with_the_general_one() {
         // A made-up picture, scaled, moved, mirrored and a little see-through,
         // once as it is and once with a turn too small to see (which takes the
@@ -979,9 +1165,17 @@ mod tests {
             let v = (i * 73 % 251) as u8;
             frame.rgba[i * 4..i * 4 + 4].copy_from_slice(&[v, v.wrapping_mul(3), 255 - v, 255]);
         }
-        for scale in [1.0f32, 1.371, 2.554] {
+        for (scale, skew_x, slow) in [
+            (1.0f32, 0.0f32, false),
+            (1.371, 0.0, false),
+            (2.554, 0.0, false),
+            (1.371, 8.0, true),
+            (1.371, 8.0, false),
+        ] {
+            NO_AFFINE.with(|f| f.set(slow));
             let placement = Placement {
                 scale,
+                skew_x,
                 ..Placement::default()
             };
             let mut canvas = Canvas::new(1080, 1920);
@@ -991,7 +1185,7 @@ mod tests {
                 canvas.draw(&frame, &placement);
             }
             eprintln!(
-                "BENCH scale {scale}: {:.2} ms per draw",
+                "BENCH scale {scale} skew {skew_x} general path {slow}: {:.2} ms per draw",
                 start.elapsed().as_secs_f64() * 1000.0 / f64::from(runs)
             );
         }

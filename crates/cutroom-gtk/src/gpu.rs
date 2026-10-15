@@ -1,181 +1,128 @@
-//! Is the graphics card usable for putting a picture together?
+//! Does the graphics card work for putting export pictures together?
 //!
-//! Export composites on the processor today. This module finds out whether
-//! GStreamer's OpenGL plug-ins can run here (cheap check, `available`) and, on
-//! request, times a real two-layer composite on the card against the
-//! processor path (`test`), so the result can be reported before anything
-//! depends on it.
+//! `test` starts the same compositor export uses (see `gpu_compose`), draws a
+//! skewed and a scaled 1440x1080 picture on the canvas size of a vertical
+//! video both on the card and on the processor, and reports the times and how
+//! closely the two pictures agree.
 
+use crate::gpu_compose::GpuCompositor;
 use cutroom_compose::{Canvas, Frame, Placement};
-use gstreamer as gst;
-use gstreamer::prelude::*;
-use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Instant;
 
-/// The GStreamer elements GPU compositing would use.
-const NEEDED: [&str; 4] = ["glupload", "glcolorconvert", "glvideomixer", "gldownload"];
-
-/// Frames put together in the timing test.
-const FRAMES: u32 = 120;
+/// Pictures put together per timing.
+const RUNS: usize = 40;
 
 /// What the test found.
 #[derive(Debug, Clone)]
 pub struct GpuReport {
     pub usable: bool,
-    /// One line for the window.
+    /// One or two lines for the window.
     pub summary: String,
     /// Detail for the console.
     pub details: Vec<String>,
 }
 
-/// The needed GStreamer OpenGL elements that are missing (empty when all there).
-pub fn missing_elements() -> Vec<&'static str> {
-    NEEDED
-        .iter()
-        .copied()
-        .filter(|name| gst::ElementFactory::find(name).is_none())
-        .collect()
+fn gradient(shift: usize) -> Arc<Frame> {
+    let (w, h) = (1440usize, 1080usize);
+    let mut frame = Frame::solid(w as u32, h as u32, [0, 0, 0, 255]);
+    for y in 0..h {
+        for x in 0..w {
+            let o = (y * w + x) * 4;
+            frame.rgba[o] = ((x + shift) / 6) as u8;
+            frame.rgba[o + 1] = (y / 4) as u8;
+            frame.rgba[o + 2] = ((x + y) / 9) as u8;
+        }
+    }
+    Arc::new(frame)
 }
 
-/// Whether the OpenGL plug-ins are installed. This does not prove a card
-/// works - `test` does - but it is what a quick check can tell.
-pub fn available() -> bool {
-    static CACHE: OnceLock<bool> = OnceLock::new();
-    *CACHE.get_or_init(|| {
-        let _ = gst::init();
-        missing_elements().is_empty()
-    })
-}
-
-/// Time `FRAMES` composites of a 1440x1080 picture over a second one on a
-/// 1080x1920 canvas, on the card and on the processor.
 pub fn test() -> GpuReport {
-    let _ = gst::init();
+    let (width, height) = (1080u32, 1920u32);
     let mut details = Vec::new();
-    let missing = missing_elements();
-    if !missing.is_empty() {
-        let names = missing.join(", ");
-        details.push(format!("GStreamer has no {names} plug-in"));
-        return GpuReport {
-            usable: false,
-            summary: format!(
-                "Not available: GStreamer's OpenGL plug-ins are missing ({names}). Kani composites on the processor."
-            ),
-            details,
-        };
-    }
-    let cpu = cpu_time();
-    details.push(format!(
-        "processor: {FRAMES} composites in {:.2} s ({:.1} ms each)",
-        cpu.as_secs_f64(),
-        cpu.as_secs_f64() * 1000.0 / f64::from(FRAMES)
-    ));
-    match gpu_time() {
-        Ok(gpu) => {
-            details.push(format!(
-                "graphics card: {FRAMES} composites in {:.2} s ({:.1} ms each, including upload and read-back)",
-                gpu.as_secs_f64(),
-                gpu.as_secs_f64() * 1000.0 / f64::from(FRAMES)
-            ));
-            let ratio = cpu.as_secs_f64() / gpu.as_secs_f64().max(1e-6);
-            GpuReport {
-                usable: true,
-                summary: format!(
-                    "Works: {:.1} ms per picture on the card, {:.1} ms on the processor ({ratio:.1}x). Not used for export yet.",
-                    gpu.as_secs_f64() * 1000.0 / f64::from(FRAMES),
-                    cpu.as_secs_f64() * 1000.0 / f64::from(FRAMES)
-                ),
-                details,
-            }
-        }
+    let mut card = match GpuCompositor::new(width, height) {
+        Ok(card) => card,
         Err(why) => {
-            details.push(format!("graphics card test failed: {why}"));
-            GpuReport {
+            details.push(format!("could not start: {why}"));
+            return GpuReport {
                 usable: false,
-                summary: format!(
-                    "The OpenGL plug-ins are installed but a test failed ({why}). Kani composites on the processor."
-                ),
+                summary: format!("Not available: {why}. Kani composites on the processor."),
                 details,
-            }
+            };
         }
-    }
-}
-
-fn cpu_time() -> Duration {
-    let (w, h) = (1080u32, 1920u32);
-    let picture = |shade: u8| Frame {
-        width: 1440,
-        height: 1080,
-        rgba: [shade, 90, 200 - shade / 2, 255]
-            .iter()
-            .copied()
-            .cycle()
-            .take(1440 * 1080 * 4)
-            .collect(),
     };
-    let (a, b) = (picture(40), picture(160));
-    let under = Placement {
-        scale: 2.554,
-        ..Placement::default()
-    };
-    let over = Placement {
-        scale: 1.0,
-        y: 0.15,
-        ..Placement::default()
-    };
-    let started = Instant::now();
-    for _ in 0..FRAMES {
-        let mut canvas = Canvas::new(w, h);
-        canvas.draw(&a, &under);
-        canvas.draw(&b, &over);
-        std::hint::black_box(&canvas.rgba);
-    }
-    started.elapsed()
-}
-
-fn gpu_time() -> Result<Duration, String> {
-    let layer = |pattern: &str| {
-        format!(
-            "videotestsrc num-buffers={FRAMES} pattern={pattern} ! video/x-raw,format=RGBA,width=1440,height=1080,framerate=30/1 \
-             ! glupload ! glcolorconvert ! mix."
-        )
-    };
-    let description = format!(
-        "glvideomixer name=mix background=black sink_0::width=1080 sink_0::height=1920 \
-         sink_1::width=1080 sink_1::height=810 sink_1::ypos=555 \
-         ! video/x-raw(memory:GLMemory),format=RGBA,width=1080,height=1920 \
-         ! glcolorconvert ! gldownload ! video/x-raw,format=RGBA \
-         ! fakesink sync=false {} {}",
-        layer("smpte"),
-        layer("ball")
-    );
-    let pipeline =
-        gst::parse::launch(&description).map_err(|e| format!("could not build the test: {e}"))?;
-    let bus = pipeline.bus().ok_or("no message bus")?;
-    let started = Instant::now();
-    pipeline
-        .set_state(gst::State::Playing)
-        .map_err(|_| "could not start the OpenGL pipeline".to_string())?;
-    let mut outcome = Err("timed out after 30 s".to_string());
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while Instant::now() < deadline {
-        let Some(message) = bus.timed_pop(gst::ClockTime::from_mseconds(200)) else {
+    details.push(format!("graphics: {}", card.renderer));
+    // Several different pictures, so every run really uploads one.
+    let pictures: Vec<Arc<Frame>> = (0..8).map(|i| gradient(i * 40)).collect();
+    let cases = [
+        (
+            "skewed layer",
+            Placement {
+                scale: 1.371,
+                skew_x: 8.0,
+                ..Placement::default()
+            },
+        ),
+        (
+            "scaled layer",
+            Placement {
+                scale: 2.554,
+                ..Placement::default()
+            },
+        ),
+    ];
+    let mut parts = Vec::new();
+    let mut usable = true;
+    for (name, placement) in cases {
+        let started = Instant::now();
+        let mut failed = None;
+        for i in 0..RUNS {
+            let mut canvas = Canvas::new(width, height);
+            match card.render(&pictures[i % pictures.len()], &placement) {
+                Ok(Some(layer)) => canvas.blit(&layer),
+                Ok(None) => {}
+                Err(why) => {
+                    failed = Some(why);
+                    break;
+                }
+            }
+            std::hint::black_box(&canvas.rgba);
+        }
+        if let Some(why) = failed {
+            details.push(format!("{name}: failed on the card: {why}"));
+            usable = false;
+            parts.push(format!("{name} failed ({why})"));
             continue;
-        };
-        match message.view() {
-            gst::MessageView::Eos(_) => {
-                outcome = Ok(started.elapsed());
-                break;
-            }
-            gst::MessageView::Error(e) => {
-                outcome = Err(e.error().to_string());
-                break;
-            }
-            _ => {}
         }
+        let on_card = started.elapsed().as_secs_f64() * 1000.0 / RUNS as f64;
+        let started = Instant::now();
+        for i in 0..RUNS {
+            let mut canvas = Canvas::new(width, height);
+            canvas.draw(&pictures[i % pictures.len()], &placement);
+            std::hint::black_box(&canvas.rgba);
+        }
+        let on_cpu = started.elapsed().as_secs_f64() * 1000.0 / RUNS as f64;
+        details.push(format!(
+            "{name}: {on_card:.1} ms on the card (with upload and read-back), {on_cpu:.1} ms on the processor ({:.1}x)",
+            on_cpu / on_card.max(0.001)
+        ));
+        parts.push(format!(
+            "{name} {on_card:.1} ms on the card, {on_cpu:.1} ms on the processor ({:.1}x)",
+            on_cpu / on_card.max(0.001)
+        ));
     }
-    let _ = pipeline.set_state(gst::State::Null);
-    outcome
+    GpuReport {
+        usable,
+        summary: if usable {
+            format!("Works ({}): {}.", card.renderer, parts.join("; "))
+        } else {
+            format!(
+                "The card started but a test failed: {}. Kani composites on the processor.",
+                parts.join("; ")
+            )
+        },
+        details,
+    }
 }
 
 #[cfg(test)]
@@ -183,12 +130,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_test_reports_clearly_whether_or_not_opengl_is_there() {
+    fn the_test_says_clearly_whether_the_card_can_be_used() {
         let report = test();
         assert!(!report.summary.is_empty());
         assert!(!report.details.is_empty());
         if !report.usable {
-            // Without the plug-ins (or a card) it says so and names the cause.
             assert!(
                 report.summary.contains("Not available") || report.summary.contains("failed"),
                 "{}",

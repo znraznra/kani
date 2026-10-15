@@ -15,7 +15,9 @@
 
 use crate::media::{path_to_uri, sample_to_thumb};
 use crate::preview::{find_targets, LayerSource};
-use cutroom_compose::{covers_canvas, render_layer, Canvas, Frame, Layer, Placement};
+use cutroom_compose::{
+    covers_canvas, is_plain_copy, render_layer, Canvas, Frame, Layer, Placement,
+};
 use cutroom_core::state::MediaKind;
 use cutroom_platform::{HwBackend, Os};
 use cutroom_timeline::{ClipId, FrameRate, MediaId, Ticks, Timeline};
@@ -396,6 +398,9 @@ pub struct Job {
     pub output: PathBuf,
     /// Export only this many seconds from the start (used by tests; `None` = all of it).
     pub limit_seconds: Option<f64>,
+    /// Put video layers together on the graphics card (falls back to the
+    /// processor when that is not possible).
+    pub gpu: bool,
 }
 
 impl Job {
@@ -427,6 +432,10 @@ pub struct Report {
     pub hidden_skipped: u64,
     /// Video pictures that GStreamer was asked to shrink while decoding.
     pub shrunk_frames: u64,
+    /// Layer pictures put together on the graphics card.
+    pub gpu_layers: u64,
+    /// Set when the card was asked for but could not be used.
+    pub gpu_problem: Option<String>,
 }
 
 // -------------------------------------------------------- reading pictures
@@ -722,6 +731,12 @@ struct Renderer<'a> {
     hidden_skipped: u64,
     /// Pictures the readers were asked to shrink while decoding.
     shrunk_frames: u64,
+    /// The graphics card compositor, once started (`None` until needed).
+    gpu: Option<crate::gpu_compose::GpuCompositor>,
+    /// The card was asked for and could not be used; why.
+    gpu_problem: Option<String>,
+    /// Layer pictures put together on the card.
+    gpu_layers: u64,
     /// Stills and text that stay where they are from frame to frame, drawn once.
     static_layers: HashMap<ClipId, StaticLayer>,
     /// Compositing time per kind of layer: (kind, width, height, scale in
@@ -741,6 +756,8 @@ struct StaticLayer {
 enum Item {
     Draw(Arc<Frame>, Placement),
     Cached(Arc<Layer>),
+    /// Put together on the card; laid over the canvas, not timed again.
+    Ready(Arc<Layer>),
 }
 
 impl<'a> Renderer<'a> {
@@ -765,6 +782,9 @@ impl<'a> Renderer<'a> {
             layer_kinds: Vec::new(),
             hidden_skipped: 0,
             shrunk_frames: 0,
+            gpu: None,
+            gpu_problem: None,
+            gpu_layers: 0,
             static_layers: HashMap::new(),
             layer_time: HashMap::new(),
         }
@@ -906,6 +926,64 @@ impl<'a> Renderer<'a> {
                 }
                 cached = entry.layer.clone();
             }
+            // Video that is more than a pixel-for-pixel copy goes to the card
+            // when that is switched on (anything it cannot do stays here).
+            if cached.is_none()
+                && kind == "video"
+                && self.job.gpu
+                && self.gpu_problem.is_none()
+                && !is_plain_copy(width, height, frame.width, frame.height, &placement)
+            {
+                if self.gpu.is_none() {
+                    match crate::gpu_compose::GpuCompositor::new(width, height) {
+                        Ok(card) => {
+                            eprintln!(
+                                "kani: compositing video layers on the graphics card ({})",
+                                card.renderer
+                            );
+                            self.gpu = Some(card);
+                        }
+                        Err(why) => {
+                            eprintln!("kani: graphics card compositing could not start: {why}; using the processor");
+                            self.gpu_problem = Some(why);
+                        }
+                    }
+                }
+                if let Some(card) = self.gpu.as_mut() {
+                    let started = std::time::Instant::now();
+                    match card.render(&frame, &placement) {
+                        Ok(layer) => {
+                            self.gpu_layers += 1;
+                            let took = started.elapsed();
+                            let key = (
+                                "video on card",
+                                frame.width,
+                                frame.height,
+                                milli,
+                                false,
+                                flags,
+                            );
+                            let entry = self.layer_time.entry(key).or_default();
+                            entry.0 += took;
+                            entry.1 += 1;
+                            self.compose_time += took;
+                            if let Some(layer) = layer {
+                                picked.push((Item::Ready(Arc::new(layer)), key));
+                            }
+                            if covers_canvas(width, height, frame.width, frame.height, &placement) {
+                                self.hidden_skipped += (count - index - 1) as u64;
+                                break;
+                            }
+                            continue;
+                        }
+                        Err(why) => {
+                            eprintln!("kani: graphics card compositing failed: {why}; using the processor from here on");
+                            self.gpu_problem = Some(why);
+                            self.gpu = None;
+                        }
+                    }
+                }
+            }
             picked.push(match cached {
                 Some(layer) => (
                     Item::Cached(layer),
@@ -933,11 +1011,15 @@ impl<'a> Renderer<'a> {
             let t = std::time::Instant::now();
             match item {
                 Item::Draw(frame, placement) => canvas.draw(frame, placement),
-                Item::Cached(layer) => canvas.blit(layer),
+                Item::Cached(layer) | Item::Ready(layer) => canvas.blit(layer),
             }
+            // Pictures from the card were counted when they were made; their
+            // laying-over time is added here.
             let entry = self.layer_time.entry(*key).or_default();
             entry.0 += t.elapsed();
-            entry.1 += 1;
+            if !matches!(item, Item::Ready(_)) {
+                entry.1 += 1;
+            }
         }
         self.compose_time += started.elapsed();
         canvas.rgba
@@ -1271,6 +1353,8 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
         handoff: push_time,
         hidden_skipped: renderer.hidden_skipped,
         shrunk_frames: renderer.shrunk_frames,
+        gpu_layers: renderer.gpu_layers,
+        gpu_problem: renderer.gpu_problem.clone(),
     })
 }
 
@@ -1347,6 +1431,15 @@ pub fn export(job: &Job, progress: &Progress) -> Result<Report> {
                     report.hidden_skipped,
                     report.shrunk_frames,
                 );
+                if job.gpu {
+                    match &report.gpu_problem {
+                        Some(why) => eprintln!("kani: GPU compositing was on but not used fully: {why}"),
+                        None => eprintln!(
+                            "kani: GPU compositing was on: {} layer pictures put together on the graphics card",
+                            report.gpu_layers
+                        ),
+                    }
+                }
                 return Ok(report);
             }
             Err(ExportError::Cancelled) => {
@@ -1497,6 +1590,7 @@ mod tests {
                 .collect(),
             output: dir.join("out").join("result.mp4"),
             limit_seconds: None,
+            gpu: false,
         })
     }
 
@@ -1614,6 +1708,39 @@ mod tests {
         assert_eq!(report.hidden_skipped, 0);
         assert!(report.shrunk_frames > 20, "{} shrunk", report.shrunk_frames);
         assert!(job.output.is_file());
+    }
+
+    #[test]
+    fn video_can_be_put_together_on_the_graphics_card_or_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut job) = small_job(dir.path()) else {
+            return;
+        };
+        // A slanted, scaled picture: the kind of layer that goes to the card.
+        let clip = job.timeline.tracks[0].clips[0].id;
+        let slanted = cutroom_timeline::Transform {
+            scale: 800,
+            skew_x: 80,
+            ..cutroom_timeline::Transform::default()
+        };
+        apply(
+            &mut job.timeline,
+            Edit::SetClipTransform {
+                clip,
+                transform: slanted,
+            },
+        )
+        .unwrap();
+        let off = export(&job, &Progress::default()).expect("export without the card");
+        assert_eq!(off.gpu_layers, 0);
+        job.gpu = true;
+        let on = export(&job, &Progress::default()).expect("export with the card");
+        match &on.gpu_problem {
+            Some(why) => eprintln!("no usable graphics card here ({why}): fell back"),
+            None => assert!(on.gpu_layers > 30, "{} pictures on the card", on.gpu_layers),
+        }
+        assert_eq!(on.frames, off.frames);
+        assert!(on.warnings.is_empty(), "{:?}", on.warnings);
     }
 
     #[test]
@@ -1827,6 +1954,7 @@ mod tests {
                 .collect(),
             output: out,
             limit_seconds: None,
+            gpu: false,
         };
         let started = std::time::Instant::now();
         let report = export(&job, &Progress::default()).expect("export");
@@ -1960,6 +2088,7 @@ mod tests {
                 .collect(),
             output: out,
             limit_seconds: None,
+            gpu: false,
         };
         let report = export(&job, &Progress::default()).expect("export");
         eprintln!(

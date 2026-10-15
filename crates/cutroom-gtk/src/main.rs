@@ -13,6 +13,7 @@ mod export;
 mod export_ui;
 mod fonts;
 mod gpu;
+mod gpu_compose;
 mod home;
 mod icon;
 mod icons;
