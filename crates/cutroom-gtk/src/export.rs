@@ -15,7 +15,7 @@
 
 use crate::media::{path_to_uri, sample_to_thumb};
 use crate::preview::{find_targets, LayerSource};
-use cutroom_compose::{render_layer, Canvas, Frame, Layer, Placement};
+use cutroom_compose::{covers_canvas, render_layer, Canvas, Frame, Layer, Placement};
 use cutroom_core::state::MediaKind;
 use cutroom_platform::{HwBackend, Os};
 use cutroom_timeline::{ClipId, FrameRate, MediaId, Ticks, Timeline};
@@ -423,6 +423,10 @@ pub struct Report {
     pub decode: Duration,
     pub compose: Duration,
     pub handoff: Duration,
+    /// Layer pictures left out because a solid layer covered them.
+    pub hidden_skipped: u64,
+    /// Video pictures that GStreamer was asked to shrink while decoding.
+    pub shrunk_frames: u64,
 }
 
 // -------------------------------------------------------- reading pictures
@@ -445,6 +449,15 @@ struct VideoReader {
     current: Option<(f64, Arc<Frame>)>,
     next: Option<(f64, Arc<Frame>)>,
     ended: bool,
+    /// The size limit the pictures are being scaled to inside GStreamer.
+    filter: gst::Element,
+    edge: u32,
+    /// Size of the pictures before any scaling by us.
+    native: Option<(u32, u32)>,
+}
+
+fn reader_caps(edge: u32) -> String {
+    format!("video/x-raw,format=RGBA,width=[1,{edge}],height=[1,{edge}],pixel-aspect-ratio=1/1")
 }
 
 impl VideoReader {
@@ -455,9 +468,9 @@ impl VideoReader {
             .map_err(|e| ExportError::Failed(e.to_string()))?;
         let bin = gst::parse::bin_from_description(
             &format!(
-                "videoconvert n-threads={t} ! videoscale n-threads={t} ! capsfilter caps=\"video/x-raw,format=RGBA,width=[1,{m}],height=[1,{m}],pixel-aspect-ratio=1/1\" \
+                "videoconvert n-threads={t} ! videoscale n-threads={t} ! capsfilter name=limit caps=\"{caps}\" \
                  ! appsink name=exportsink sync=false max-buffers=3 drop=false",
-                m = max_edge,
+                caps = reader_caps(max_edge),
                 t = convert_threads()
             ),
             true,
@@ -467,6 +480,9 @@ impl VideoReader {
             .by_name("exportsink")
             .and_then(|e| e.downcast::<gst_app::AppSink>().ok())
             .ok_or_else(|| ExportError::Failed("no picture sink".into()))?;
+        let filter = bin
+            .by_name("limit")
+            .ok_or_else(|| ExportError::Failed("no size filter".into()))?;
         playbin.set_property("video-sink", &bin);
         // Nothing else may be built for the streams we do not read.
         for name in ["audio-sink", "text-sink"] {
@@ -494,7 +510,43 @@ impl VideoReader {
             current: None,
             next: None,
             ended: false,
+            filter,
+            edge: max_edge,
+            native: None,
         })
+    }
+
+    /// Ask GStreamer to hand over smaller pictures (or full size again).
+    fn set_edge(&mut self, edge: u32) {
+        if let Ok(caps) = reader_caps(edge).parse::<gst::Caps>() {
+            self.filter.set_property("caps", &caps);
+            self.edge = edge;
+        }
+    }
+
+    /// A layer shown smaller than its picture does not need every pixel: let
+    /// GStreamer (which works alongside the compositor) do the shrinking. Only
+    /// for flat layers (no slant or perspective), and sized so the result is
+    /// drawn as large as before - the placement is relative to the fitted size.
+    fn tune(&mut self, frame: &Frame, scale: f32, flat: bool, canvas: (u32, u32)) {
+        let full = canvas.0.max(canvas.1);
+        if self.native.is_none() {
+            if self.edge != full {
+                return;
+            }
+            self.native = Some((frame.width, frame.height));
+        }
+        let Some((nw, nh)) = self.native else { return };
+        let fit = (canvas.0 as f32 / nw as f32).min(canvas.1 as f32 / nh as f32);
+        let shown = fit * scale;
+        let want = if flat && shown < 0.95 {
+            ((nw.max(nh) as f32 * shown).ceil() as u32).clamp(16, full)
+        } else {
+            full
+        };
+        if want > self.edge || (want as f32) < self.edge as f32 * 0.9 {
+            self.set_edge(want);
+        }
     }
 
     fn pull(&mut self) -> Option<(f64, Arc<Frame>)> {
@@ -666,6 +718,10 @@ struct Renderer<'a> {
     decode_time: Duration,
     compose_time: Duration,
     layer_kinds: Vec<(u32, u32, bool)>,
+    /// Layers not drawn (or decoded) because something solid covered them.
+    hidden_skipped: u64,
+    /// Pictures the readers were asked to shrink while decoding.
+    shrunk_frames: u64,
     /// Stills and text that stay where they are from frame to frame, drawn once.
     static_layers: HashMap<ClipId, StaticLayer>,
     /// Compositing time per kind of layer: (kind, width, height, scale in
@@ -707,6 +763,8 @@ impl<'a> Renderer<'a> {
             decode_time: Duration::ZERO,
             compose_time: Duration::ZERO,
             layer_kinds: Vec::new(),
+            hidden_skipped: 0,
+            shrunk_frames: 0,
             static_layers: HashMap::new(),
             layer_time: HashMap::new(),
         }
@@ -768,13 +826,23 @@ impl<'a> Renderer<'a> {
         };
         let mut picked: Vec<(Item, (&'static str, u32, u32, i32, bool, u8))> = Vec::new();
         let mut used: HashSet<ClipId> = HashSet::new();
-        // Topmost first in the list; the compositor wants the bottom first.
-        for layer in targets.layers.iter().rev() {
+        // Topmost first: once something solid covers the canvas, everything
+        // under it is left out (and never decoded).
+        let count = targets.layers.len();
+        for (index, layer) in targets.layers.iter().enumerate() {
             used.insert(layer.clip);
             let (frame, natural, still_or_text) = match &layer.source {
                 LayerSource::Text(spec) => (Some(self.text(spec)), true, true),
                 LayerSource::Still(path) => (self.still(path), false, true),
-                LayerSource::Video(target) => (self.video_frame(layer.clip, target), false, false),
+                LayerSource::Video(target) => {
+                    let t = layer.transform.clamped();
+                    let flat = t.skew_x == 0 && t.skew_y == 0 && t.persp_x == 0 && t.persp_y == 0;
+                    (
+                        self.video_frame(layer.clip, target, t.scale as f32 / 1000.0, flat),
+                        false,
+                        false,
+                    )
+                }
             };
             let Some(frame) = frame else { continue };
             let seen = (frame.width, frame.height, natural);
@@ -848,7 +916,14 @@ impl<'a> Renderer<'a> {
                     (kind, frame.width, frame.height, milli, false, flags),
                 ),
             });
+            if kind == "video"
+                && covers_canvas(width, height, frame.width, frame.height, &placement)
+            {
+                self.hidden_skipped += (count - index - 1) as u64;
+                break;
+            }
         }
+        picked.reverse();
         // Free the readers of clips that are no longer showing.
         self.readers.retain(|clip, _| used.contains(clip));
         self.static_layers.retain(|clip, _| used.contains(clip));
@@ -893,7 +968,13 @@ impl<'a> Renderer<'a> {
             .join("\n")
     }
 
-    fn video_frame(&mut self, clip: ClipId, target: &crate::preview::Target) -> Option<Arc<Frame>> {
+    fn video_frame(
+        &mut self,
+        clip: ClipId,
+        target: &crate::preview::Target,
+        scale: f32,
+        flat: bool,
+    ) -> Option<Arc<Frame>> {
         if self.broken.contains(&clip) {
             return None;
         }
@@ -914,7 +995,15 @@ impl<'a> Renderer<'a> {
             }
         }
         let started = std::time::Instant::now();
-        let frame = self.readers.get_mut(&clip)?.frame_at(t);
+        let canvas = (self.job.width, self.job.height);
+        let reader = self.readers.get_mut(&clip)?;
+        let frame = reader.frame_at(t);
+        if let Some(f) = &frame {
+            reader.tune(f, scale, flat, canvas);
+            if reader.edge < canvas.0.max(canvas.1) {
+                self.shrunk_frames += 1;
+            }
+        }
         self.decode_time += started.elapsed();
         if frame.is_none() {
             self.warn(clip, "A video gave no pictures.".into());
@@ -1137,6 +1226,10 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
             "kani: compositing time by kind of layer:\n{}",
             renderer.slowest_layers()
         );
+        eprintln!(
+            "kani: skipped {} layer pictures hidden under a solid layer; {} video pictures were shrunk while decoding",
+            renderer.hidden_skipped, renderer.shrunk_frames
+        );
         if std::env::var_os("KANI_EXPORT_TIMING").is_some() {
             eprintln!(
                 "export timing: pictures {picture_time:?} (waiting for decoded video {:?}, compositing {:?}), handing to the encoder {push_time:?}",
@@ -1176,6 +1269,8 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
         decode: renderer.decode_time,
         compose: renderer.compose_time,
         handoff: push_time,
+        hidden_skipped: renderer.hidden_skipped,
+        shrunk_frames: renderer.shrunk_frames,
     })
 }
 
@@ -1242,13 +1337,15 @@ pub fn export(job: &Job, progress: &Progress) -> Result<Report> {
                 report.elapsed = started.elapsed();
                 let video = job.duration().as_seconds_f64();
                 eprintln!(
-                    "kani: exported {video:.1} s of video in {:.1} s ({:.2}x real time) with {}; waiting for decoded video {:.1} s, compositing {:.1} s, handing to the encoder {:.1} s",
+                    "kani: exported {video:.1} s of video in {:.1} s ({:.2}x real time) with {}; waiting for decoded video {:.1} s, compositing {:.1} s, handing to the encoder {:.1} s; {} hidden layer pictures skipped, {} video pictures shrunk while decoding",
                     report.elapsed.as_secs_f64(),
                     video / report.elapsed.as_secs_f64().max(0.001),
                     report.encoder,
                     report.decode.as_secs_f64(),
                     report.compose.as_secs_f64(),
                     report.handoff.as_secs_f64(),
+                    report.hidden_skipped,
+                    report.shrunk_frames,
                 );
                 return Ok(report);
             }
@@ -1451,6 +1548,72 @@ mod tests {
                 assert!((2.9..3.3).contains(&secs), "{secs} s");
             }
         }
+    }
+
+    #[test]
+    fn a_layer_hidden_under_a_solid_one_is_not_drawn_and_a_small_one_is_shrunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut job) = small_job(dir.path()) else {
+            return;
+        };
+        // A second video track on top, enlarged until it covers the canvas.
+        let top = job.timeline.new_track(TrackKind::Video, "V2");
+        let top_id = top.id;
+        apply(
+            &mut job.timeline,
+            Edit::InsertTrack {
+                index: 0,
+                track: top,
+            },
+        )
+        .unwrap();
+        let clip = job.timeline.new_clip(MediaId(1), s(1.0), s(0.0), s(2.0));
+        let clip_id = clip.id;
+        apply(
+            &mut job.timeline,
+            Edit::InsertClip {
+                track: top_id,
+                clip,
+            },
+        )
+        .unwrap();
+        let big = cutroom_timeline::Transform {
+            scale: 1500,
+            ..cutroom_timeline::Transform::default()
+        };
+        apply(
+            &mut job.timeline,
+            Edit::SetClipTransform {
+                clip: clip_id,
+                transform: big,
+            },
+        )
+        .unwrap();
+        let report = export(&job, &Progress::default()).expect("export");
+        assert!(
+            report.hidden_skipped > 50,
+            "{} skipped",
+            report.hidden_skipped
+        );
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+
+        // A small picture is decoded smaller.
+        let small = cutroom_timeline::Transform {
+            scale: 400,
+            ..cutroom_timeline::Transform::default()
+        };
+        apply(
+            &mut job.timeline,
+            Edit::SetClipTransform {
+                clip: clip_id,
+                transform: small,
+            },
+        )
+        .unwrap();
+        let report = export(&job, &Progress::default()).expect("export");
+        assert_eq!(report.hidden_skipped, 0);
+        assert!(report.shrunk_frames > 20, "{} shrunk", report.shrunk_frames);
+        assert!(job.output.is_file());
     }
 
     #[test]

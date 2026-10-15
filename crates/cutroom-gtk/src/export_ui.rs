@@ -362,6 +362,61 @@ pub fn open(app: &Rc<App>) {
     encoder.set_sensitive(false);
     grid.attach(&label("Encoder"), 0, 5, 1, 1);
     grid.attach(&encoder, 1, 5, 1, 1);
+
+    // Does the graphics card work for compositing? (Export does not use it
+    // yet; this button measures it and says.)
+    let gpu_button = gtk::Button::with_label("Test GPU compositing");
+    gpu_button.set_halign(gtk::Align::Start);
+    let gpu_note = gtk::Label::new(Some(if crate::gpu::available() {
+        "OpenGL plug-ins found. Not used for export yet."
+    } else {
+        "OpenGL plug-ins not found."
+    }));
+    gpu_note.set_xalign(0.0);
+    gpu_note.set_wrap(true);
+    gpu_note.set_max_width_chars(48);
+    gpu_note.add_css_class("dim-label");
+    gpu_note.add_css_class("caption");
+    let gpu_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    gpu_box.append(&gpu_button);
+    gpu_box.append(&gpu_note);
+    grid.attach(&label("Graphics card"), 0, 6, 1, 1);
+    grid.attach(&gpu_box, 1, 6, 1, 1);
+    {
+        let note = gpu_note.clone();
+        gpu_button.connect_clicked(move |button| {
+            button.set_sensitive(false);
+            note.set_text("Testing ...");
+            let found: Arc<Mutex<Option<crate::gpu::GpuReport>>> = Arc::new(Mutex::new(None));
+            {
+                let found = found.clone();
+                std::thread::spawn(move || {
+                    *found.lock().unwrap() = Some(crate::gpu::test());
+                });
+            }
+            let (button, note) = (button.clone(), note.clone());
+            glib::timeout_add_local(Duration::from_millis(150), move || {
+                let Some(report) = found.lock().unwrap().take() else {
+                    return glib::ControlFlow::Continue;
+                };
+                for line in &report.details {
+                    eprintln!("kani: GPU compositing test: {line}");
+                }
+                eprintln!(
+                    "kani: GPU compositing test: {} ({})",
+                    report.summary,
+                    if report.usable {
+                        "usable"
+                    } else {
+                        "not usable"
+                    }
+                );
+                note.set_text(&report.summary);
+                button.set_sensitive(true);
+                glib::ControlFlow::Break
+            });
+        });
+    }
     form.append(&grid);
 
     let summary = gtk::Label::new(None);

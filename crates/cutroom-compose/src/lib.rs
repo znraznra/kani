@@ -174,6 +174,28 @@ impl From<&Transform> for Placement {
     }
 }
 
+/// Does an opaque picture of `frame_w` x `frame_h` pixels, placed like this on a
+/// `width` x `height` canvas, hide everything under it? True only when it is
+/// unturned, unslanted, fully solid and reaches past every edge.
+pub fn covers_canvas(width: u32, height: u32, frame_w: u32, frame_h: u32, p: &Placement) -> bool {
+    if p.natural
+        || p.opacity < 1.0
+        || p.scale <= 0.0
+        || p.rotation != 0.0
+        || p.is_warped()
+        || frame_w == 0
+        || frame_h == 0
+    {
+        return false;
+    }
+    let (cw, ch) = (width as f32, height as f32);
+    let (sw, sh) = (frame_w as f32, frame_h as f32);
+    let scale = (cw / sw).min(ch / sh) * p.scale;
+    let (half_w, half_h) = (sw * scale / 2.0, sh * scale / 2.0);
+    let (cx, cy) = (cw / 2.0 + p.x * cw, ch / 2.0 + p.y * ch);
+    cx - half_w <= 0.0 && cx + half_w >= cw && cy - half_h <= 0.0 && cy + half_h >= ch
+}
+
 /// The finished picture. It starts opaque black.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Canvas {
@@ -653,6 +675,52 @@ pub fn preview_size(width: u32, height: u32, max_edge: u32) -> (u32, u32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_solid_unturned_picture_reaching_every_edge_covers_the_canvas() {
+        let p = Placement::default();
+        // Fitted 100x100 on a 100x100 canvas: covers.
+        assert!(covers_canvas(100, 100, 100, 100, &p));
+        // Fitted wide picture on a tall canvas leaves bars.
+        assert!(!covers_canvas(100, 200, 200, 100, &p));
+        // Scaled up until it reaches the top and bottom: covers.
+        assert!(covers_canvas(
+            100,
+            200,
+            200,
+            100,
+            &Placement { scale: 4.0, ..p }
+        ));
+        // Moved off to one side, turned, slanted or see-through: does not.
+        assert!(!covers_canvas(
+            100,
+            100,
+            100,
+            100,
+            &Placement { x: 0.1, ..p }
+        ));
+        assert!(!covers_canvas(
+            100,
+            100,
+            100,
+            100,
+            &Placement { rotation: 5.0, ..p }
+        ));
+        assert!(!covers_canvas(
+            100,
+            100,
+            100,
+            100,
+            &Placement { skew_x: 5.0, ..p }
+        ));
+        assert!(!covers_canvas(
+            100,
+            100,
+            100,
+            100,
+            &Placement { opacity: 0.9, ..p }
+        ));
+    }
+
     use super::*;
 
     const RED: [u8; 4] = [255, 0, 0, 255];

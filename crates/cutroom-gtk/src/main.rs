@@ -12,6 +12,7 @@ mod editor;
 mod export;
 mod export_ui;
 mod fonts;
+mod gpu;
 mod home;
 mod icon;
 mod icons;
