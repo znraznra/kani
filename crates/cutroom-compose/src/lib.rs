@@ -46,8 +46,13 @@ impl Frame {
     fn sample(&self, sx: f32, sy: f32) -> [f32; 4] {
         let (fx, fy) = (sx - 0.5, sy - 0.5);
         let (x0, y0) = (fx.floor(), fy.floor());
-        let (tx, ty) = (fx - x0, fy - y0);
-        let (x0, y0) = (x0 as i64, y0 as i64);
+        self.sample_cell(x0 as i64, y0 as i64, fx - x0, fy - y0)
+    }
+
+    /// The bilinear blend of the four pixels whose top left one is (`x0`, `y0`),
+    /// `tx` and `ty` of the way across (what [`Frame::sample`] works out first).
+    #[inline(always)]
+    fn sample_cell(&self, x0: i64, y0: i64, tx: f32, ty: f32) -> [f32; 4] {
         // Well inside the picture: no edge clamping needed.
         if x0 >= 0 && y0 >= 0 && x0 + 1 < i64::from(self.width) && y0 + 1 < i64::from(self.height) {
             let stride = self.width as usize * 4;
@@ -208,7 +213,18 @@ impl Canvas {
                     continue;
                 }
             }
-            for x in x0..x1 {
+            // Text and captions are mostly clear: find the part of the row that
+            // has anything in it and only look there.
+            let from = src_row + ((x0 - left) as usize) * 4;
+            let row = &frame.rgba[from..from + (x1 - x0) as usize * 4];
+            let Some(first) = row.chunks_exact(4).position(|p| p[3] != 0) else {
+                continue;
+            };
+            let last = row
+                .chunks_exact(4)
+                .rposition(|p| p[3] != 0)
+                .unwrap_or(first);
+            for x in (x0 + first as i64)..=(x0 + last as i64) {
                 let s = src_row + ((x - left) as usize) * 4;
                 let src = &frame.rgba[s..s + 4];
                 if src[3] == 0 || opacity <= 0.0 {
@@ -222,9 +238,9 @@ impl Canvas {
                 }
                 for c in 0..3 {
                     let below = f32::from(self.rgba[o + c]);
-                    self.rgba[o + c] = (f32::from(src[c]) * alpha + below * (1.0 - alpha))
-                        .round()
-                        .clamp(0.0, 255.0) as u8;
+                    self.rgba[o + c] = ((f32::from(src[c]) * alpha + below * (1.0 - alpha))
+                        .clamp(0.0, 255.0)
+                        + 0.5) as u8;
                 }
             }
         }
@@ -254,16 +270,19 @@ impl Canvas {
         let skew_y_tan = placement.skew_y.to_radians().tan();
 
         // The common case, and the cheap one: a picture that lands exactly on
-        // whole canvas pixels, unturned and unscaled (captions, a clip that is
-        // already the canvas size). No resampling is needed.
+        // whole canvas pixels, unturned and unscaled (a clip that is already the
+        // canvas size). No resampling is needed. Text and captions (`natural`)
+        // are drawn this way too, moved to the nearest whole pixel (at most half
+        // a pixel off, and crisper): their default places are fractional pixels,
+        // which would otherwise send every caption through the slow path.
         let (left, top) = (cx - sw / 2.0, cy - sh / 2.0);
         if !placement.is_warped()
             && placement.rotation == 0.0
             && !placement.flip_h
             && !placement.flip_v
             && (scale - 1.0).abs() < 1e-6
-            && (left - left.round()).abs() < 1e-3
-            && (top - top.round()).abs() < 1e-3
+            && (placement.natural
+                || ((left - left.round()).abs() < 1e-3 && (top - top.round()).abs() < 1e-3))
         {
             self.draw_aligned(
                 frame,
@@ -301,9 +320,62 @@ impl Canvas {
             .min(8)
             .min(y1 - y0);
         let per_chunk = (y1 - y0).div_ceil(threads.max(1));
+        // Scaled and moved but not turned or slanted (a clip that is not the
+        // canvas size, a zoomed clip): everything that depends on the column is
+        // worked out once here, and everything that depends on the row once per row.
+        let columns: Option<Vec<(i64, f32, f32)>> =
+            (!warped && placement.rotation == 0.0).then(|| {
+                (x0..x1)
+                    .map(|px| {
+                        let mut ux = (px as f32 + 0.5 - cx) / scale;
+                        if placement.flip_h {
+                            ux = -ux;
+                        }
+                        let sx = ux + sw / 2.0;
+                        let cover = ((sx.min(sw - sx)) * scale + 0.5).clamp(0.0, 1.0);
+                        let fx = sx - 0.5;
+                        let xi = fx.floor();
+                        (xi as i64, fx - xi, cover)
+                    })
+                    .collect()
+            });
+        let opacity = placement.opacity.min(1.0);
         let render_rows = |first_row: usize, chunk: &mut [u8]| {
             for (r, row) in chunk.chunks_exact_mut(width * 4).enumerate() {
                 let py = (first_row + r) as f32 + 0.5;
+                if let Some(columns) = &columns {
+                    let mut uy = (py - cy) / scale;
+                    if placement.flip_v {
+                        uy = -uy;
+                    }
+                    let sy = uy + sh / 2.0;
+                    let cover_y = ((sy.min(sh - sy)) * scale + 0.5).clamp(0.0, 1.0);
+                    if cover_y <= 0.0 {
+                        continue;
+                    }
+                    let fy = sy - 0.5;
+                    let yi = fy.floor();
+                    let ty = fy - yi;
+                    for (i, &(xi, tx, cover_x)) in columns.iter().enumerate() {
+                        let coverage = cover_x.min(cover_y);
+                        if coverage <= 0.0 {
+                            continue;
+                        }
+                        let src = frame.sample_cell(xi, yi as i64, tx, ty);
+                        let alpha = coverage * opacity * (src[3] / 255.0);
+                        if alpha <= 0.0 {
+                            continue;
+                        }
+                        let o = (x0 + i) * 4;
+                        for c in 0..3 {
+                            let below = f32::from(row[o + c]);
+                            row[o + c] = ((src[c] * alpha + below * (1.0 - alpha))
+                                .clamp(0.0, 255.0)
+                                + 0.5) as u8;
+                        }
+                    }
+                    continue;
+                }
                 for px in x0..x1 {
                     let (dx, dy) = (px as f32 + 0.5 - cx, py - cy);
                     // Back into the picture: undo the turn, then the scale.
@@ -341,9 +413,8 @@ impl Canvas {
                     let o = px * 4;
                     for c in 0..3 {
                         let below = f32::from(row[o + c]);
-                        row[o + c] = (src[c] * alpha + below * (1.0 - alpha))
-                            .round()
-                            .clamp(0.0, 255.0) as u8;
+                        row[o + c] = ((src[c] * alpha + below * (1.0 - alpha)).clamp(0.0, 255.0)
+                            + 0.5) as u8;
                     }
                 }
             }
@@ -421,6 +492,81 @@ mod tests {
         for (x, y) in [(2, 1), (3, 1), (2, 2), (3, 2)] {
             assert_eq!(c.pixel(x, y), RED, "{x},{y}");
         }
+    }
+
+    #[test]
+    fn text_between_pixels_is_moved_to_the_nearest_whole_pixel() {
+        // Centred, the picture's left edge is at pixel 1; x = 0.3 of the 4-pixel
+        // canvas adds 1.2, so the edge is at 2.2 and lands on pixel 2.
+        let placement = Placement {
+            natural: true,
+            x: 0.3,
+            ..Placement::default()
+        };
+        let c = draw((4, 4), &Frame::solid(2, 2, RED), placement);
+        assert_eq!(count(&c, RED), 4, "four whole red pixels, no blending");
+        for (x, y) in [(2, 1), (3, 1), (2, 2), (3, 2)] {
+            assert_eq!(c.pixel(x, y), RED, "{x},{y}");
+        }
+    }
+
+    #[test]
+    fn the_scaled_fast_path_agrees_with_the_general_one() {
+        // A made-up picture, scaled, moved, mirrored and a little see-through,
+        // once as it is and once with a turn too small to see (which takes the
+        // general path).
+        let (w, h) = (37usize, 29usize);
+        let mut frame = Frame::solid(w as u32, h as u32, [0, 0, 0, 255]);
+        for i in 0..w * h {
+            let v = (i * 73 % 251) as u8;
+            frame.rgba[i * 4..i * 4 + 4].copy_from_slice(&[
+                v,
+                v.wrapping_mul(3),
+                255 - v,
+                200 + (i % 56) as u8,
+            ]);
+        }
+        for flip_h in [false, true] {
+            for flip_v in [false, true] {
+                let fast = Placement {
+                    x: 0.07,
+                    y: -0.03,
+                    scale: 1.3,
+                    opacity: 0.9,
+                    flip_h,
+                    flip_v,
+                    ..Placement::default()
+                };
+                let general = Placement {
+                    rotation: 0.0001,
+                    ..fast
+                };
+                let a = draw((50, 80), &frame, fast);
+                let b = draw((50, 80), &frame, general);
+                let worst = a
+                    .rgba
+                    .iter()
+                    .zip(&b.rgba)
+                    .map(|(p, q)| p.abs_diff(*q))
+                    .max()
+                    .unwrap();
+                assert!(worst <= 1, "flip {flip_h} {flip_v}: differs by {worst}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_filled_part_of_a_mostly_clear_row_is_drawn() {
+        // A wide clear picture with one red pixel in the middle of a row.
+        let mut frame = Frame::solid(9, 3, [0, 0, 0, 0]);
+        frame.rgba[(9 + 4) * 4..(9 + 4) * 4 + 4].copy_from_slice(&RED);
+        let placement = Placement {
+            natural: true,
+            ..Placement::default()
+        };
+        let c = draw((9, 3), &frame, placement);
+        assert_eq!(count(&c, RED), 1);
+        assert_eq!(c.pixel(4, 1), RED);
     }
 
     #[test]

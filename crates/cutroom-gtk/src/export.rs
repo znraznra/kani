@@ -656,6 +656,7 @@ struct Renderer<'a> {
     warnings: Vec<String>,
     decode_time: Duration,
     compose_time: Duration,
+    layer_kinds: Vec<(u32, u32, bool)>,
 }
 
 impl<'a> Renderer<'a> {
@@ -677,6 +678,7 @@ impl<'a> Renderer<'a> {
             warnings: Vec::new(),
             decode_time: Duration::ZERO,
             compose_time: Duration::ZERO,
+            layer_kinds: Vec::new(),
         }
     }
 
@@ -745,6 +747,22 @@ impl<'a> Renderer<'a> {
                 LayerSource::Video(target) => (self.video_frame(layer.clip, target), false),
             };
             if let Some(frame) = frame {
+                let seen = (frame.width, frame.height, natural);
+                if !self.layer_kinds.contains(&seen) {
+                    self.layer_kinds.push(seen);
+                    let t = layer.transform.clamped();
+                    eprintln!(
+                        "kani: export layer: {} picture {}x{} on a {}x{} canvas (scale {:.3}, position {:.3},{:.3})",
+                        if natural { "text" } else { "video/image" },
+                        frame.width,
+                        frame.height,
+                        width,
+                        height,
+                        t.scale,
+                        t.x,
+                        t.y
+                    );
+                }
                 picked.push((
                     frame,
                     Placement {
@@ -1583,6 +1601,32 @@ mod tests {
         for track in [vid, aid] {
             let c = tl.new_clip(MediaId(1), s(0.0), s(0.0), s(seconds));
             apply(&mut tl, Edit::InsertClip { track, clip: c }).unwrap();
+        }
+        // KANI_CAPTION=1 adds a caption-like text clip at the captions' usual place.
+        if std::env::var_os("KANI_CAPTION").is_some() {
+            let top = tl.new_track(TrackKind::Video, "V2");
+            let top_id = top.id;
+            apply(
+                &mut tl,
+                Edit::InsertTrack {
+                    index: 0,
+                    track: top,
+                },
+            )
+            .unwrap();
+            let mut t = tl.new_clip(MediaId(0), s(0.0), s(0.0), s(seconds));
+            let mut spec = cutroom_timeline::TextSpec::default();
+            spec.content = "Caption test".into();
+            t.text = Some(spec);
+            t.transform.y = cutroom_timeline::text::CAPTION_Y;
+            apply(
+                &mut tl,
+                Edit::InsertClip {
+                    track: top_id,
+                    clip: t,
+                },
+            )
+            .unwrap();
         }
         let job = Job {
             timeline: tl,
