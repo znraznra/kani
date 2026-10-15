@@ -87,6 +87,23 @@ impl Frame {
     }
 }
 
+/// Put one layer pixel onto `px` (4 bytes): blended over what is there, or, on a
+/// recording canvas, stored as colour and alpha.
+#[inline(always)]
+fn put(px: &mut [u8], colour: [f32; 3], alpha: f32, store: bool) {
+    if store {
+        for c in 0..3 {
+            px[c] = (colour[c].clamp(0.0, 255.0) + 0.5) as u8;
+        }
+        px[3] = (alpha.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    } else {
+        for c in 0..3 {
+            let below = f32::from(px[c]);
+            px[c] = ((colour[c] * alpha + below * (1.0 - alpha)).clamp(0.0, 255.0) + 0.5) as u8;
+        }
+    }
+}
+
 /// Where a layer sits, in resolution-independent units.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Placement {
@@ -163,6 +180,9 @@ pub struct Canvas {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    /// A canvas that keeps what a single layer looks like (colour and alpha)
+    /// instead of blending it onto black; see [`render_layer`].
+    store: bool,
 }
 
 impl Canvas {
@@ -175,7 +195,28 @@ impl Canvas {
             width,
             height,
             rgba,
+            store: false,
         }
+    }
+
+    /// A fully clear canvas that records layers drawn on it as colour + alpha.
+    fn clear(width: u32, height: u32) -> Canvas {
+        Canvas {
+            width,
+            height,
+            rgba: vec![0u8; width as usize * height as usize * 4],
+            store: true,
+        }
+    }
+
+    /// Lay a pre-rendered layer over what is there (a whole-pixel blend).
+    pub fn blit(&mut self, layer: &Layer) {
+        self.draw_aligned(
+            &layer.frame,
+            i64::from(layer.left),
+            i64::from(layer.top),
+            1.0,
+        );
     }
 
     pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
@@ -198,6 +239,7 @@ impl Canvas {
         if x0 >= x1 || y0 >= y1 {
             return;
         }
+        let store = self.store;
         for y in y0..y1 {
             let src_row = ((y - top) * fw) as usize * 4;
             let dst_row = (y * cw) as usize * 4;
@@ -232,16 +274,16 @@ impl Canvas {
                 }
                 let o = dst_row + x as usize * 4;
                 let alpha = opacity * (f32::from(src[3]) / 255.0);
-                if alpha >= 1.0 {
+                if alpha >= 1.0 && !store {
                     self.rgba[o..o + 3].copy_from_slice(&src[..3]);
                     continue;
                 }
-                for c in 0..3 {
-                    let below = f32::from(self.rgba[o + c]);
-                    self.rgba[o + c] = ((f32::from(src[c]) * alpha + below * (1.0 - alpha))
-                        .clamp(0.0, 255.0)
-                        + 0.5) as u8;
-                }
+                put(
+                    &mut self.rgba[o..o + 4],
+                    [f32::from(src[0]), f32::from(src[1]), f32::from(src[2])],
+                    alpha,
+                    store,
+                );
             }
         }
     }
@@ -325,6 +367,7 @@ impl Canvas {
         }
 
         let width = self.width as usize;
+        let store = self.store;
         let rows = &mut self.rgba[y0 * width * 4..y1 * width * 4];
         let threads = std::thread::available_parallelism()
             .map_or(1, |n| n.get())
@@ -378,12 +421,7 @@ impl Canvas {
                             continue;
                         }
                         let o = (x0 + i) * 4;
-                        for c in 0..3 {
-                            let below = f32::from(row[o + c]);
-                            row[o + c] = ((src[c] * alpha + below * (1.0 - alpha))
-                                .clamp(0.0, 255.0)
-                                + 0.5) as u8;
-                        }
+                        put(&mut row[o..o + 4], [src[0], src[1], src[2]], alpha, store);
                     }
                     continue;
                 }
@@ -422,11 +460,7 @@ impl Canvas {
                         continue;
                     }
                     let o = px * 4;
-                    for c in 0..3 {
-                        let below = f32::from(row[o + c]);
-                        row[o + c] = ((src[c] * alpha + below * (1.0 - alpha)).clamp(0.0, 255.0)
-                            + 0.5) as u8;
-                    }
+                    put(&mut row[o..o + 4], [src[0], src[1], src[2]], alpha, store);
                 }
             }
         };
@@ -504,6 +538,63 @@ fn warped_bounds(
         (lo_y - margin).floor().max(0.0) as usize,
         (hi_y + margin).ceil().min(ch).max(0.0) as usize,
     ))
+}
+
+/// A layer drawn once, ready to be laid over a canvas again and again: for
+/// pictures that do not change from one frame to the next (stills, text).
+#[derive(Debug, Clone)]
+pub struct Layer {
+    /// Colour and alpha of the part of the canvas the layer covers.
+    pub frame: Frame,
+    pub left: i32,
+    pub top: i32,
+}
+
+/// Draw one layer on its own and keep the part of the canvas it touches. Laying
+/// the result over a canvas with [`Canvas::blit`] gives the same picture as
+/// [`Canvas::draw`] (to within one level of rounding). `None` when it covers nothing.
+pub fn render_layer(
+    width: u32,
+    height: u32,
+    frame: &Frame,
+    placement: &Placement,
+) -> Option<Layer> {
+    let mut canvas = Canvas::clear(width, height);
+    canvas.draw(frame, placement);
+    let (w, h) = (width as usize, height as usize);
+    let rows: Vec<usize> = (0..h)
+        .filter(|&y| {
+            canvas.rgba[y * w * 4..(y + 1) * w * 4]
+                .chunks_exact(4)
+                .any(|p| p[3] != 0)
+        })
+        .collect();
+    let (&top, &bottom) = (rows.first()?, rows.last()?);
+    let mut left = w;
+    let mut right = 0;
+    for &y in &rows {
+        let row = &canvas.rgba[y * w * 4..(y + 1) * w * 4];
+        if let Some(first) = row.chunks_exact(4).position(|p| p[3] != 0) {
+            left = left.min(first);
+        }
+        if let Some(last) = row.chunks_exact(4).rposition(|p| p[3] != 0) {
+            right = right.max(last);
+        }
+    }
+    let (fw, fh) = (right - left + 1, bottom - top + 1);
+    let mut rgba = Vec::with_capacity(fw * fh * 4);
+    for y in top..=bottom {
+        rgba.extend_from_slice(&canvas.rgba[(y * w + left) * 4..(y * w + right + 1) * 4]);
+    }
+    Some(Layer {
+        frame: Frame {
+            width: fw as u32,
+            height: fh as u32,
+            rgba,
+        },
+        left: left as i32,
+        top: top as i32,
+    })
 }
 
 /// Stack layers, bottom first, onto a black canvas.
@@ -672,6 +763,74 @@ mod tests {
             );
             assert!(count(&whole, BLACK) < 120 * 200, "something was drawn");
         }
+    }
+
+    #[test]
+    fn a_rendered_layer_laid_over_a_canvas_matches_drawing_it_directly() {
+        let (w, h) = (45usize, 31usize);
+        let mut frame = Frame::solid(w as u32, h as u32, [0, 0, 0, 255]);
+        for i in 0..w * h {
+            let v = (i * 59 % 251) as u8;
+            frame.rgba[i * 4..i * 4 + 4].copy_from_slice(&[
+                v,
+                255 - v,
+                v / 3,
+                120 + (i % 130) as u8,
+            ]);
+        }
+        let cases = [
+            Placement {
+                natural: true,
+                x: 0.1,
+                y: 0.2,
+                ..Placement::default()
+            },
+            Placement {
+                x: -0.1,
+                scale: 0.8,
+                opacity: 0.7,
+                ..Placement::default()
+            },
+            Placement {
+                scale: 1.6,
+                flip_h: true,
+                ..Placement::default()
+            },
+            Placement {
+                rotation: 20.0,
+                scale: 0.9,
+                ..Placement::default()
+            },
+            Placement {
+                skew_x: 12.0,
+                persp_x: 0.2,
+                natural: true,
+                ..Placement::default()
+            },
+        ];
+        for placement in cases {
+            let mut direct = Canvas::new(90, 120);
+            for px in direct.rgba.chunks_exact_mut(4) {
+                px[..3].copy_from_slice(&[40, 90, 200]);
+            }
+            let mut cached = direct.clone();
+            direct.draw(&frame, &placement);
+            let layer = render_layer(90, 120, &frame, &placement).expect("it covers something");
+            cached.blit(&layer);
+            let worst = direct
+                .rgba
+                .iter()
+                .zip(&cached.rgba)
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap();
+            assert!(worst <= 2, "{placement:?}: differs by {worst}");
+        }
+        let nothing = Placement {
+            opacity: 0.0,
+            ..Placement::default()
+        };
+        assert!(render_layer(10, 10, &frame, &nothing).is_none());
     }
 
     #[test]

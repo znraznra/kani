@@ -15,7 +15,7 @@
 
 use crate::media::{path_to_uri, sample_to_thumb};
 use crate::preview::{find_targets, LayerSource};
-use cutroom_compose::{compose, Frame, Placement};
+use cutroom_compose::{render_layer, Canvas, Frame, Layer, Placement};
 use cutroom_core::state::MediaKind;
 use cutroom_platform::{HwBackend, Os};
 use cutroom_timeline::{ClipId, FrameRate, MediaId, Ticks, Timeline};
@@ -293,7 +293,16 @@ pub fn working_encoders() -> &'static [Encoder] {
                 eprintln!(
                     "kani: tested encoder {}: {} ({:.1} s)",
                     e.label,
-                    if ok { "works" } else { "not usable" },
+                    if ok {
+                        "works".to_string()
+                    } else if !has_element(e.element) {
+                        format!("not usable - GStreamer has no '{}' plug-in", e.element)
+                    } else {
+                        format!(
+                            "not usable - '{}' is installed but failed a test encode",
+                            e.element
+                        )
+                    },
                     t.elapsed().as_secs_f64()
                 );
                 ok
@@ -657,6 +666,25 @@ struct Renderer<'a> {
     decode_time: Duration,
     compose_time: Duration,
     layer_kinds: Vec<(u32, u32, bool)>,
+    /// Stills and text that stay where they are from frame to frame, drawn once.
+    static_layers: HashMap<ClipId, StaticLayer>,
+    /// Compositing time per kind of layer: (kind, width, height, scale in
+    /// thousandths, cached) -> (time, frames).
+    layer_time: HashMap<(&'static str, u32, u32, i32, bool), (Duration, u64)>,
+}
+
+/// A still or text layer that has been seen in the same place on consecutive frames.
+struct StaticLayer {
+    frame: Arc<Frame>,
+    placement: Placement,
+    seen: u32,
+    layer: Option<Arc<Layer>>,
+}
+
+/// What `picture` lays down, bottom first.
+enum Item {
+    Draw(Arc<Frame>, Placement),
+    Cached(Arc<Layer>),
 }
 
 impl<'a> Renderer<'a> {
@@ -679,6 +707,8 @@ impl<'a> Renderer<'a> {
             decode_time: Duration::ZERO,
             compose_time: Duration::ZERO,
             layer_kinds: Vec::new(),
+            static_layers: HashMap::new(),
+            layer_time: HashMap::new(),
         }
     }
 
@@ -736,48 +766,119 @@ impl<'a> Renderer<'a> {
             let resolve = self.resolve();
             find_targets(&self.job.timeline, at, &resolve)
         };
-        let mut picked: Vec<(Arc<Frame>, Placement)> = Vec::new();
+        let mut picked: Vec<(Item, (&'static str, u32, u32, i32, bool))> = Vec::new();
         let mut used: HashSet<ClipId> = HashSet::new();
         // Topmost first in the list; the compositor wants the bottom first.
         for layer in targets.layers.iter().rev() {
             used.insert(layer.clip);
-            let (frame, natural) = match &layer.source {
-                LayerSource::Text(spec) => (Some(self.text(spec)), true),
-                LayerSource::Still(path) => (self.still(path), false),
-                LayerSource::Video(target) => (self.video_frame(layer.clip, target), false),
+            let (frame, natural, still_or_text) = match &layer.source {
+                LayerSource::Text(spec) => (Some(self.text(spec)), true, true),
+                LayerSource::Still(path) => (self.still(path), false, true),
+                LayerSource::Video(target) => (self.video_frame(layer.clip, target), false, false),
             };
-            if let Some(frame) = frame {
-                let seen = (frame.width, frame.height, natural);
-                if !self.layer_kinds.contains(&seen) {
-                    self.layer_kinds.push(seen);
-                    let t = layer.transform.clamped();
-                    eprintln!(
-                        "kani: export layer: {} picture {}x{} on a {}x{} canvas (scale {:.3}, position {:.3},{:.3})",
-                        if natural { "text" } else { "video/image" },
-                        frame.width,
-                        frame.height,
-                        width,
-                        height,
-                        t.scale,
-                        t.x,
-                        t.y
-                    );
-                }
-                picked.push((
-                    frame,
-                    Placement {
-                        natural,
-                        ..Placement::from(&layer.transform.clamped())
-                    },
-                ));
+            let Some(frame) = frame else { continue };
+            let seen = (frame.width, frame.height, natural);
+            if !self.layer_kinds.contains(&seen) {
+                self.layer_kinds.push(seen);
+                let t = layer.transform.clamped();
+                eprintln!(
+                    "kani: export layer: {} picture {}x{} on a {}x{} canvas (scale {:.3}, position {:.3},{:.3})",
+                    if natural { "text" } else { "video/image" },
+                    frame.width,
+                    frame.height,
+                    width,
+                    height,
+                    t.scale,
+                    t.x,
+                    t.y
+                );
             }
+            let placement = Placement {
+                natural,
+                ..Placement::from(&layer.transform.clamped())
+            };
+            let kind = if natural {
+                "text"
+            } else if still_or_text {
+                "still"
+            } else {
+                "video"
+            };
+            let milli = layer.transform.clamped().scale;
+            let mut cached = None;
+            if still_or_text {
+                // The same picture in the same place as on the last frame: draw
+                // it once and lay that down from now on.
+                let entry = self
+                    .static_layers
+                    .entry(layer.clip)
+                    .or_insert_with(|| StaticLayer {
+                        frame: frame.clone(),
+                        placement,
+                        seen: 0,
+                        layer: None,
+                    });
+                if !Arc::ptr_eq(&entry.frame, &frame) || entry.placement != placement {
+                    *entry = StaticLayer {
+                        frame: frame.clone(),
+                        placement,
+                        seen: 0,
+                        layer: None,
+                    };
+                }
+                entry.seen += 1;
+                if entry.layer.is_none() && entry.seen >= 2 {
+                    entry.layer = render_layer(width, height, &frame, &placement).map(Arc::new);
+                }
+                cached = entry.layer.clone();
+            }
+            picked.push(match cached {
+                Some(layer) => (
+                    Item::Cached(layer),
+                    (kind, frame.width, frame.height, milli, true),
+                ),
+                None => (
+                    Item::Draw(frame.clone(), placement),
+                    (kind, frame.width, frame.height, milli, false),
+                ),
+            });
         }
         // Free the readers of clips that are no longer showing.
         self.readers.retain(|clip, _| used.contains(clip));
+        self.static_layers.retain(|clip, _| used.contains(clip));
         let started = std::time::Instant::now();
-        let canvas = compose(width, height, picked.iter().map(|(f, p)| (&**f, p)));
+        let mut canvas = Canvas::new(width, height);
+        for (item, key) in &picked {
+            let t = std::time::Instant::now();
+            match item {
+                Item::Draw(frame, placement) => canvas.draw(frame, placement),
+                Item::Cached(layer) => canvas.blit(layer),
+            }
+            let entry = self.layer_time.entry(*key).or_default();
+            entry.0 += t.elapsed();
+            entry.1 += 1;
+        }
         self.compose_time += started.elapsed();
         canvas.rgba
+    }
+
+    /// The kinds of layer that cost the most compositing time, as text.
+    fn slowest_layers(&self) -> String {
+        let mut rows: Vec<_> = self.layer_time.iter().collect();
+        rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+        rows.iter()
+            .take(8)
+            .map(|((kind, w, h, milli, cached), (time, frames))| {
+                format!(
+                    "  {kind} {w}x{h} at scale {:.3}{}: {:.1} s over {frames} frames ({:.1} ms each)",
+                    f64::from(*milli) / 1000.0,
+                    if *cached { " (drawn once)" } else { "" },
+                    time.as_secs_f64(),
+                    time.as_secs_f64() * 1000.0 / (*frames).max(1) as f64
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn video_frame(&mut self, clip: ClipId, target: &crate::preview::Target) -> Option<Arc<Frame>> {
@@ -1020,6 +1121,10 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
             push_audio(&asrc, &bus, &mut renderer, audio_block, block, rate)?;
             audio_block += 1;
         }
+        eprintln!(
+            "kani: compositing time by kind of layer:\n{}",
+            renderer.slowest_layers()
+        );
         if std::env::var_os("KANI_EXPORT_TIMING").is_some() {
             eprintln!(
                 "export timing: pictures {picture_time:?} (waiting for decoded video {:?}, compositing {:?}), handing to the encoder {push_time:?}",
@@ -1601,6 +1706,37 @@ mod tests {
         for track in [vid, aid] {
             let c = tl.new_clip(MediaId(1), s(0.0), s(0.0), s(seconds));
             apply(&mut tl, Edit::InsertClip { track, clip: c }).unwrap();
+        }
+        // KANI_STILL=<image> adds that picture over the video, zoomed like the slow project.
+        if let Some(image) = std::env::var_os("KANI_STILL") {
+            sources.insert(
+                MediaId(2),
+                Source {
+                    path: PathBuf::from(image),
+                    kind: MediaKind::Image,
+                    has_audio: false,
+                },
+            );
+            let layer = tl.new_track(TrackKind::Video, "V3");
+            let layer_id = layer.id;
+            apply(
+                &mut tl,
+                Edit::InsertTrack {
+                    index: 0,
+                    track: layer,
+                },
+            )
+            .unwrap();
+            let mut c = tl.new_clip(MediaId(2), s(0.0), s(0.0), s(seconds));
+            c.transform.scale = 1642;
+            apply(
+                &mut tl,
+                Edit::InsertClip {
+                    track: layer_id,
+                    clip: c,
+                },
+            )
+            .unwrap();
         }
         // KANI_CAPTION=1 adds a caption-like text clip at the captions' usual place.
         if std::env::var_os("KANI_CAPTION").is_some() {
