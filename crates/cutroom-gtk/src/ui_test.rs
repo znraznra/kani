@@ -1019,6 +1019,24 @@ mod tests {
             // Closing the window again leaves the editor usable.
             dialog.window.close();
             let _ = dialog.cancel.is_sensitive();
+            // A closed window is forgotten: Export opens a fresh one instead of
+            // showing the dead one again.
+            assert!(
+                pump_for(5, || crate::export_ui::active().is_none()),
+                "the closed Export window is not reported as open"
+            );
+            app.run_action(Action::Export);
+            let again = crate::export_ui::active().expect("Export opens a new window");
+            assert!(
+                !Rc::ptr_eq(&again, &dialog),
+                "a new window, not the dead one"
+            );
+            assert!(again.window.is_visible());
+            again.window.close();
+            assert!(
+                pump_for(5, || crate::export_ui::active().is_none()),
+                "the second window closes too"
+            );
         }
 
         // 8. Appearance.

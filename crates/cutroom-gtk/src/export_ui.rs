@@ -46,6 +46,8 @@ pub struct Dialog {
     pub saved: RefCell<Option<PathBuf>>,
     dimmed: RefCell<Option<gtk::Widget>>,
     ready: Cell<bool>,
+    /// Set once the window has been closed.
+    gone: Cell<bool>,
 }
 
 struct Running {
@@ -60,7 +62,22 @@ thread_local! {
 
 /// The Export window, while it is open.
 pub fn active() -> Option<Rc<Dialog>> {
-    ACTIVE.with(|a| a.borrow().upgrade())
+    // The window's own signal handlers keep the dialog alive, so "still
+    // exists" is not "still open": a destroyed window must never be handed out.
+    ACTIVE
+        .with(|a| a.borrow().upgrade())
+        .filter(|d| !d.gone.get())
+}
+
+/// Forget the open window (it has been closed).
+fn forget(d: &Dialog) {
+    d.gone.set(true);
+    ACTIVE.with(|a| {
+        let mut slot = a.borrow_mut();
+        if std::ptr::eq(slot.as_ptr(), d) {
+            *slot = Weak::new();
+        }
+    });
 }
 
 fn clean_name(name: &str) -> String {
@@ -416,6 +433,7 @@ pub fn open(app: &Rc<App>) {
         saved: RefCell::new(None),
         dimmed: RefCell::new(None),
         ready: Cell::new(false),
+        gone: Cell::new(false),
     });
     ACTIVE.with(|a| *a.borrow_mut() = Rc::downgrade(&dialog));
     connect(app, &dialog, timeline, sources);
@@ -455,6 +473,7 @@ pub fn open(app: &Rc<App>) {
         // However it goes away, the workspace comes back to full strength.
         let d = dialog.clone();
         dialog.window.connect_destroy(move |_| {
+            forget(&d);
             if let Some(w) = d.dimmed.borrow_mut().take() {
                 w.set_opacity(1.0);
             }
@@ -708,6 +727,7 @@ fn connect(
 }
 
 fn close(d: &Rc<Dialog>) {
+    forget(d);
     if let Some(w) = d.dimmed.borrow_mut().take() {
         w.set_opacity(1.0);
     }
