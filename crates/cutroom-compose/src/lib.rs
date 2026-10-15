@@ -223,6 +223,21 @@ pub fn is_plain_copy(width: u32, height: u32, frame_w: u32, frame_h: u32, p: &Pl
     p.natural || ((left - left.round()).abs() < 1e-3 && (top - top.round()).abs() < 1e-3)
 }
 
+/// The whole-pixel top left corner a plain copy (see [`is_plain_copy`]) lands on.
+pub fn plain_copy_origin(
+    width: u32,
+    height: u32,
+    frame_w: u32,
+    frame_h: u32,
+    p: &Placement,
+) -> (i32, i32) {
+    let (cw, ch) = (width as f32, height as f32);
+    (
+        (cw / 2.0 + p.x * cw - frame_w as f32 / 2.0).round() as i32,
+        (ch / 2.0 + p.y * ch - frame_h as f32 / 2.0).round() as i32,
+    )
+}
+
 /// The finished picture. It starts opaque black.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Canvas {

@@ -16,7 +16,7 @@
 use crate::media::{path_to_uri, sample_to_thumb};
 use crate::preview::{find_targets, LayerSource};
 use cutroom_compose::{
-    covers_canvas, is_plain_copy, render_layer, Canvas, Frame, Layer, Placement,
+    covers_canvas, is_plain_copy, plain_copy_origin, render_layer, Canvas, Frame, Layer, Placement,
 };
 use cutroom_core::state::MediaKind;
 use cutroom_platform::{HwBackend, Os};
@@ -434,6 +434,9 @@ pub struct Report {
     pub shrunk_frames: u64,
     /// Layer pictures put together on the graphics card.
     pub gpu_layers: u64,
+    /// Whole pictures put together on the card, and ones it handed to the processor.
+    pub gpu_frames: u64,
+    pub gpu_skipped_frames: u64,
     /// Set when the card was asked for but could not be used.
     pub gpu_problem: Option<String>,
 }
@@ -443,14 +446,6 @@ pub struct Report {
 /// A line about the state of the machine, printed at the start of every export,
 /// so renders that took different times can be told apart (power saving,
 /// battery, other work running).
-/// Measured on an Intel Iris Xe laptop: the card beats the processor for turned
-/// and slanted pictures (about 6.5 ms against 22 ms) but not for a picture that
-/// is only scaled or moved (about 5.9 ms against 5.0 ms), which the processor
-/// resamples row by row. Only the first kind is sent to the card.
-fn card_is_faster(p: &Placement) -> bool {
-    p.rotation != 0.0 || p.skew_x != 0.0 || p.skew_y != 0.0 || p.persp_x != 0.0 || p.persp_y != 0.0
-}
-
 fn machine_state() -> String {
     let read = |path: &str| {
         std::fs::read_to_string(path)
@@ -784,6 +779,9 @@ struct Renderer<'a> {
     gpu_problem: Option<String>,
     /// Layer pictures put together on the card.
     gpu_layers: u64,
+    /// Whole pictures put together on the card, and ones the card passed to the processor.
+    gpu_frames: u64,
+    gpu_skipped_frames: u64,
     /// Time spent making the empty (black) canvas for each picture.
     canvas_time: Duration,
     /// Stills and text that stay where they are from frame to frame, drawn once.
@@ -805,8 +803,6 @@ struct StaticLayer {
 enum Item {
     Draw(Arc<Frame>, Placement),
     Cached(Arc<Layer>),
-    /// Put together on the card; laid over the canvas, not timed again.
-    Ready(Arc<Layer>),
 }
 
 impl<'a> Renderer<'a> {
@@ -834,6 +830,8 @@ impl<'a> Renderer<'a> {
             gpu: None,
             gpu_problem: None,
             gpu_layers: 0,
+            gpu_frames: 0,
+            gpu_skipped_frames: 0,
             canvas_time: Duration::ZERO,
             static_layers: HashMap::new(),
             layer_time: HashMap::new(),
@@ -976,65 +974,6 @@ impl<'a> Renderer<'a> {
                 }
                 cached = entry.layer.clone();
             }
-            // Video that is more than a pixel-for-pixel copy goes to the card
-            // when that is switched on (anything it cannot do stays here).
-            if cached.is_none()
-                && kind == "video"
-                && self.job.gpu
-                && self.gpu_problem.is_none()
-                && !is_plain_copy(width, height, frame.width, frame.height, &placement)
-                && card_is_faster(&placement)
-            {
-                if self.gpu.is_none() {
-                    match crate::gpu_compose::GpuCompositor::new(width, height) {
-                        Ok(card) => {
-                            eprintln!(
-                                "kani: compositing video layers on the graphics card ({})",
-                                card.renderer
-                            );
-                            self.gpu = Some(card);
-                        }
-                        Err(why) => {
-                            eprintln!("kani: graphics card compositing could not start: {why}; using the processor");
-                            self.gpu_problem = Some(why);
-                        }
-                    }
-                }
-                if let Some(card) = self.gpu.as_mut() {
-                    let started = std::time::Instant::now();
-                    match card.render(&frame, &placement) {
-                        Ok(layer) => {
-                            self.gpu_layers += 1;
-                            let took = started.elapsed();
-                            let key = (
-                                "video on card",
-                                frame.width,
-                                frame.height,
-                                milli,
-                                false,
-                                flags,
-                            );
-                            let entry = self.layer_time.entry(key).or_default();
-                            entry.0 += took;
-                            entry.1 += 1;
-                            self.compose_time += took;
-                            if let Some(layer) = layer {
-                                picked.push((Item::Ready(Arc::new(layer)), key));
-                            }
-                            if covers_canvas(width, height, frame.width, frame.height, &placement) {
-                                self.hidden_skipped += (count - index - 1) as u64;
-                                break;
-                            }
-                            continue;
-                        }
-                        Err(why) => {
-                            eprintln!("kani: graphics card compositing failed: {why}; using the processor from here on");
-                            self.gpu_problem = Some(why);
-                            self.gpu = None;
-                        }
-                    }
-                }
-            }
             picked.push(match cached {
                 Some(layer) => (
                     Item::Cached(layer),
@@ -1057,6 +996,13 @@ impl<'a> Renderer<'a> {
         self.readers.retain(|clip, _| used.contains(clip));
         self.static_layers.retain(|clip, _| used.contains(clip));
         let started = std::time::Instant::now();
+        if self.job.gpu && self.gpu_problem.is_none() {
+            let started = std::time::Instant::now();
+            if let Some(pixels) = self.picture_on_card(&picked) {
+                self.compose_time += started.elapsed();
+                return pixels;
+            }
+        }
         let canvas_started = std::time::Instant::now();
         let mut canvas = Canvas::new(width, height);
         self.canvas_time += canvas_started.elapsed();
@@ -1064,18 +1010,95 @@ impl<'a> Renderer<'a> {
             let t = std::time::Instant::now();
             match item {
                 Item::Draw(frame, placement) => canvas.draw(frame, placement),
-                Item::Cached(layer) | Item::Ready(layer) => canvas.blit(layer),
+                Item::Cached(layer) => canvas.blit(layer),
             }
-            // Pictures from the card were counted when they were made; their
-            // laying-over time is added here.
             let entry = self.layer_time.entry(*key).or_default();
             entry.0 += t.elapsed();
-            if !matches!(item, Item::Ready(_)) {
-                entry.1 += 1;
-            }
+            entry.1 += 1;
         }
         self.compose_time += started.elapsed();
         canvas.rgba
+    }
+
+    /// The whole picture put together on the graphics card: the canvas stays
+    /// there while every layer is drawn over it, and it comes back once. `None`
+    /// when the card cannot do this picture (the processor does it).
+    fn picture_on_card(
+        &mut self,
+        picked: &[(Item, (&'static str, u32, u32, i32, bool, u8))],
+    ) -> Option<Vec<u8>> {
+        let (width, height) = (self.job.width, self.job.height);
+        if self.gpu.is_none() {
+            match crate::gpu_compose::GpuCompositor::new(width, height) {
+                Ok(card) => {
+                    eprintln!(
+                        "kani: compositing whole pictures on the graphics card ({})",
+                        card.renderer
+                    );
+                    self.gpu = Some(card);
+                }
+                Err(why) => {
+                    eprintln!("kani: graphics card compositing could not start: {why}; using the processor");
+                    self.gpu_problem = Some(why);
+                    return None;
+                }
+            }
+        }
+        let card = self.gpu.as_mut()?;
+        card.begin_picture();
+        let mut outcome: std::result::Result<(), String> = Ok(());
+        for (item, key) in picked {
+            let started = std::time::Instant::now();
+            let drawn = match item {
+                Item::Draw(frame, placement) => {
+                    if is_plain_copy(width, height, frame.width, frame.height, placement) {
+                        let (left, top) =
+                            plain_copy_origin(width, height, frame.width, frame.height, placement);
+                        card.draw_pixels(frame.clone(), frame, left, top);
+                        Ok(())
+                    } else {
+                        card.draw(frame, placement)
+                    }
+                }
+                Item::Cached(layer) => {
+                    card.draw_pixels(layer.clone(), &layer.frame, layer.left, layer.top);
+                    Ok(())
+                }
+            };
+            let entry = self.layer_time.entry(*key).or_default();
+            entry.0 += started.elapsed();
+            entry.1 += 1;
+            if let Err(why) = drawn {
+                outcome = Err(why);
+                break;
+            }
+        }
+        let started = std::time::Instant::now();
+        let finished = outcome.and_then(|()| card.finish_picture());
+        let entry = self
+            .layer_time
+            .entry(("read-back from the card", width, height, 0, false, 0))
+            .or_default();
+        entry.0 += started.elapsed();
+        entry.1 += 1;
+        match finished {
+            Ok(pixels) => {
+                self.gpu_frames += 1;
+                self.gpu_layers += picked.len() as u64;
+                Some(pixels)
+            }
+            Err(why) if why.starts_with(crate::gpu_compose::UNSUPPORTED) => {
+                // One picture the card path cannot place: the processor does it.
+                self.gpu_skipped_frames += 1;
+                None
+            }
+            Err(why) => {
+                eprintln!("kani: graphics card compositing failed: {why}; using the processor from here on");
+                self.gpu_problem = Some(why);
+                self.gpu = None;
+                None
+            }
+        }
     }
 
     /// The kinds of layer that cost the most compositing time, as text.
@@ -1422,6 +1445,8 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
         hidden_skipped: renderer.hidden_skipped,
         shrunk_frames: renderer.shrunk_frames,
         gpu_layers: renderer.gpu_layers,
+        gpu_frames: renderer.gpu_frames,
+        gpu_skipped_frames: renderer.gpu_skipped_frames,
         gpu_problem: renderer.gpu_problem.clone(),
     })
 }
@@ -1504,8 +1529,8 @@ pub fn export(job: &Job, progress: &Progress) -> Result<Report> {
                     match &report.gpu_problem {
                         Some(why) => eprintln!("kani: GPU compositing was on but not used fully: {why}"),
                         None => eprintln!(
-                            "kani: GPU compositing was on: {} layer pictures put together on the graphics card",
-                            report.gpu_layers
+                            "kani: GPU compositing was on: {} whole pictures ({} layer draws) put together on the graphics card, {} left to the processor",
+                            report.gpu_frames, report.gpu_layers, report.gpu_skipped_frames
                         ),
                     }
                 }
@@ -1806,7 +1831,7 @@ mod tests {
         let on = export(&job, &Progress::default()).expect("export with the card");
         match &on.gpu_problem {
             Some(why) => eprintln!("no usable graphics card here ({why}): fell back"),
-            None => assert!(on.gpu_layers > 30, "{} pictures on the card", on.gpu_layers),
+            None => assert!(on.gpu_frames > 30, "{} pictures on the card", on.gpu_frames),
         }
         assert_eq!(on.frames, off.frames);
         assert!(on.warnings.is_empty(), "{:?}", on.warnings);

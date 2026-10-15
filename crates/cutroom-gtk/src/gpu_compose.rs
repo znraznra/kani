@@ -10,6 +10,7 @@
 use cutroom_compose::{Frame, Layer, Placement};
 use glow::HasContext;
 use khronos_egl as egl;
+use std::any::Any;
 use std::sync::Arc;
 
 const VERTEX: &str = "#version 300 es
@@ -38,8 +39,36 @@ void main() {
     colour = vec4(c.rgb, c.a * opacity * cover);
 }";
 
-/// How many pictures stay uploaded between calls.
-const TEXTURES: usize = 4;
+/// How many pictures stay uploaded between calls, at most, and how many bytes
+/// of them (cached text and stills stay; video pictures drift out).
+const MAX_TEXTURES: usize = 96;
+const TEXTURE_BYTES: usize = 160 * 1024 * 1024;
+
+/// A picture that is on the card.
+struct Upload {
+    /// Keeps the picture alive so its address cannot be reused while it is here.
+    _hold: Arc<dyn Any + Send + Sync>,
+    key: usize,
+    texture: glow::Texture,
+    width: u32,
+    height: u32,
+    bytes: usize,
+}
+
+/// Where the corners of one layer land.
+struct Quad {
+    /// Four corners, each: clip position (x, y, z, w) and picture coordinate (u, v).
+    vertices: [f32; 24],
+    /// The canvas rectangle the layer can touch: left, top, right, bottom.
+    bounds: (i32, i32, i32, i32),
+    /// The picture's size, and how many canvas pixels one picture pixel is.
+    size: (f32, f32),
+    scale: f32,
+}
+
+/// Errors starting with this are about one layer the card path cannot place
+/// (the processor does that picture); anything else is the card failing.
+pub const UNSUPPORTED: &str = "unsupported: ";
 
 pub struct GpuCompositor {
     egl: egl::DynamicInstance<egl::EGL1_5>,
@@ -52,7 +81,10 @@ pub struct GpuCompositor {
     vbo: glow::Buffer,
     fbo: glow::Framebuffer,
     target: glow::Texture,
-    uploaded: Vec<(Arc<Frame>, glow::Texture)>,
+    uploaded: Vec<Upload>,
+    uploaded_bytes: usize,
+    /// Textures no longer used, kept to be filled again when a picture of the same size comes.
+    spare: Vec<(u32, u32, glow::Texture)>,
     width: u32,
     height: u32,
     /// What the card calls itself, for the log.
@@ -160,6 +192,8 @@ impl GpuCompositor {
                 fbo,
                 target,
                 uploaded: Vec::new(),
+                uploaded_bytes: 0,
+                spare: Vec::new(),
                 width: 0,
                 height: 0,
                 renderer,
@@ -226,47 +260,69 @@ impl GpuCompositor {
         Ok(())
     }
 
-    /// The card's copy of `frame`, uploading it if it is not there already.
-    fn texture(&mut self, frame: &Arc<Frame>) -> glow::Texture {
-        if let Some((_, tex)) = self.uploaded.iter().find(|(f, _)| Arc::ptr_eq(f, frame)) {
-            return *tex;
+    /// The card's copy of a picture, uploading it if it is not there already.
+    fn texture_for(
+        &mut self,
+        hold: Arc<dyn Any + Send + Sync>,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) -> glow::Texture {
+        let key = Arc::as_ptr(&hold).cast::<()>() as usize;
+        if let Some(i) = self.uploaded.iter().position(|u| u.key == key) {
+            let used = self.uploaded.remove(i);
+            let texture = used.texture;
+            self.uploaded.push(used);
+            return texture;
         }
+        let bytes = rgba.len();
         let gl = &self.gl;
-        // Reuse the oldest texture's storage when it is the same size.
-        let recycled = if self.uploaded.len() >= TEXTURES {
-            Some(self.uploaded.remove(0))
-        } else {
-            None
-        };
-        let (tex, same_size) = match &recycled {
-            Some((old, tex)) => (*tex, old.width == frame.width && old.height == frame.height),
+        // Make room: the least recently used pictures go first.
+        while !self.uploaded.is_empty()
+            && (self.uploaded.len() >= MAX_TEXTURES || self.uploaded_bytes + bytes > TEXTURE_BYTES)
+        {
+            let old = self.uploaded.remove(0);
+            self.uploaded_bytes -= old.bytes;
+            self.spare.push((old.width, old.height, old.texture));
+        }
+        while self.spare.len() > 6 {
+            let (_, _, texture) = self.spare.remove(0);
+            unsafe { gl.delete_texture(texture) };
+        }
+        let (texture, same_size) = match self
+            .spare
+            .iter()
+            .position(|(w, h, _)| *w == width && *h == height)
+        {
+            Some(i) => (self.spare.remove(i).2, true),
             None => (unsafe { gl.create_texture().expect("texture") }, false),
         };
         unsafe {
-            gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 4);
             if same_size {
                 gl.tex_sub_image_2d(
                     glow::TEXTURE_2D,
                     0,
                     0,
                     0,
-                    frame.width as i32,
-                    frame.height as i32,
+                    width as i32,
+                    height as i32,
                     glow::RGBA,
                     glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(Some(&frame.rgba)),
+                    glow::PixelUnpackData::Slice(Some(rgba)),
                 );
             } else {
                 gl.tex_image_2d(
                     glow::TEXTURE_2D,
                     0,
                     glow::RGBA8 as i32,
-                    frame.width as i32,
-                    frame.height as i32,
+                    width as i32,
+                    height as i32,
                     0,
                     glow::RGBA,
                     glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(Some(&frame.rgba)),
+                    glow::PixelUnpackData::Slice(Some(rgba)),
                 );
                 for (name, value) in [
                     (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
@@ -278,18 +334,21 @@ impl GpuCompositor {
                 }
             }
         }
-        self.uploaded.push((frame.clone(), tex));
-        tex
+        self.uploaded_bytes += bytes;
+        self.uploaded.push(Upload {
+            _hold: hold,
+            key,
+            texture,
+            width,
+            height,
+            bytes,
+        });
+        texture
     }
 
-    /// Draw `frame` like [`cutroom_compose::Canvas::draw`] would and return the
-    /// part of the canvas it touches. `Ok(None)`: it touches nothing. `Err`:
-    /// the card cannot do this one (use the processor).
-    pub fn render(
-        &mut self,
-        frame: &Arc<Frame>,
-        placement: &Placement,
-    ) -> Result<Option<Layer>, String> {
+    /// Where the four corners of `frame` land when placed like this. `Ok(None)`:
+    /// it shows nothing.
+    fn quad(&self, frame: &Frame, placement: &Placement) -> Result<Option<Quad>, String> {
         if frame.width == 0
             || frame.height == 0
             || placement.opacity <= 0.0
@@ -325,7 +384,9 @@ impl GpuCompositor {
             let qy = uy + skew_y * qx;
             let d = 1.0 + placement.persp_x * (qx / sw) + placement.persp_y * (qy / sh);
             if !d.is_finite() || d < 0.05 {
-                return Err("perspective too strong for the card path".into());
+                return Err(format!(
+                    "{UNSUPPORTED}perspective too strong for the card path"
+                ));
             }
             let (tx, ty) = (scale * (qx * cos - qy * sin), scale * (qx * sin + qy * cos));
             let (px, py) = (cx + tx / d, cy + ty / d);
@@ -343,18 +404,72 @@ impl GpuCompositor {
             vertices[o + 4] = if placement.flip_h { 1.0 - u } else { u };
             vertices[o + 5] = if placement.flip_v { 1.0 - v } else { v };
         }
-        let x0 = (lo_x - 2.0).floor().max(0.0) as i32;
-        let y0 = (lo_y - 2.0).floor().max(0.0) as i32;
-        let x1 = (hi_x + 2.0).ceil().min(cw) as i32;
-        let y1 = (hi_y + 2.0).ceil().min(ch) as i32;
-        if x0 >= x1 || y0 >= y1 {
+        let bounds = (
+            (lo_x - 2.0).floor().max(0.0) as i32,
+            (lo_y - 2.0).floor().max(0.0) as i32,
+            (hi_x + 2.0).ceil().min(cw) as i32,
+            (hi_y + 2.0).ceil().min(ch) as i32,
+        );
+        if bounds.0 >= bounds.2 || bounds.1 >= bounds.3 {
             return Ok(None);
         }
-        let (rw, rh) = ((x1 - x0) as usize, (y1 - y0) as usize);
-        let texture = self.texture(frame);
+        Ok(Some(Quad {
+            vertices,
+            bounds,
+            size: (sw, sh),
+            scale,
+        }))
+    }
+
+    /// Draw one quad with the bound state (the caller has set up the target).
+    fn draw_quad(&mut self, texture: glow::Texture, quad: &Quad, opacity: f32) {
         let gl = &self.gl;
+        unsafe {
+            gl.use_program(Some(self.program));
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+            gl.uniform_1_i32(gl.get_uniform_location(self.program, "picture").as_ref(), 0);
+            gl.uniform_2_f32(
+                gl.get_uniform_location(self.program, "size").as_ref(),
+                quad.size.0,
+                quad.size.1,
+            );
+            gl.uniform_1_f32(
+                gl.get_uniform_location(self.program, "shown").as_ref(),
+                quad.scale,
+            );
+            gl.uniform_1_f32(
+                gl.get_uniform_location(self.program, "opacity").as_ref(),
+                opacity,
+            );
+            gl.bind_vertex_array(Some(self.vao));
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
+            gl.buffer_data_u8_slice(
+                glow::ARRAY_BUFFER,
+                bytes_of(&quad.vertices),
+                glow::STREAM_DRAW,
+            );
+            gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
+        }
+    }
+
+    /// Draw `frame` like [`cutroom_compose::Canvas::draw`] would and return the
+    /// part of the canvas it touches. `Ok(None)`: it touches nothing. `Err`:
+    /// the card cannot do this one (use the processor).
+    pub fn render(
+        &mut self,
+        frame: &Arc<Frame>,
+        placement: &Placement,
+    ) -> Result<Option<Layer>, String> {
+        let Some(quad) = self.quad(frame, placement)? else {
+            return Ok(None);
+        };
+        let (x0, y0, x1, y1) = quad.bounds;
+        let (rw, rh) = ((x1 - x0) as usize, (y1 - y0) as usize);
+        let texture = self.texture_for(frame.clone(), frame.width, frame.height, &frame.rgba);
         let mut rgba = vec![0u8; rw * rh * 4];
         unsafe {
+            let gl = &self.gl;
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.fbo));
             gl.viewport(0, 0, self.width as i32, self.height as i32);
             gl.enable(glow::SCISSOR_TEST);
@@ -363,27 +478,10 @@ impl GpuCompositor {
             gl.clear(glow::COLOR_BUFFER_BIT);
             gl.disable(glow::BLEND);
             gl.disable(glow::CULL_FACE);
-            gl.use_program(Some(self.program));
-            gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-            gl.uniform_1_i32(gl.get_uniform_location(self.program, "picture").as_ref(), 0);
-            gl.uniform_2_f32(
-                gl.get_uniform_location(self.program, "size").as_ref(),
-                sw,
-                sh,
-            );
-            gl.uniform_1_f32(
-                gl.get_uniform_location(self.program, "shown").as_ref(),
-                scale,
-            );
-            gl.uniform_1_f32(
-                gl.get_uniform_location(self.program, "opacity").as_ref(),
-                placement.opacity.min(1.0),
-            );
-            gl.bind_vertex_array(Some(self.vao));
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
-            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes_of(&vertices), glow::STREAM_DRAW);
-            gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
+        }
+        self.draw_quad(texture, &quad, placement.opacity.min(1.0));
+        unsafe {
+            let gl = &self.gl;
             gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
             gl.read_pixels(
                 x0,
@@ -410,6 +508,110 @@ impl GpuCompositor {
             top: y0,
         }))
     }
+
+    // ------------------------------------------------ whole pictures
+
+    /// Start a picture: an opaque black canvas that stays on the card while the
+    /// layers are drawn over it, bottom first (see `draw`, `draw_pixels`,
+    /// `finish_picture`).
+    pub fn begin_picture(&mut self) {
+        let gl = &self.gl;
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.fbo));
+            gl.viewport(0, 0, self.width as i32, self.height as i32);
+            gl.disable(glow::SCISSOR_TEST);
+            gl.disable(glow::CULL_FACE);
+            gl.clear_color(0.0, 0.0, 0.0, 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT);
+            gl.enable(glow::BLEND);
+            gl.blend_func_separate(
+                glow::SRC_ALPHA,
+                glow::ONE_MINUS_SRC_ALPHA,
+                glow::ONE,
+                glow::ONE_MINUS_SRC_ALPHA,
+            );
+        }
+    }
+
+    /// Lay `frame` over the picture like [`cutroom_compose::Canvas::draw`] would.
+    pub fn draw(&mut self, frame: &Arc<Frame>, placement: &Placement) -> Result<(), String> {
+        let Some(quad) = self.quad(frame, placement)? else {
+            return Ok(());
+        };
+        let texture = self.texture_for(frame.clone(), frame.width, frame.height, &frame.rgba);
+        self.draw_quad(texture, &quad, placement.opacity.min(1.0));
+        Ok(())
+    }
+
+    /// Lay a picture over the canvas pixel for pixel with its top left corner
+    /// at (`left`, `top`): cached text and stills, and pictures that already
+    /// are the canvas size. `hold` is what the picture belongs to (its address
+    /// names the card's copy).
+    pub fn draw_pixels(
+        &mut self,
+        hold: Arc<dyn Any + Send + Sync>,
+        frame: &Frame,
+        left: i32,
+        top: i32,
+    ) {
+        if frame.width == 0 || frame.height == 0 {
+            return;
+        }
+        let (cw, ch) = (self.width as f32, self.height as f32);
+        let (l, t) = (left as f32, top as f32);
+        let (r, b) = (l + frame.width as f32, t + frame.height as f32);
+        let to_clip = |x: f32, y: f32| (2.0 * x / cw - 1.0, 2.0 * y / ch - 1.0);
+        let mut vertices = [0.0f32; 24];
+        for (i, (x, y, u, v)) in [
+            (l, t, 0.0, 0.0),
+            (r, t, 1.0, 0.0),
+            (l, b, 0.0, 1.0),
+            (r, b, 1.0, 1.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (cx, cy) = to_clip(x, y);
+            vertices[i * 6..i * 6 + 6].copy_from_slice(&[cx, cy, 0.0, 1.0, u, v]);
+        }
+        let quad = Quad {
+            vertices,
+            bounds: (
+                left,
+                top,
+                left + frame.width as i32,
+                top + frame.height as i32,
+            ),
+            size: (frame.width as f32, frame.height as f32),
+            scale: 1.0,
+        };
+        let texture = self.texture_for(hold, frame.width, frame.height, &frame.rgba);
+        self.draw_quad(texture, &quad, 1.0);
+    }
+
+    /// The finished picture, top row first, as straight RGBA bytes.
+    pub fn finish_picture(&mut self) -> Result<Vec<u8>, String> {
+        let mut rgba = vec![0u8; self.width as usize * self.height as usize * 4];
+        let gl = &self.gl;
+        unsafe {
+            gl.disable(glow::BLEND);
+            gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
+            gl.read_pixels(
+                0,
+                0,
+                self.width as i32,
+                self.height as i32,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(Some(&mut rgba)),
+            );
+            let error = gl.get_error();
+            if error != glow::NO_ERROR {
+                return Err(format!("OpenGL error 0x{error:x}"));
+            }
+        }
+        Ok(rgba)
+    }
 }
 
 fn bytes_of(values: &[f32]) -> &[u8] {
@@ -427,8 +629,11 @@ impl Drop for GpuCompositor {
         );
         let gl = &self.gl;
         unsafe {
-            for (_, tex) in self.uploaded.drain(..) {
-                gl.delete_texture(tex);
+            for upload in self.uploaded.drain(..) {
+                gl.delete_texture(upload.texture);
+            }
+            for (_, _, texture) in self.spare.drain(..) {
+                gl.delete_texture(texture);
             }
             gl.delete_texture(self.target);
             gl.delete_framebuffer(self.fbo);
@@ -448,7 +653,7 @@ impl Drop for GpuCompositor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cutroom_compose::{render_layer, Canvas};
+    use cutroom_compose::{render_layer, Canvas, Layer};
 
     fn picture() -> Arc<Frame> {
         let (w, h) = (64usize, 48usize);
@@ -490,6 +695,68 @@ mod tests {
             }
         }
         Some((f64::from(off) / f64::from(covered.max(1)), worst))
+    }
+
+    #[test]
+    fn a_whole_picture_built_on_the_card_matches_the_processor() {
+        let Ok(mut card) = GpuCompositor::new(120, 200) else {
+            eprintln!("no OpenGL here: skipping");
+            return;
+        };
+        let frame = picture();
+        // A caption-like layer: mostly clear, with a half see-through bar.
+        let mut caption = Frame::solid(70, 20, [0, 0, 0, 0]);
+        for y in 5..15 {
+            for x in 4..66 {
+                let o = (y * 70 + x) * 4;
+                caption.rgba[o..o + 4].copy_from_slice(&[
+                    250,
+                    240,
+                    20,
+                    if x < 30 { 255 } else { 140 },
+                ]);
+            }
+        }
+        let layer = Arc::new(Layer {
+            frame: caption,
+            left: 25,
+            top: 150,
+        });
+        let back = Placement {
+            scale: 4.0,
+            ..Placement::default()
+        };
+        let skewed = Placement {
+            scale: 1.5,
+            skew_x: 9.0,
+            y: -0.1,
+            opacity: 0.9,
+            ..Placement::default()
+        };
+        let mut cpu = Canvas::new(120, 200);
+        cpu.draw(&frame, &back);
+        cpu.draw(&frame, &skewed);
+        cpu.blit(&layer);
+        card.begin_picture();
+        card.draw(&frame, &back).unwrap();
+        card.draw(&frame, &skewed).unwrap();
+        card.draw_pixels(layer.clone(), &layer.frame, layer.left, layer.top);
+        let on_card = card.finish_picture().unwrap();
+        let mut off = 0usize;
+        let mut worst = 0u8;
+        for (p, q) in on_card.chunks_exact(4).zip(cpu.rgba.chunks_exact(4)) {
+            let diff = (0..3).map(|c| p[c].abs_diff(q[c])).max().unwrap();
+            worst = worst.max(diff);
+            if diff > 12 {
+                off += 1;
+            }
+            assert_eq!(p[3], 255, "the picture stays opaque");
+        }
+        eprintln!(
+            "whole picture: {off} of {} pixels differ by more than 12, worst {worst}",
+            120 * 200
+        );
+        assert!(off < 120 * 200 / 50, "{off} pixels differ (worst {worst})");
     }
 
     #[test]

@@ -537,7 +537,7 @@ pub fn hardware_codec_lines() -> Vec<String> {
     lines
 }
 
-/// `Version 0.5.13 (built 2026-10-13, commit abc1234)`.
+/// `Version 0.5.14 (built 2026-10-13, commit abc1234)`.
 pub fn version_line() -> String {
     let commit = env!("CUTROOM_GIT_HASH");
     let mut line = format!(

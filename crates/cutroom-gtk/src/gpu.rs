@@ -6,7 +6,7 @@
 //! closely the two pictures agree.
 
 use crate::gpu_compose::GpuCompositor;
-use cutroom_compose::{Canvas, Frame, Placement};
+use cutroom_compose::{Canvas, Frame, Layer, Placement};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -111,6 +111,69 @@ pub fn test() -> GpuReport {
             on_cpu / on_card.max(0.001)
         ));
     }
+    // A whole picture the way export builds it with the card on: two video
+    // layers and a caption, the canvas staying on the card, one read-back.
+    if usable {
+        let caption = Arc::new(Layer {
+            frame: Frame {
+                width: 900,
+                height: 200,
+                rgba: [240, 230, 40, 200]
+                    .iter()
+                    .copied()
+                    .cycle()
+                    .take(900 * 200 * 4)
+                    .collect(),
+            },
+            left: 90,
+            top: 1400,
+        });
+        let (scaled, skewed) = (&cases[1].1, &cases[0].1);
+        let started = Instant::now();
+        let mut failed = None;
+        for i in 0..RUNS {
+            card.begin_picture();
+            let drawn = card
+                .draw(&pictures[i % pictures.len()], scaled)
+                .and_then(|()| card.draw(&pictures[(i + 3) % pictures.len()], skewed));
+            if let Err(why) = drawn {
+                failed = Some(why);
+                break;
+            }
+            card.draw_pixels(caption.clone(), &caption.frame, caption.left, caption.top);
+            match card.finish_picture() {
+                Ok(pixels) => {
+                    std::hint::black_box(&pixels);
+                }
+                Err(why) => {
+                    failed = Some(why);
+                    break;
+                }
+            }
+        }
+        if let Some(why) = failed {
+            details.push(format!("whole picture: failed on the card: {why}"));
+            usable = false;
+            parts.push(format!("whole picture failed ({why})"));
+        } else {
+            let on_card = started.elapsed().as_secs_f64() * 1000.0 / RUNS as f64;
+            let started = Instant::now();
+            for i in 0..RUNS {
+                let mut canvas = Canvas::new(width, height);
+                canvas.draw(&pictures[i % pictures.len()], scaled);
+                canvas.draw(&pictures[(i + 3) % pictures.len()], skewed);
+                canvas.blit(&caption);
+                std::hint::black_box(&canvas.rgba);
+            }
+            let on_cpu = started.elapsed().as_secs_f64() * 1000.0 / RUNS as f64;
+            let line = format!(
+                "whole picture (2 videos + caption) {on_card:.1} ms on the card, {on_cpu:.1} ms on the processor ({:.1}x)",
+                on_cpu / on_card.max(0.001)
+            );
+            details.push(line.clone());
+            parts.push(line);
+        }
+    }
     GpuReport {
         usable,
         summary: if usable {
@@ -132,6 +195,7 @@ mod tests {
     #[test]
     fn the_test_says_clearly_whether_the_card_can_be_used() {
         let report = test();
+        eprintln!("{}", report.summary);
         assert!(!report.summary.is_empty());
         assert!(!report.details.is_empty());
         if !report.usable {
