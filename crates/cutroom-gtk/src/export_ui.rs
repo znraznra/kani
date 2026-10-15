@@ -26,8 +26,8 @@ pub struct Dialog {
     pub rate: gtk::DropDown,
     pub quality: gtk::DropDown,
     pub encoder: gtk::DropDown,
-    /// Put video layers together on the graphics card (a test switch).
-    pub gpu_on: gtk::CheckButton,
+    /// Automatic, always or never put pictures together on the graphics card.
+    pub gpu_mode: gtk::DropDown,
     pub summary: gtk::Label,
     pub export: gtk::Button,
     pub cancel: gtk::Button,
@@ -365,62 +365,50 @@ pub fn open(app: &Rc<App>) {
     grid.attach(&label("Encoder"), 0, 5, 1, 1);
     grid.attach(&encoder, 1, 5, 1, 1);
 
-    // Does the graphics card work for compositing? (Export does not use it
-    // yet; this button measures it and says.)
-    let gpu_button = gtk::Button::with_label("Test the graphics card");
-    gpu_button.set_halign(gtk::Align::Start);
-    let gpu_on = gtk::CheckButton::with_label(
-        "Use the graphics card to put pictures together (experimental)",
-    );
-    gpu_on.set_tooltip_text(Some(
-        "Off: the processor does it all. On: video layers that are scaled, turned or slanted are drawn on the graphics card; anything it cannot do falls back to the processor.",
+    // The graphics card: automatic, always or never, and a button that checks
+    // it. Automatic follows the last check, which Kani makes by itself the
+    // first time and after each update.
+    let gpu_mode = gtk::DropDown::from_strings(&[
+        "Automatic (recommended)",
+        "Always use it",
+        "Never use it",
+    ]);
+    {
+        let st = app.state.borrow();
+        gpu_mode.set_selected(match st.settings.export_graphics_card.as_str() {
+            "on" => 1,
+            "off" => 2,
+            _ => 0,
+        });
+    }
+    gpu_mode.set_tooltip_text(Some(
+        "Automatic: the graphics card builds the pictures when a check found it works and is clearly faster, otherwise the processor does. Always: use the card whenever it can (anything it cannot do falls back to the processor). Never: the processor does it all.",
     ));
-    let gpu_note = gtk::Label::new(Some("Not tested yet. Press the button to try it."));
+    let gpu_button = gtk::Button::with_label("Check the graphics card");
+    gpu_button.set_halign(gtk::Align::Start);
+    let gpu_note = gtk::Label::new(Some(&card_note(&app.state.borrow().settings)));
     gpu_note.set_xalign(0.0);
     gpu_note.set_wrap(true);
     gpu_note.set_max_width_chars(48);
     gpu_note.add_css_class("dim-label");
     gpu_note.add_css_class("caption");
     let gpu_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
-    gpu_box.append(&gpu_on);
+    gpu_box.append(&gpu_mode);
     gpu_box.append(&gpu_button);
     gpu_box.append(&gpu_note);
     grid.attach(&label("Graphics card"), 0, 6, 1, 1);
     grid.attach(&gpu_box, 1, 6, 1, 1);
     {
-        let note = gpu_note.clone();
-        gpu_button.connect_clicked(move |button| {
-            button.set_sensitive(false);
-            note.set_text("Testing ...");
-            let found: Arc<Mutex<Option<crate::gpu::GpuReport>>> = Arc::new(Mutex::new(None));
-            {
-                let found = found.clone();
-                std::thread::spawn(move || {
-                    *found.lock().unwrap() = Some(crate::gpu::test());
-                });
-            }
-            let (button, note) = (button.clone(), note.clone());
-            glib::timeout_add_local(Duration::from_millis(150), move || {
-                let Some(report) = found.lock().unwrap().take() else {
-                    return glib::ControlFlow::Continue;
-                };
-                for line in &report.details {
-                    eprintln!("kani: GPU compositing test: {line}");
-                }
-                eprintln!(
-                    "kani: GPU compositing test: {} ({})",
-                    report.summary,
-                    if report.usable {
-                        "usable"
-                    } else {
-                        "not usable"
-                    }
-                );
-                note.set_text(&report.summary);
-                button.set_sensitive(true);
-                glib::ControlFlow::Break
-            });
-        });
+        let (app, note) = (app.clone(), gpu_note.clone());
+        gpu_button.connect_clicked(move |button| check_card(&app, button, &note));
+    }
+    if app
+        .state
+        .borrow()
+        .settings
+        .graphics_card_needs_check(env!("CARGO_PKG_VERSION"))
+    {
+        check_card(app, &gpu_button, &gpu_note);
     }
     form.append(&grid);
 
@@ -475,7 +463,7 @@ pub fn open(app: &Rc<App>) {
         rate,
         quality,
         encoder,
-        gpu_on,
+        gpu_mode,
         summary,
         export,
         cancel,
@@ -840,6 +828,58 @@ fn begin(
     }
 }
 
+/// What the window says about the graphics card from the last check.
+fn card_note(settings: &cutroom_core::settings::Settings) -> String {
+    match settings.graphics_card_ok {
+        Some(true) => "Last check: it works and is clearly faster. Automatic mode uses it.".into(),
+        Some(false) => "Last check: not worth using on this computer. Automatic mode keeps to the processor.".into(),
+        None => "Checking the graphics card ...".into(),
+    }
+}
+
+/// Check the graphics card in the background (it takes a few seconds), show
+/// what was found and remember it for automatic mode.
+fn check_card(app: &Rc<App>, button: &gtk::Button, note: &gtk::Label) {
+    button.set_sensitive(false);
+    note.set_text("Checking the graphics card ...");
+    let found: Arc<Mutex<Option<crate::gpu::GpuReport>>> = Arc::new(Mutex::new(None));
+    {
+        let found = found.clone();
+        std::thread::spawn(move || {
+            *found.lock().unwrap() = Some(crate::gpu::test());
+        });
+    }
+    let (app, button, note) = (app.clone(), button.clone(), note.clone());
+    glib::timeout_add_local(Duration::from_millis(150), move || {
+        let Some(report) = found.lock().unwrap().take() else {
+            return glib::ControlFlow::Continue;
+        };
+        for line in &report.details {
+            eprintln!("kani: GPU compositing test: {line}");
+        }
+        eprintln!(
+            "kani: GPU compositing test: {} ({})",
+            report.summary,
+            if report.recommended {
+                "recommended"
+            } else if report.usable {
+                "usable, not recommended"
+            } else {
+                "not usable"
+            }
+        );
+        {
+            let mut st = app.state.borrow_mut();
+            st.settings.graphics_card_ok = Some(report.recommended);
+            st.settings.graphics_card_checked = env!("CARGO_PKG_VERSION").to_string();
+            st.save_settings();
+        }
+        note.set_text(&report.summary);
+        button.set_sensitive(true);
+        glib::ControlFlow::Break
+    });
+}
+
 fn start(
     app: &Rc<App>,
     d: &Rc<Dialog>,
@@ -864,8 +904,15 @@ fn start(
                 .map_or("auto".into(), |e| e.id.to_string()),
         };
         st.settings.export_folder = Some(d.folder_path.borrow().clone());
+        st.settings.export_graphics_card = match d.gpu_mode.selected() {
+            1 => "on",
+            2 => "off",
+            _ => "auto",
+        }
+        .into();
         st.save_settings();
     }
+    let gpu = app.state.borrow().settings.use_graphics_card();
     let job = Job {
         timeline,
         sources,
@@ -878,7 +925,7 @@ fn start(
         encoders,
         output: output.clone(),
         limit_seconds: test_limit(),
-        gpu: d.gpu_on.is_active(),
+        gpu,
     };
     let progress = Arc::new(Progress::default());
     let outcome: Outcome = Arc::new(Mutex::new(None));

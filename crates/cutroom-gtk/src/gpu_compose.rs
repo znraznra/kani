@@ -11,6 +11,7 @@ use cutroom_compose::{Frame, Layer, Placement};
 use glow::HasContext;
 use khronos_egl as egl;
 use std::any::Any;
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 const VERTEX: &str = "#version 300 es
@@ -68,6 +69,9 @@ struct Quad {
 
 /// Errors starting with this are about one layer the card path cannot place
 /// (the processor does that picture); anything else is the card failing.
+/// Pictures that can be on their way back from the card at once.
+pub const PACKS: usize = 3;
+
 pub const UNSUPPORTED: &str = "unsupported: ";
 
 pub struct GpuCompositor {
@@ -87,6 +91,11 @@ pub struct GpuCompositor {
     spare: Vec<(u32, u32, glow::Texture)>,
     width: u32,
     height: u32,
+    /// Buffers the card copies finished pictures into while it carries on drawing.
+    packs: Vec<glow::Buffer>,
+    /// Which of them hold a picture that was asked for and not yet taken, oldest first.
+    in_flight: VecDeque<usize>,
+    next_pack: usize,
     /// What the card calls itself, for the log.
     pub renderer: String,
 }
@@ -196,6 +205,9 @@ impl GpuCompositor {
                 spare: Vec::new(),
                 width: 0,
                 height: 0,
+                packs: Vec::new(),
+                in_flight: VecDeque::new(),
+                next_pack: 0,
                 renderer,
             }
         };
@@ -257,6 +269,21 @@ impl GpuCompositor {
         }
         self.width = width;
         self.height = height;
+        let size = width as i32 * height as i32 * 4;
+        for pack in self.packs.drain(..) {
+            unsafe { self.gl.delete_buffer(pack) };
+        }
+        self.in_flight.clear();
+        for _ in 0..PACKS {
+            unsafe {
+                let pack = self.gl.create_buffer()?;
+                self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(pack));
+                self.gl
+                    .buffer_data_size(glow::PIXEL_PACK_BUFFER, size, glow::STREAM_READ);
+                self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+                self.packs.push(pack);
+            }
+        }
         Ok(())
     }
 
@@ -589,7 +616,78 @@ impl GpuCompositor {
         self.draw_quad(texture, &quad, 1.0);
     }
 
+    /// Ask the card to copy the finished picture into a buffer of its own and
+    /// carry on; nothing waits. Take it later with [`take_picture`]. At most
+    /// [`PACKS`] pictures can be on their way at once.
+    pub fn start_picture_read(&mut self) -> Result<(), String> {
+        if self.in_flight.len() >= self.packs.len() {
+            return Err("too many pictures waiting to be read back".into());
+        }
+        let slot = self.next_pack;
+        self.next_pack = (self.next_pack + 1) % self.packs.len();
+        let gl = &self.gl;
+        unsafe {
+            gl.disable(glow::BLEND);
+            gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(self.packs[slot]));
+            gl.read_pixels(
+                0,
+                0,
+                self.width as i32,
+                self.height as i32,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::BufferOffset(0),
+            );
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+            let error = gl.get_error();
+            if error != glow::NO_ERROR {
+                return Err(format!("OpenGL error 0x{error:x}"));
+            }
+        }
+        self.in_flight.push_back(slot);
+        Ok(())
+    }
+
+    /// How many pictures were asked for and not yet taken.
+    pub fn pictures_waiting(&self) -> usize {
+        self.in_flight.len()
+    }
+
+    /// The oldest picture asked for with [`start_picture_read`], top row first,
+    /// as straight RGBA bytes; waits until the card has finished it.
+    pub fn take_picture(&mut self) -> Result<Vec<u8>, String> {
+        let slot = self
+            .in_flight
+            .pop_front()
+            .ok_or("no picture is waiting to be read back")?;
+        let length = self.width as usize * self.height as usize * 4;
+        let gl = &self.gl;
+        unsafe {
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(self.packs[slot]));
+            let mapped = gl.map_buffer_range(
+                glow::PIXEL_PACK_BUFFER,
+                0,
+                length as i32,
+                glow::MAP_READ_BIT,
+            );
+            if mapped.is_null() {
+                gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+                return Err("the card would not hand the picture over".into());
+            }
+            let rgba = std::slice::from_raw_parts(mapped, length).to_vec();
+            gl.unmap_buffer(glow::PIXEL_PACK_BUFFER);
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+            let error = gl.get_error();
+            if error != glow::NO_ERROR {
+                return Err(format!("OpenGL error 0x{error:x}"));
+            }
+            Ok(rgba)
+        }
+    }
+
     /// The finished picture, top row first, as straight RGBA bytes.
+    #[cfg(test)]
     pub fn finish_picture(&mut self) -> Result<Vec<u8>, String> {
         let mut rgba = vec![0u8; self.width as usize * self.height as usize * 4];
         let gl = &self.gl;
@@ -634,6 +732,9 @@ impl Drop for GpuCompositor {
             }
             for (_, _, texture) in self.spare.drain(..) {
                 gl.delete_texture(texture);
+            }
+            for pack in self.packs.drain(..) {
+                gl.delete_buffer(pack);
             }
             gl.delete_texture(self.target);
             gl.delete_framebuffer(self.fbo);
@@ -757,6 +858,41 @@ mod tests {
             120 * 200
         );
         assert!(off < 120 * 200 / 50, "{off} pixels differ (worst {worst})");
+    }
+
+    #[test]
+    fn pictures_read_back_without_waiting_arrive_whole_and_in_order() {
+        let Ok(mut card) = GpuCompositor::new(120, 200) else {
+            eprintln!("no OpenGL here: skipping");
+            return;
+        };
+        let frame = picture();
+        let mut expected = VecDeque::new();
+        let mut taken = 0;
+        for i in 0..9 {
+            let placement = Placement {
+                scale: 1.0 + i as f32 * 0.3,
+                ..Placement::default()
+            };
+            card.begin_picture();
+            card.draw(&frame, &placement).unwrap();
+            // The same picture read the slow way, to compare with.
+            expected.push_back(card.finish_picture().unwrap());
+            card.start_picture_read().unwrap();
+            // Keep two on their way, like export does.
+            while card.pictures_waiting() > 2 {
+                let got = card.take_picture().unwrap();
+                assert!(got == expected.pop_front().unwrap(), "picture {taken} differs");
+                taken += 1;
+            }
+        }
+        while card.pictures_waiting() > 0 {
+            let got = card.take_picture().unwrap();
+            assert!(got == expected.pop_front().unwrap(), "picture {taken} differs");
+            taken += 1;
+        }
+        assert_eq!(taken, 9);
+        assert!(card.take_picture().is_err());
     }
 
     #[test]

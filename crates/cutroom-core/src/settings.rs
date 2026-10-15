@@ -72,6 +72,14 @@ pub struct Settings {
     pub export_encoder: String,
     /// Export: the folder the last video was saved in.
     pub export_folder: Option<PathBuf>,
+    /// Export: put pictures together on the graphics card? "auto" (when the
+    /// last check found it works and is faster), "on" or "off".
+    pub export_graphics_card: String,
+    /// What the last graphics card check found: `Some(true)` it works and is
+    /// faster than the processor, `Some(false)` it does not, `None` not checked.
+    pub graphics_card_ok: Option<bool>,
+    /// The Kani version that made that check (it is made again after an update).
+    pub graphics_card_checked: String,
 }
 
 impl Default for Settings {
@@ -92,6 +100,9 @@ impl Default for Settings {
             export_quality: "Recommended".into(),
             export_encoder: "auto".into(),
             export_folder: None,
+            export_graphics_card: "auto".into(),
+            graphics_card_ok: None,
+            graphics_card_checked: String::new(),
         }
     }
 }
@@ -102,6 +113,22 @@ impl Settings {
         self.projects_dir
             .clone()
             .unwrap_or_else(|| default.to_path_buf())
+    }
+
+    /// Should export put pictures together on the graphics card? "on" and "off"
+    /// are the user's word; "auto" (or anything else) follows the last check,
+    /// and stays on the processor until a check has said the card is better.
+    pub fn use_graphics_card(&self) -> bool {
+        match self.export_graphics_card.as_str() {
+            "on" => true,
+            "off" => false,
+            _ => self.graphics_card_ok == Some(true),
+        }
+    }
+
+    /// Does the graphics card check need making (never made, or by an older version)?
+    pub fn graphics_card_needs_check(&self, version: &str) -> bool {
+        self.graphics_card_ok.is_none() || self.graphics_card_checked != version
     }
 
     /// Remember a project opened from anywhere, most recent first.
@@ -220,6 +247,26 @@ mod tests {
             loaded.autosave_minutes, 10,
             "missing fields use real defaults, not zero"
         );
+    }
+
+    #[test]
+    fn the_graphics_card_is_used_when_asked_or_when_the_check_liked_it() {
+        let mut s = Settings::default();
+        assert_eq!(s.export_graphics_card, "auto");
+        assert!(!s.use_graphics_card(), "not checked yet: the processor");
+        assert!(s.graphics_card_needs_check("0.5.15"));
+        s.graphics_card_ok = Some(true);
+        s.graphics_card_checked = "0.5.15".into();
+        assert!(s.use_graphics_card());
+        assert!(!s.graphics_card_needs_check("0.5.15"));
+        assert!(s.graphics_card_needs_check("0.5.16"), "checked again after an update");
+        s.graphics_card_ok = Some(false);
+        assert!(!s.use_graphics_card());
+        s.export_graphics_card = "on".into();
+        assert!(s.use_graphics_card(), "the user's word beats the check");
+        s.graphics_card_ok = Some(true);
+        s.export_graphics_card = "off".into();
+        assert!(!s.use_graphics_card());
     }
 
     #[test]

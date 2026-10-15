@@ -10,6 +10,9 @@ use cutroom_compose::{Canvas, Frame, Layer, Placement};
 use std::sync::Arc;
 use std::time::Instant;
 
+/// How much faster building a whole picture must be on the card for automatic mode to use it.
+const MIN_SPEEDUP: f64 = 1.3;
+
 /// Pictures put together per timing.
 const RUNS: usize = 40;
 
@@ -17,6 +20,9 @@ const RUNS: usize = 40;
 #[derive(Debug, Clone)]
 pub struct GpuReport {
     pub usable: bool,
+    /// Worth using by default: it works, it is a real graphics chip (not a
+    /// software imitation) and building whole pictures on it is clearly faster.
+    pub recommended: bool,
     /// One or two lines for the window.
     pub summary: String,
     /// Detail for the console.
@@ -47,6 +53,7 @@ pub fn test() -> GpuReport {
             return GpuReport {
                 usable: false,
                 summary: format!("Not available: {why}. Kani composites on the processor."),
+                recommended: false,
                 details,
             };
         }
@@ -73,6 +80,8 @@ pub fn test() -> GpuReport {
     ];
     let mut parts = Vec::new();
     let mut usable = true;
+    // How many times faster the card builds the whole picture than the processor.
+    let mut whole_speedup = 0.0f64;
     for (name, placement) in cases {
         let started = Instant::now();
         let mut failed = None;
@@ -141,14 +150,28 @@ pub fn test() -> GpuReport {
                 break;
             }
             card.draw_pixels(caption.clone(), &caption.frame, caption.left, caption.top);
-            match card.finish_picture() {
+            // As export does: ask for the picture and carry on, taking the one
+            // from two pictures ago.
+            let read = card.start_picture_read().and_then(|()| {
+                if card.pictures_waiting() > 2 {
+                    card.take_picture().map(|pixels| {
+                        std::hint::black_box(&pixels);
+                    })
+                } else {
+                    Ok(())
+                }
+            });
+            if let Err(why) = read {
+                failed = Some(why);
+                break;
+            }
+        }
+        while failed.is_none() && card.pictures_waiting() > 0 {
+            match card.take_picture() {
                 Ok(pixels) => {
                     std::hint::black_box(&pixels);
                 }
-                Err(why) => {
-                    failed = Some(why);
-                    break;
-                }
+                Err(why) => failed = Some(why),
             }
         }
         if let Some(why) = failed {
@@ -166,6 +189,7 @@ pub fn test() -> GpuReport {
                 std::hint::black_box(&canvas.rgba);
             }
             let on_cpu = started.elapsed().as_secs_f64() * 1000.0 / RUNS as f64;
+            whole_speedup = on_cpu / on_card.max(0.001);
             let line = format!(
                 "whole picture (2 videos + caption) {on_card:.1} ms on the card, {on_cpu:.1} ms on the processor ({:.1}x)",
                 on_cpu / on_card.max(0.001)
@@ -174,10 +198,41 @@ pub fn test() -> GpuReport {
             parts.push(line);
         }
     }
+    // Software imitations of a graphics chip (Mesa's llvmpipe and friends) work
+    // but run on the processor, so they are never a gain.
+    let name = card.renderer.to_lowercase();
+    let software = ["llvmpipe", "softpipe", "swrast", "software"]
+        .iter()
+        .any(|word| name.contains(word));
+    let recommended = usable && !software && whole_speedup >= MIN_SPEEDUP;
+    details.push(format!(
+        "verdict: {}",
+        if recommended {
+            "recommended"
+        } else if software {
+            "a software renderer, not recommended"
+        } else if usable {
+            "works but not clearly faster, not recommended"
+        } else {
+            "not usable"
+        }
+    ));
     GpuReport {
         usable,
+        recommended,
         summary: if usable {
-            format!("Works ({}): {}.", card.renderer, parts.join("; "))
+            format!(
+                "Works ({}): {}. {}",
+                card.renderer,
+                parts.join("; "),
+                if recommended {
+                    "Automatic mode will use it."
+                } else if software {
+                    "This is a software imitation of a graphics chip, so automatic mode keeps to the processor."
+                } else {
+                    "It is not clearly faster here, so automatic mode keeps to the processor."
+                }
+            )
         } else {
             format!(
                 "The card started but a test failed: {}. Kani composites on the processor.",

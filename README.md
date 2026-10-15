@@ -239,7 +239,7 @@ Tiny and Base are fast but often wrong, especially with noise or non-English spe
 | 2 | App shell: home screen, editing, autosave (done, now on GTK4) |
 | 3 | Media core: probing, thumbnails, preview, mixed sound, stills, waveforms, filmstrips, proxies, scrub throttling, decoder reporting (done); still to do: check hardware decoding on real machines and footage, proxy auto-creation, proxy encoder choice per machine |
 | 4 | Compositor: **layers, transforms, opacity, on-canvas transform box, crossfades and keyframes (done, CPU)**; deferred: GPU backend, blend modes, skipping decode of fully covered layers |
-| 5 | Export: **MP4 (H.264 + AAC) with the same pictures and sound as the preview, size / frame rate / quality choices, progress and cancel, and the best encoder that works on the machine (NVENC, Quick Sync, VA-API, AMF, VideoToolbox, else x264) with automatic fallback**; still to do: hardware encoders checked on real machines, an on/off setting for GPU compositing in renders (an experimental test switch is in the Export window now, off by default), H.265 / VP9 / AV1 and other containers, export of a range or of selected clips, presets for named sites |
+| 5 | Export: **MP4 (H.264 + AAC) with the same pictures and sound as the preview, optional graphics-card compositing (Automatic / Always / Never in the Export window; Automatic uses the card only when a check found a real graphics chip clearly faster, and falls back to the processor for anything it cannot draw), size / frame rate / quality choices, progress and cancel, and the best encoder that works on the machine (NVENC, Quick Sync, VA-API, AMF, VideoToolbox, else x264) with automatic fallback**; still to do: hardware encoders checked on real machines, H.265 / VP9 / AV1 and other containers, export of a range or of selected clips, presets for named sites |
 | 6 | Text engine and templates: **text clips (font, size, colour, outline, shadow, box, spacing), nine built-in styles, skew and perspective (done)**; still to do: mesh warp / free-form corner pinning, animating skew and perspective, user-saved text styles |
 | 7 | Captions with local Whisper, styled word highlighting: **generate captions from the sound of selected clips (or the whole timeline), five caption looks, the spoken word or the line so far lit up as it is said, editable word by word, .srt / .vtt export (done)**; still to do: real-world accuracy checks on your machine, speaker labels, translation, GPU-accelerated recognition |
 | 8 | Asset libraries and the pack format, with license tracking |
@@ -249,7 +249,7 @@ Tiny and Base are fast but often wrong, especially with noise or non-English spe
 
 ## Version numbers
 
-`major.phase.iteration`, for example `0.5.14`:
+`major.phase.iteration`, for example `0.5.15`:
 
 - **major**: the approved official release (0 until one is approved)
 - **phase**: the development phase being worked on (4 = compositor and editing UI, 5 = export, 6 = text, 7 = captions)

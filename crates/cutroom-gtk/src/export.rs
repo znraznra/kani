@@ -24,7 +24,7 @@ use cutroom_timeline::{ClipId, FrameRate, MediaId, Ticks, Timeline};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -782,6 +782,9 @@ struct Renderer<'a> {
     /// Whole pictures put together on the card, and ones the card passed to the processor.
     gpu_frames: u64,
     gpu_skipped_frames: u64,
+    /// Finished pictures not yet handed to the encoder, oldest first. With the
+    /// card on, the newest ones are still on their way back from it.
+    ready: VecDeque<Vec<u8>>,
     /// Time spent making the empty (black) canvas for each picture.
     canvas_time: Duration,
     /// Stills and text that stay where they are from frame to frame, drawn once.
@@ -832,6 +835,7 @@ impl<'a> Renderer<'a> {
             gpu_layers: 0,
             gpu_frames: 0,
             gpu_skipped_frames: 0,
+            ready: VecDeque::new(),
             canvas_time: Duration::ZERO,
             static_layers: HashMap::new(),
             layer_time: HashMap::new(),
@@ -885,8 +889,9 @@ impl<'a> Renderer<'a> {
         frame
     }
 
-    /// The finished picture at timeline time `at`.
-    fn picture(&mut self, at: Ticks) -> Vec<u8> {
+    /// Put together the picture at timeline time `at`. It joins `ready` now, or
+    /// (with the card on) a couple of pictures later, always in order.
+    fn picture(&mut self, at: Ticks) -> Result<()> {
         let (width, height) = (self.job.width, self.job.height);
         let targets = {
             let resolve = self.resolve();
@@ -998,11 +1003,15 @@ impl<'a> Renderer<'a> {
         let started = std::time::Instant::now();
         if self.job.gpu && self.gpu_problem.is_none() {
             let started = std::time::Instant::now();
-            if let Some(pixels) = self.picture_on_card(&picked) {
-                self.compose_time += started.elapsed();
-                return pixels;
+            let done = self.picture_on_card(&picked)?;
+            self.compose_time += started.elapsed();
+            if done {
+                return Ok(());
             }
         }
+        // The processor does this one; the ones still on their way back from the
+        // card come first.
+        self.drain_card()?;
         let canvas_started = std::time::Instant::now();
         let mut canvas = Canvas::new(width, height);
         self.canvas_time += canvas_started.elapsed();
@@ -1017,7 +1026,48 @@ impl<'a> Renderer<'a> {
             entry.1 += 1;
         }
         self.compose_time += started.elapsed();
-        canvas.rgba
+        self.ready.push_back(canvas.rgba);
+        Ok(())
+    }
+
+    /// Take every picture still on its way back from the card.
+    fn drain_card(&mut self) -> Result<()> {
+        let Some(card) = self.gpu.as_mut() else {
+            return Ok(());
+        };
+        let started = std::time::Instant::now();
+        let mut taken = Vec::new();
+        let mut lost = None;
+        while card.pictures_waiting() > 0 {
+            match card.take_picture() {
+                Ok(pixels) => taken.push(pixels),
+                Err(why) => {
+                    lost = Some(why);
+                    break;
+                }
+            }
+        }
+        self.ready.extend(taken);
+        self.record_read_back(started.elapsed());
+        match lost {
+            Some(why) => fail(format!("the graphics card lost a picture: {why}")),
+            None => Ok(()),
+        }
+    }
+
+    /// Everything left in the pipeline: call after the last picture.
+    fn flush(&mut self) -> Result<()> {
+        let started = std::time::Instant::now();
+        self.drain_card()?;
+        self.compose_time += started.elapsed();
+        Ok(())
+    }
+
+    fn record_read_back(&mut self, time: Duration) {
+        let key = ("read-back from the card", self.job.width, self.job.height, 0, false, 0);
+        let entry = self.layer_time.entry(key).or_default();
+        entry.0 += time;
+        entry.1 += 1;
     }
 
     /// The whole picture put together on the graphics card: the canvas stays
@@ -1026,7 +1076,7 @@ impl<'a> Renderer<'a> {
     fn picture_on_card(
         &mut self,
         picked: &[(Item, (&'static str, u32, u32, i32, bool, u8))],
-    ) -> Option<Vec<u8>> {
+    ) -> Result<bool> {
         let (width, height) = (self.job.width, self.job.height);
         if self.gpu.is_none() {
             match crate::gpu_compose::GpuCompositor::new(width, height) {
@@ -1040,11 +1090,13 @@ impl<'a> Renderer<'a> {
                 Err(why) => {
                     eprintln!("kani: graphics card compositing could not start: {why}; using the processor");
                     self.gpu_problem = Some(why);
-                    return None;
+                    return Ok(false);
                 }
             }
         }
-        let card = self.gpu.as_mut()?;
+        let Some(card) = self.gpu.as_mut() else {
+            return Ok(false);
+        };
         card.begin_picture();
         let mut outcome: std::result::Result<(), String> = Ok(());
         for (item, key) in picked {
@@ -1073,30 +1125,47 @@ impl<'a> Renderer<'a> {
                 break;
             }
         }
+        // Ask for the picture and carry on; the one before comes back while the
+        // card works on this one.
         let started = std::time::Instant::now();
-        let finished = outcome.and_then(|()| card.finish_picture());
-        let entry = self
-            .layer_time
-            .entry(("read-back from the card", width, height, 0, false, 0))
-            .or_default();
-        entry.0 += started.elapsed();
-        entry.1 += 1;
-        match finished {
-            Ok(pixels) => {
+        let asked = outcome.and_then(|()| card.start_picture_read());
+        let mut taken = Vec::new();
+        let mut late = Ok(());
+        if asked.is_ok() {
+            while card.pictures_waiting() > 2 {
+                match card.take_picture() {
+                    Ok(pixels) => taken.push(pixels),
+                    Err(why) => {
+                        late = Err(why);
+                        break;
+                    }
+                }
+            }
+        }
+        let spent = started.elapsed();
+        self.ready.extend(taken);
+        self.record_read_back(spent);
+        if let Err(why) = late {
+            return fail(format!("the graphics card lost a picture: {why}"));
+        }
+        match asked {
+            Ok(()) => {
                 self.gpu_frames += 1;
                 self.gpu_layers += picked.len() as u64;
-                Some(pixels)
+                Ok(true)
             }
             Err(why) if why.starts_with(crate::gpu_compose::UNSUPPORTED) => {
                 // One picture the card path cannot place: the processor does it.
                 self.gpu_skipped_frames += 1;
-                None
+                Ok(false)
             }
             Err(why) => {
                 eprintln!("kani: graphics card compositing failed: {why}; using the processor from here on");
                 self.gpu_problem = Some(why);
+                // Pictures already on their way come first, then the card goes.
+                self.drain_card()?;
                 self.gpu = None;
-                None
+                Ok(false)
             }
         }
     }
@@ -1267,6 +1336,25 @@ fn push(src: &gst_app::AppSrc, bus: &gst::Bus, buffer: gst::Buffer) -> Result<()
     })
 }
 
+/// Hand one finished picture to the encoder as frame number `index`.
+fn push_video(
+    vsrc: &gst_app::AppSrc,
+    bus: &gst::Bus,
+    pixels: Vec<u8>,
+    index: u64,
+    frame_ns: &dyn Fn(u64) -> u64,
+) -> Result<()> {
+    let mut buffer = gst::Buffer::from_mut_slice(pixels);
+    {
+        let b = buffer.get_mut().ok_or("buffer")?;
+        b.set_pts(gst::ClockTime::from_nseconds(frame_ns(index)));
+        b.set_duration(gst::ClockTime::from_nseconds(
+            frame_ns(index + 1).saturating_sub(frame_ns(index)),
+        ));
+    }
+    push(vsrc, bus, buffer)
+}
+
 /// Render and save one file with one encoder.
 fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> Result<Report> {
     let Some(aac) = audio_encoder() else {
@@ -1349,6 +1437,7 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
 
     let mut renderer = Renderer::new(job);
     let mut audio_block = 0u64;
+    let mut pushed = 0u64;
     let (mut picture_time, mut push_time) = (Duration::ZERO, Duration::ZERO);
     let finish = |result: Result<()>, pipeline: &gst::Pipeline| {
         if result.is_err() {
@@ -1363,18 +1452,13 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
             }
             let at = frame_time(i, job.fps);
             let t0 = std::time::Instant::now();
-            let pixels = renderer.picture(at);
+            renderer.picture(at)?;
             picture_time += t0.elapsed();
-            let mut buffer = gst::Buffer::from_mut_slice(pixels);
-            {
-                let b = buffer.get_mut().ok_or("buffer")?;
-                b.set_pts(gst::ClockTime::from_nseconds(frame_ns(i)));
-                b.set_duration(gst::ClockTime::from_nseconds(
-                    frame_ns(i + 1).saturating_sub(frame_ns(i)),
-                ));
-            }
             let t1 = std::time::Instant::now();
-            push(&vsrc, &bus, buffer)?;
+            while let Some(pixels) = renderer.ready.pop_front() {
+                push_video(&vsrc, &bus, pixels, pushed, &frame_ns)?;
+                pushed += 1;
+            }
             push_time += t1.elapsed();
             // Sound up to the end of this frame.
             let until = frame_time(i + 1, job.fps)
@@ -1387,6 +1471,14 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
                 audio_block += 1;
             }
             progress.frames_done.store(i + 1, Ordering::Relaxed);
+        }
+        // The last pictures still on their way back from the card.
+        let t0 = std::time::Instant::now();
+        renderer.flush()?;
+        picture_time += t0.elapsed();
+        while let Some(pixels) = renderer.ready.pop_front() {
+            push_video(&vsrc, &bus, pixels, pushed, &frame_ns)?;
+            pushed += 1;
         }
         while audio_block < blocks_total {
             if progress.cancel.load(Ordering::Relaxed) {
