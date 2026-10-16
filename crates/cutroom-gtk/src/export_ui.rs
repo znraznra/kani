@@ -1,6 +1,8 @@
 //! The Export window: a picture of the project on the left; on the right where
 //! to save, and the Video, Audio and Captions to make, then the encoder and
-//! hardware acceleration. Then progress with a Cancel button, and the result.
+//! hardware acceleration. While exporting, the same window stays (same size,
+//! same picture, which follows the frames as they are made) and the right-hand
+//! side shows progress and a log; Cancel stays where it was.
 
 use crate::app::App;
 use crate::export::{self, Encoder, ExportError, Job, Progress, Report, Source};
@@ -66,11 +68,13 @@ pub struct Dialog {
     pub summary: gtk::Label,
     pub export: gtk::Button,
     pub cancel: gtk::Button,
-    form: gtk::Box,
-    run: gtk::Box,
+    /// The right-hand side: the choices, or the progress while exporting.
+    stack: gtk::Stack,
     bar: gtk::ProgressBar,
     note: gtk::Label,
-    stop: gtk::Button,
+    log: gtk::TextBuffer,
+    /// The export has ended: Export now reads "Show in folder" and Cancel reads "Close".
+    finished: Cell<bool>,
     folder_path: RefCell<PathBuf>,
     // What the project is, and what is offered for it.
     project: (u32, u32),
@@ -286,6 +290,7 @@ fn section_check(title: &str, on: bool) -> gtk::CheckButton {
 fn grid_label(text: &str) -> gtk::Label {
     let l = gtk::Label::new(Some(text));
     l.set_xalign(0.0);
+    l.set_width_chars(10);
     l.add_css_class("dim-label");
     l
 }
@@ -293,9 +298,37 @@ fn grid_label(text: &str) -> gtk::Label {
 fn new_grid() -> gtk::Grid {
     let grid = gtk::Grid::new();
     grid.set_row_spacing(8);
-    grid.set_column_spacing(12);
-    grid.set_margin_start(22);
+    grid.set_column_spacing(10);
     grid
+}
+
+thread_local! {
+    static STYLED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The Export window is denser than the rest of the app (small controls, tight
+/// rows, small type): a compact dialog with a picture beside it.
+fn add_compact_style() {
+    if STYLED.with(|s| s.replace(true)) {
+        return;
+    }
+    let Some(display) = gtk::gdk::Display::default() else {
+        return;
+    };
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(
+        "window.kani-export { font-size: 10pt; }\
+         window.kani-export button, window.kani-export entry, window.kani-export dropdown > button, window.kani-export spinbutton { min-height: 22px; padding-top: 2px; padding-bottom: 2px; }\
+         window.kani-export .heading { font-size: 10.5pt; font-weight: 700; }\
+         window.kani-export .caption { font-size: 9pt; }\
+         window.kani-export checkbutton { min-height: 20px; }\
+         window.kani-export .export-log { font-size: 9pt; }",
+    );
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
 }
 
 fn dropdown(items: &[&str]) -> gtk::DropDown {
@@ -360,18 +393,26 @@ pub fn open(app: &Rc<App>) {
         .transient_for(&app.window)
         .modal(true)
         .destroy_with_parent(true)
-        .default_width(900)
-        .default_height(-1)
+        .default_width(740)
+        .default_height(560)
         .build();
+    add_compact_style();
+    window.add_css_class("kani-export");
 
     // ---- left: the picture and the list of files
     let preview = gtk::Picture::new();
-    preview.set_size_request(300, 300);
     #[allow(deprecated)]
     preview.set_keep_aspect_ratio(true);
     preview.set_can_shrink(true);
+    // A fixed-size box for the picture, whatever shape the video is.
+    let preview_box = gtk::ScrolledWindow::new();
+    preview_box.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Never);
+    preview_box.set_size_request(300, 300);
+    preview_box.set_hexpand(false);
+    preview_box.set_vexpand(false);
+    preview_box.set_child(Some(&preview));
     let preview_frame = gtk::Frame::new(None);
-    preview_frame.set_child(Some(&preview));
+    preview_frame.set_child(Some(&preview_box));
     let preview_note = gtk::Label::new(Some("Preparing the picture ..."));
     preview_note.add_css_class("dim-label");
     preview_note.add_css_class("caption");
@@ -379,10 +420,10 @@ pub fn open(app: &Rc<App>) {
     let files = gtk::Label::new(None);
     files.set_xalign(0.0);
     files.set_wrap(true);
-    files.set_max_width_chars(34);
+    files.set_max_width_chars(36);
     files.set_selectable(false);
     files.add_css_class("caption");
-    let left = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let left = gtk::Box::new(gtk::Orientation::Vertical, 6);
     left.set_valign(gtk::Align::Start);
     left.set_width_request(300);
     left.append(&preview_frame);
@@ -390,11 +431,11 @@ pub fn open(app: &Rc<App>) {
     left.append(&files);
 
     // ---- right: where to save
-    let right = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    let right = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let top = new_grid();
-    top.set_margin_start(0);
     let name = gtk::Entry::new();
     name.set_hexpand(true);
+    name.set_width_chars(8);
     name.set_text(&clean_name(&project_name));
     let ext = gtk::Label::new(Some(".mp4"));
     ext.add_css_class("dim-label");
@@ -409,7 +450,8 @@ pub fn open(app: &Rc<App>) {
     folder.set_hexpand(true);
     folder.set_ellipsize(gtk::pango::EllipsizeMode::Start);
     folder.set_tooltip_text(Some(&folder_path.display().to_string()));
-    let change = gtk::Button::with_label("Change...");
+    let change = gtk::Button::from_icon_name("folder-open-symbolic");
+    change.set_tooltip_text(Some("Choose the folder"));
     let folder_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     folder_row.append(&folder);
     folder_row.append(&change);
@@ -484,7 +526,7 @@ pub fn open(app: &Rc<App>) {
     }
     video_grid.attach(&grid_label("Color space"), 0, row, 1, 1);
     video_grid.attach(&colour, 1, row, 1, 1);
-    let video_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let video_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
     video_box.append(&video_on);
     video_box.append(&video_grid);
     right.append(&video_box);
@@ -513,7 +555,7 @@ pub fn open(app: &Rc<App>) {
     audio_grid.attach(&audio_bitrate, 1, 1, 1, 1);
     audio_grid.attach(&grid_label("Channels"), 0, 2, 1, 1);
     audio_grid.attach(&channels, 1, 2, 1, 1);
-    let audio_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let audio_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
     audio_box.append(&audio_on);
     audio_box.append(&audio_grid);
     right.append(&audio_box);
@@ -530,7 +572,7 @@ pub fn open(app: &Rc<App>) {
     caption_vtt.set_active(wanted("vtt"));
     caption_ass.set_active(wanted("ass"));
     let caption_grid = gtk::Box::new(gtk::Orientation::Vertical, 4);
-    caption_grid.set_margin_start(22);
+    caption_grid.set_margin_start(20);
     caption_grid.append(&caption_srt);
     caption_grid.append(&caption_vtt);
     caption_grid.append(&caption_ass);
@@ -538,17 +580,17 @@ pub fn open(app: &Rc<App>) {
     caption_note.set_xalign(0.0);
     caption_note.add_css_class("dim-label");
     caption_note.add_css_class("caption");
-    caption_note.set_margin_start(22);
+    caption_note.set_margin_start(20);
     caption_note.set_visible(cues.is_empty());
-    let caption_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let caption_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
     caption_box.append(&captions_on);
     caption_box.append(&caption_grid);
     caption_box.append(&caption_note);
     right.append(&caption_box);
     right.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
-    // ---- Encoder and hardware acceleration
-    let heading = gtk::Label::new(Some("Encoder and hardware acceleration"));
+    // ---- Encoder and rendering
+    let heading = gtk::Label::new(Some("Encoder"));
     heading.set_xalign(0.0);
     heading.add_css_class("heading");
     let tech_grid = new_grid();
@@ -559,32 +601,30 @@ pub fn open(app: &Rc<App>) {
     ));
     tech_grid.attach(&grid_label("Encoder"), 0, 0, 1, 1);
     tech_grid.attach(&encoder, 1, 0, 1, 1);
-    // The graphics card: automatic, always or never, and a button that checks
-    // it. Automatic follows the last check, which Kani makes by itself the
-    // first time and after each update.
-    let gpu_mode = dropdown(&["Automatic (recommended)", "Always use it", "Never use it"]);
+    // Rendering: Automatic, Hardware (the graphics card puts the pictures
+    // together) or Software (the processor does). Automatic follows the last
+    // check, which Kani makes by itself the first time and after each update.
+    let gpu_mode = dropdown(&["Automatic (recommended)", "Hardware", "Software"]);
     gpu_mode.set_selected(match settings.export_graphics_card.as_str() {
         "on" => 1,
         "off" => 2,
         _ => 0,
     });
     gpu_mode.set_tooltip_text(Some(
-        "Automatic: the graphics card builds the pictures when a check found it works and is clearly faster, otherwise the processor does. Always: use the card whenever it can (anything it cannot do falls back to the processor). Never: the processor does it all.",
+        "Automatic: the graphics card builds the pictures when a check found it works and is clearly faster, otherwise the processor does. Hardware: use the graphics card whenever it can (anything it cannot do falls back to the processor). Software: the processor does it all.",
     ));
-    let gpu_button = gtk::Button::with_label("Check the graphics card");
-    gpu_button.set_halign(gtk::Align::Start);
+    tech_grid.attach(&grid_label("Rendering"), 0, 1, 1, 1);
+    tech_grid.attach(&gpu_mode, 1, 1, 1, 1);
+    let gpu_button = gtk::Button::with_label("Check");
+    gpu_button.set_tooltip_text(Some("Test the graphics card again"));
     let gpu_note = gtk::Label::new(Some(&card_note(&settings)));
     gpu_note.set_xalign(0.0);
-    gpu_note.set_wrap(true);
-    gpu_note.set_max_width_chars(46);
-    gpu_note.add_css_class("dim-label");
-    gpu_note.add_css_class("caption");
-    let gpu_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
-    gpu_box.append(&gpu_mode);
-    gpu_box.append(&gpu_button);
-    gpu_box.append(&gpu_note);
-    tech_grid.attach(&grid_label("Hardware acceleration"), 0, 1, 1, 1);
-    tech_grid.attach(&gpu_box, 1, 1, 1, 1);
+    gpu_note.set_hexpand(true);
+    let gpu_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    gpu_row.append(&gpu_note);
+    gpu_row.append(&gpu_button);
+    tech_grid.attach(&grid_label("Hardware"), 0, 2, 1, 1);
+    tech_grid.attach(&gpu_row, 1, 2, 1, 1);
     right.append(&heading);
     right.append(&tech_grid);
     {
@@ -596,17 +636,66 @@ pub fn open(app: &Rc<App>) {
     }
 
     let scroll = gtk::ScrolledWindow::new();
-    scroll.set_hscrollbar_policy(gtk::PolicyType::Never);
-    scroll.set_min_content_height(520);
-    scroll.set_propagate_natural_height(true);
+    // The right-hand side is a fixed width whatever the lists say.
+    scroll.set_hscrollbar_policy(gtk::PolicyType::External);
+    scroll.set_min_content_height(380);
+    scroll.set_min_content_width(390);
+    scroll.set_max_content_width(390);
     scroll.set_hexpand(true);
     scroll.set_child(Some(&right));
     right.set_margin_end(12);
 
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 18);
-    content.append(&left);
-    content.append(&scroll);
+    // While exporting, the right-hand side shows this instead of the choices:
+    // the window, its size and the picture on the left all stay as they were.
+    let bar = gtk::ProgressBar::new();
+    bar.set_show_text(true);
+    let status_title = gtk::Label::new(Some("Exporting"));
+    status_title.set_xalign(0.0);
+    status_title.add_css_class("heading");
+    let note = gtk::Label::new(None);
+    note.set_xalign(0.0);
+    note.set_wrap(true);
+    note.add_css_class("dim-label");
+    let log = gtk::TextBuffer::new(None);
+    let log_view = gtk::TextView::with_buffer(&log);
+    log_view.set_editable(false);
+    log_view.set_cursor_visible(false);
+    log_view.set_wrap_mode(gtk::WrapMode::WordChar);
+    log_view.add_css_class("export-log");
+    log_view.set_left_margin(6);
+    log_view.set_right_margin(6);
+    log_view.set_top_margin(4);
+    let log_scroll = gtk::ScrolledWindow::new();
+    log_scroll.set_vexpand(true);
+    log_scroll.set_hscrollbar_policy(gtk::PolicyType::Never);
+    log_scroll.set_min_content_height(250);
+    log_scroll.set_child(Some(&log_view));
+    let log_frame = gtk::Frame::new(None);
+    log_frame.set_child(Some(&log_scroll));
+    let run = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    run.append(&status_title);
+    run.append(&bar);
+    run.append(&note);
+    run.append(&log_frame);
+    run.set_margin_end(12);
+    run.set_width_request(390);
 
+    let stack = gtk::Stack::new();
+    stack.set_hhomogeneous(true);
+    stack.set_vhomogeneous(true);
+    stack.set_hexpand(false);
+    stack.set_width_request(390);
+    stack.add_named(&scroll, Some("form"));
+    stack.add_named(&run, Some("run"));
+    stack.set_visible_child_name("form");
+
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+    content.append(&left);
+    content.append(&stack);
+
+    // The buttons are the same size and place throughout: Export then Cancel at
+    // the lower right. While exporting Export is hidden and Cancel stays put; when
+    // it is over they read "Show in folder" and "Close".
     let summary = gtk::Label::new(None);
     summary.set_xalign(0.0);
     summary.set_hexpand(true);
@@ -614,45 +703,23 @@ pub fn open(app: &Rc<App>) {
     summary.add_css_class("dim-label");
     let cancel = gtk::Button::with_label("Cancel");
     let export = gtk::Button::with_label("Export");
+    for b in [&cancel, &export] {
+        b.set_size_request(96, -1);
+    }
     export.add_css_class("suggested-action");
     export.set_sensitive(false);
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     buttons.append(&summary);
-    buttons.append(&cancel);
     buttons.append(&export);
+    buttons.append(&cancel);
 
-    let form = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    form.set_margin_top(18);
-    form.set_margin_bottom(16);
-    form.set_margin_start(20);
-    form.set_margin_end(20);
-    form.append(&content);
-    form.append(&buttons);
-
-    // The progress page, shown instead of the form while exporting.
-    let run = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    run.set_margin_top(18);
-    run.set_margin_bottom(16);
-    run.set_margin_start(20);
-    run.set_margin_end(20);
-    let bar = gtk::ProgressBar::new();
-    bar.set_show_text(true);
-    let note = gtk::Label::new(None);
-    note.set_xalign(0.0);
-    note.set_wrap(true);
-    note.set_max_width_chars(60);
-    note.add_css_class("dim-label");
-    note.add_css_class("caption");
-    let stop = gtk::Button::with_label("Cancel");
-    stop.set_halign(gtk::Align::End);
-    run.append(&bar);
-    run.append(&note);
-    run.append(&stop);
-    run.set_visible(false);
-
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    root.append(&form);
-    root.append(&run);
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    root.set_margin_top(16);
+    root.set_margin_bottom(14);
+    root.set_margin_start(18);
+    root.set_margin_end(18);
+    root.append(&content);
+    root.append(&buttons);
     window.set_child(Some(&root));
 
     let dialog = Rc::new(Dialog {
@@ -689,11 +756,11 @@ pub fn open(app: &Rc<App>) {
         summary,
         export,
         cancel,
-        form,
-        run,
+        stack,
         bar,
         note,
-        stop,
+        log,
+        finished: Cell::new(false),
         folder_path: RefCell::new(folder_path),
         project: canvas,
         project_rate,
@@ -1399,8 +1466,15 @@ fn connect(app: &Rc<App>, d: &Rc<Dialog>) {
         d.name.clone().connect_changed(move |_| update_summary(&d));
     }
     {
+        // Cancel stops a running export; otherwise (before, or after it is over) it closes.
         let d2 = d.clone();
-        d.cancel.connect_clicked(move |_| close(&d2));
+        d.cancel.connect_clicked(move |_| {
+            if d2.running.borrow().is_some() {
+                stop_export(&d2);
+            } else {
+                close(&d2);
+            }
+        });
     }
     {
         let d2 = d.clone();
@@ -1413,10 +1487,6 @@ fn connect(app: &Rc<App>, d: &Rc<Dialog>) {
             }
             glib::Propagation::Stop
         });
-    }
-    {
-        let d2 = d.clone();
-        d.stop.connect_clicked(move |_| stop_export(&d2));
     }
     {
         let d2 = d.clone();
@@ -1447,7 +1517,16 @@ fn connect(app: &Rc<App>, d: &Rc<Dialog>) {
     {
         let (app, d2) = (app.clone(), d.clone());
         d.export.connect_clicked(move |_| {
-            begin(&app, &d2);
+            if d2.finished.get() {
+                // Once the export is over this button shows the files.
+                let first = d2.saved.borrow().clone();
+                if let Some(parent) = first.as_ref().and_then(|p| p.parent()) {
+                    let uri = gio::File::for_path(parent).uri();
+                    let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+                }
+            } else {
+                begin(&app, &d2);
+            }
         });
     }
     {
@@ -1468,12 +1547,23 @@ fn close(d: &Rc<Dialog>) {
     d.window.destroy();
 }
 
+/// Add a line to the log shown while exporting.
+fn log_line(d: &Dialog, line: &str) {
+    let mut end = d.log.end_iter();
+    if d.log.char_count() > 0 {
+        d.log.insert(&mut end, "\n");
+    }
+    let mut end = d.log.end_iter();
+    d.log.insert(&mut end, line);
+}
+
 fn stop_export(d: &Rc<Dialog>) {
     if let Some(run) = d.running.borrow().as_ref() {
         run.progress.cancel.store(true, Ordering::Relaxed);
     }
-    d.stop.set_sensitive(false);
+    d.cancel.set_sensitive(false);
     d.note.set_text("Cancelling...");
+    log_line(d, "Cancelling ...");
 }
 
 fn begin(app: &Rc<App>, d: &Rc<Dialog>) {
@@ -1509,12 +1599,12 @@ fn begin(app: &Rc<App>, d: &Rc<Dialog>) {
     });
 }
 
-/// What the window says about the graphics card from the last check.
+/// What the window says about hardware acceleration from the last check.
 fn card_note(settings: &cutroom_core::settings::Settings) -> String {
-    match settings.graphics_card_ok {
-        Some(true) => "Last check: it works and is clearly faster. Automatic mode uses it.".into(),
-        Some(false) => "Last check: not worth using on this computer. Automatic mode keeps to the processor.".into(),
-        None => "Checking the graphics card ...".into(),
+    match settings.graphics_card_available.or(settings.graphics_card_ok) {
+        Some(true) => "Available".into(),
+        Some(false) => "Not available".into(),
+        None => "Checking ...".into(),
     }
 }
 
@@ -1522,7 +1612,7 @@ fn card_note(settings: &cutroom_core::settings::Settings) -> String {
 /// what was found and remember it for automatic mode.
 fn check_card(app: &Rc<App>, button: &gtk::Button, note: &gtk::Label) {
     button.set_sensitive(false);
-    note.set_text("Checking the graphics card ...");
+    note.set_text("Checking ...");
     let found: Arc<Mutex<Option<crate::gpu::GpuReport>>> = Arc::new(Mutex::new(None));
     {
         let found = found.clone();
@@ -1552,10 +1642,11 @@ fn check_card(app: &Rc<App>, button: &gtk::Button, note: &gtk::Label) {
         {
             let mut st = app.state.borrow_mut();
             st.settings.graphics_card_ok = Some(report.recommended);
+            st.settings.graphics_card_available = Some(report.available);
             st.settings.graphics_card_checked = env!("CARGO_PKG_VERSION").to_string();
             st.save_settings();
         }
-        note.set_text(&report.summary);
+        note.set_text(if report.available { "Available" } else { "Not available" });
         button.set_sensitive(true);
         glib::ControlFlow::Break
     });
@@ -1693,27 +1784,46 @@ fn start(app: &Rc<App>, d: &Rc<Dialog>) {
         outcome,
         started: Instant::now(),
     });
-    d.form.set_visible(false);
-    d.run.set_visible(true);
-    d.stop.set_sensitive(true);
+    d.stack.set_visible_child_name("run");
+    d.export.set_visible(false);
+    d.cancel.set_sensitive(true);
     d.window.set_title(Some("Exporting..."));
     d.bar.set_fraction(0.0);
     d.bar.set_text(Some("Starting..."));
-    d.note.set_text(
-        &planned
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join("\n"),
-    );
+    d.note.set_text("Starting ...");
+    d.log.set_text("");
+    d.preview_note.set_text("The picture being made");
+    log_line(d, "Making:");
+    for p in &planned {
+        log_line(d, &format!("  {}", p.display()));
+    }
+    log_line(d, "Starting ...");
 
     let (app, d) = (app.clone(), d.clone());
-    glib::timeout_add_local(Duration::from_millis(150), move || {
+    let logged_sound = Cell::new(false);
+    glib::timeout_add_local(Duration::from_millis(120), move || {
+        if d.gone.get() {
+            return glib::ControlFlow::Break;
+        }
         let (fraction, done, total, elapsed, finished, sound_pass) = {
             let running = d.running.borrow();
             let Some(r) = running.as_ref() else {
                 return glib::ControlFlow::Break;
             };
+            // The picture on the left follows the frames as they are made.
+            if let Some(live) = r.progress.live.lock().unwrap().take() {
+                let texture = gtk::gdk::MemoryTexture::new(
+                    live.width as i32,
+                    live.height as i32,
+                    gtk::gdk::MemoryFormat::R8g8b8a8,
+                    &glib::Bytes::from_owned(live.rgba),
+                    live.width as usize * 4,
+                );
+                d.preview.set_paintable(Some(&texture));
+                let total = r.progress.frames_total.load(Ordering::Relaxed);
+                d.preview_note
+                    .set_text(&format!("Frame {} of {total}", live.frame));
+            }
             (
                 r.progress.fraction(),
                 r.progress.frames_done.load(Ordering::Relaxed),
@@ -1729,28 +1839,26 @@ fn start(app: &Rc<App>, d: &Rc<Dialog>) {
         match finished {
             None => {
                 d.bar.set_fraction(fraction);
+                d.bar.set_text(Some(&format!("{:.0}%", fraction * 100.0)));
                 let left = if fraction > 0.02 {
                     format!(
-                        " - about {} left",
+                        ", about {} left",
                         clock(elapsed * (1.0 - fraction) / fraction)
                     )
                 } else {
                     String::new()
                 };
-                d.bar.set_text(Some(&format!(
-                    "{:.0}% - {} elapsed{left}",
-                    fraction * 100.0,
-                    clock(elapsed)
-                )));
-                let files = planned
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if sound_pass {
-                    d.note.set_text(&format!("Making the sound file.\n{files}"));
+                let what = if sound_pass {
+                    "Making the sound file".to_string()
                 } else if total > 0 {
-                    d.note.set_text(&format!("Frame {done} of {total}.\n{files}"));
+                    format!("Frame {done} of {total}")
+                } else {
+                    "Starting".to_string()
+                };
+                d.note
+                    .set_text(&format!("{what}\n{} elapsed{left}", clock(elapsed)));
+                if sound_pass && !logged_sound.replace(true) {
+                    log_line(&d, "Making the sound file ...");
                 }
                 glib::ControlFlow::Continue
             }
@@ -1786,12 +1894,10 @@ fn finish(
             eprintln!("kani: the export failed: {message}");
             d.bar.set_fraction(0.0);
             d.bar.set_text(Some("The export failed"));
-            d.note.set_text(&message);
+            d.note.set_text("The export failed");
+            log_line(d, &message);
             d.window.set_title(Some("Export failed"));
-            d.stop.set_label("Close");
-            d.stop.set_sensitive(true);
-            let d2 = d.clone();
-            d.stop.connect_clicked(move |_| close(&d2));
+            end_buttons(d, false);
             app.set_status(format!("Export failed: {message}"));
             app.update_status();
         }
@@ -1799,26 +1905,27 @@ fn finish(
             d.bar.set_fraction(1.0);
             d.bar.set_text(Some("Done"));
             d.window.set_title(Some("Export finished"));
-            let mut text = String::from("Saved:");
+            d.note.set_text(&match report.elapsed {
+                e if e > Duration::ZERO => format!("Done\nTook {} (time elapsed)", elapsed_words(e.as_secs_f64())),
+                _ => "Done".to_string(),
+            });
+            log_line(d, "Saved:");
             for path in files.iter().filter(|p| p.is_file()) {
                 let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-                text.push_str(&format!("\n{} ({})", path.display(), megabytes(size as f64)));
+                log_line(d, &format!("  {} ({})", path.display(), megabytes(size as f64)));
             }
             if report.frames > 0 {
-                text.push_str(&format!("\n{} frames, {}.", report.frames, report.encoder));
+                log_line(d, &format!("{} frames, {}.", report.frames, report.encoder));
             }
             if report.elapsed > Duration::ZERO {
-                text.push_str(&format!(
-                    "\nTook {} (time elapsed).",
-                    elapsed_words(report.elapsed.as_secs_f64())
-                ));
+                log_line(
+                    d,
+                    &format!("Took {} (time elapsed).", elapsed_words(report.elapsed.as_secs_f64())),
+                );
             }
             for warning in report.warnings.iter().chain(caption_problems.iter()) {
-                if !text.contains(warning.as_str()) {
-                    text.push_str(&format!("\nNote: {warning}"));
-                }
+                log_line(d, &format!("Note: {warning}"));
             }
-            d.note.set_text(&text);
             let first = files.iter().find(|p| p.is_file()).cloned();
             *d.saved.borrow_mut() = first.clone();
             app.set_status(match &first {
@@ -1826,30 +1933,20 @@ fn finish(
                 None => "Export finished.".to_string(),
             });
             app.update_status();
-            // Replace the Cancel button by "Show in folder" and "Close".
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            row.set_halign(gtk::Align::End);
-            let show = gtk::Button::with_label("Show in folder");
-            let done = gtk::Button::with_label("Close");
-            done.add_css_class("suggested-action");
-            row.append(&show);
-            row.append(&done);
-            d.run.remove(&d.stop);
-            d.run.append(&row);
-            {
-                let first = first.clone();
-                show.connect_clicked(move |_| {
-                    if let Some(parent) = first.as_ref().and_then(|p| p.parent()) {
-                        let uri = gio::File::for_path(parent).uri();
-                        let _ =
-                            gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
-                    }
-                });
-            }
-            let d2 = d.clone();
-            done.connect_clicked(move |_| close(&d2));
+            end_buttons(d, first.is_some());
         }
     }
+}
+
+/// The export is over: the same two buttons now read "Show in folder" (when
+/// there is something to show) and "Close".
+fn end_buttons(d: &Dialog, can_show: bool) {
+    d.finished.set(true);
+    d.cancel.set_label("Close");
+    d.cancel.set_sensitive(true);
+    d.export.set_label("Show in folder");
+    d.export.set_visible(can_show);
+    d.export.set_sensitive(can_show);
 }
 
 thread_local! {
@@ -1864,6 +1961,14 @@ pub fn limit_for_tests(seconds: f64) {
 
 fn test_limit() -> Option<f64> {
     TEST_LIMIT.with(|l| l.get())
+}
+
+impl Dialog {
+    /// Is an export running in this window right now? (tests)
+    #[cfg(test)]
+    pub fn running_for_tests(&self) -> bool {
+        self.running.borrow().is_some()
+    }
 }
 
 /// Point the window at another folder (tests do not use the Videos folder).

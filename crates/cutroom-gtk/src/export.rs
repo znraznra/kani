@@ -28,7 +28,7 @@ use gstreamer_app as gst_app;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 // ---------------------------------------------------------------- settings
@@ -251,12 +251,14 @@ fn configure_encoder(element: &gst::Element, encoder: &Encoder, kbps: u32, fps: 
             set_number(element, "cpu-used", 4);
             set_number(element, "threads", threads);
             set_text(element, "row-mt", "true");
+            set_number(element, "lag-in-frames", 8);
         }
         "svtav1enc" => set_number(element, "preset", 10),
         "av1enc" => {
             set_number(element, "cpu-used", 6);
             set_number(element, "threads", threads);
             set_text(element, "row-mt", "true");
+            set_number(element, "lag-in-frames", 8);
         }
         _ => {}
     }
@@ -457,9 +459,64 @@ pub struct Progress {
     pub audio_pass: AtomicBool,
     /// Set when there is no video, only a sound file.
     pub audio_only: AtomicBool,
+    /// The newest picture handed to the encoder, small, for the window to show
+    /// while the export runs (taken by the window, so each is shown once).
+    pub live: Mutex<Option<LivePicture>>,
+    /// When the picture above was last updated (so it is not made for every frame).
+    live_at: Mutex<Option<std::time::Instant>>,
+}
+
+/// A small copy of a picture being exported (RGBA).
+pub struct LivePicture {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+    /// Which frame it is (counting from 1).
+    pub frame: u64,
 }
 
 impl Progress {
+    /// Offer a finished picture to the window. Only about eight a second are
+    /// kept (the rest cost time for nothing), but `force` always keeps one.
+    pub fn show(&self, width: u32, height: u32, pixels: &[u8], frame: u64, force: bool) {
+        const LONG_EDGE: u32 = 360;
+        {
+            let mut at = self.live_at.lock().unwrap();
+            let due = at.is_none_or(|t| t.elapsed() >= Duration::from_millis(120));
+            if !(due || force) {
+                return;
+            }
+            *at = Some(std::time::Instant::now());
+        }
+        let (w, h) = (width as usize, height as usize);
+        if w == 0 || h == 0 || pixels.len() < w * h * 4 {
+            return;
+        }
+        let shrink = f64::from(LONG_EDGE) / w.max(h) as f64;
+        let (ow, oh) = if shrink < 1.0 {
+            (
+                ((w as f64 * shrink).round() as usize).max(1),
+                ((h as f64 * shrink).round() as usize).max(1),
+            )
+        } else {
+            (w, h)
+        };
+        let mut rgba = Vec::with_capacity(ow * oh * 4);
+        for y in 0..oh {
+            let sy = y * h / oh;
+            for x in 0..ow {
+                let o = (sy * w + x * w / ow) * 4;
+                rgba.extend_from_slice(&pixels[o..o + 4]);
+            }
+        }
+        *self.live.lock().unwrap() = Some(LivePicture {
+            width: ow as u32,
+            height: oh as u32,
+            rgba,
+            frame,
+        });
+    }
+
     pub fn fraction(&self) -> f64 {
         let (done, total) = if self.audio_only.load(Ordering::Relaxed) {
             (
@@ -1598,9 +1655,15 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
         return fail("No sound encoder is installed in GStreamer.");
     };
     let unlimited = "max-size-buffers=0 max-size-bytes=0 max-size-time=0";
+    // Pictures waiting for the encoder are raw and large (8 MB each at 1080x1920),
+    // and H.265, VP9 and AV1 encode far slower than Kani draws pictures, so this
+    // queue must be small: when it is full the drawing waits for the encoder.
+    // (An unlimited queue here once piled up gigabytes and made the system stop
+    // the app on an 8 GB computer.) Only the small encoded data may queue freely.
+    let waiting = "max-size-buffers=4 max-size-bytes=0 max-size-time=0";
     let description = format!(
         "{mux} name=mux ! filesink name=out \
-         appsrc name=vsrc ! queue {unlimited} ! {video} ! queue {unlimited} ! mux. \
+         appsrc name=vsrc ! queue {waiting} ! {video} ! queue {unlimited} ! mux. \
          appsrc name=asrc ! queue {unlimited} ! {audio} ! queue {unlimited} ! mux.",
         mux = job.container.muxer(),
         video = video_chain(encoder),
@@ -1694,6 +1757,7 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
             let t1 = std::time::Instant::now();
             while let Some(pixels) = renderer.ready.pop_front() {
                 let pixels = into_frame(job, pixels);
+                progress.show(job.width, job.height, &pixels, pushed + 1, pushed + 1 >= frames);
                 push_video(&vsrc, &bus, pixels, pushed, &frame_ns)?;
                 pushed += 1;
             }
@@ -1716,6 +1780,7 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
         picture_time += t0.elapsed();
         while let Some(pixels) = renderer.ready.pop_front() {
             let pixels = into_frame(job, pixels);
+            progress.show(job.width, job.height, &pixels, pushed + 1, pushed + 1 >= frames);
             push_video(&vsrc, &bus, pixels, pushed, &frame_ns)?;
             pushed += 1;
         }
@@ -2946,6 +3011,84 @@ mod tests {
                 assert!(!info.contains("h264"), "{info}");
             }
         }
+    }
+
+    /// Peak memory of this process so far, in megabytes (Linux).
+    fn peak_megabytes() -> f64 {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("VmHWM:"))
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .and_then(|kb| kb.parse::<f64>().ok())
+            })
+            .map_or(0.0, |kb| kb / 1024.0)
+    }
+
+    /// A slow encoder must make the renderer wait, not pile pictures up in
+    /// memory. Run alone: `cargo test slow_encoders -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn slow_encoders_do_not_fill_the_memory_with_waiting_pictures() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(base) = small_job(dir.path()) else {
+            return;
+        };
+        let frames: u32 = std::env::var("KANI_MEM_FPS").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
+        let only = std::env::var("KANI_MEM_CODEC").unwrap_or_default();
+        for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Vp9, VideoCodec::Av1] {
+            if !only.is_empty() && only != codec.id() {
+                continue;
+            }
+            let encoders: Vec<Encoder> = candidates(codec)
+                .into_iter()
+                .filter(|e| !e.hardware && has_element(e.element))
+                .collect();
+            if encoders.is_empty() {
+                continue;
+            }
+            let mut job = base.clone();
+            job.width = 1080;
+            job.height = 1920;
+            job.canvas_width = 1080;
+            job.canvas_height = 1920;
+            job.fps = FrameRate::new(frames, 1);
+            job.encoders = encoders;
+            job.container = codec.containers()[0];
+            job.audio_format = job.container.audio_formats().iter().copied().find(|f| audio_available(*f)).unwrap();
+            let path = dir.path().join(format!("big.{}", job.container.extension()));
+            job.output = Some(path);
+            let before = peak_megabytes();
+            let started = std::time::Instant::now();
+            export(&job, &Progress::default()).expect("export");
+            eprintln!(
+                "MEMORY {}: peak {:.0} MB (was {before:.0} MB), {:.1} s",
+                codec.name(),
+                peak_megabytes(),
+                started.elapsed().as_secs_f64()
+            );
+        }
+    }
+
+    #[test]
+    fn the_window_is_offered_small_pictures_at_a_steady_pace() {
+        let progress = Progress::default();
+        let big = vec![200u8; 1080 * 1920 * 4];
+        progress.show(1080, 1920, &big, 1, false);
+        let first = progress.live.lock().unwrap().take().expect("the first picture is kept");
+        assert_eq!((first.width, first.height), (203, 360));
+        assert_eq!(first.rgba.len(), 203 * 360 * 4);
+        assert_eq!(first.frame, 1);
+        // Straight after, an ordinary picture is skipped but a forced one is kept.
+        progress.show(1080, 1920, &big, 2, false);
+        assert!(progress.live.lock().unwrap().is_none());
+        progress.show(1080, 1920, &big, 3, true);
+        assert_eq!(progress.live.lock().unwrap().take().unwrap().frame, 3);
+        // A small picture is not enlarged.
+        progress.show(100, 50, &vec![0u8; 100 * 50 * 4], 4, true);
+        let small = progress.live.lock().unwrap().take().unwrap();
+        assert_eq!((small.width, small.height), (100, 50));
     }
 
     #[test]

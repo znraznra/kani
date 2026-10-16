@@ -78,6 +78,9 @@ pub struct Settings {
     /// What the last graphics card check found: `Some(true)` it works and is
     /// faster than the processor, `Some(false)` it does not, `None` not checked.
     pub graphics_card_ok: Option<bool>,
+    /// Whether the last check found a real graphics chip that works (what the
+    /// Export window calls "Available"); `None` not checked.
+    pub graphics_card_available: Option<bool>,
     /// The Kani version that made that check (it is made again after an update).
     pub graphics_card_checked: String,
     /// Export: make a video file / a sound-only file.
@@ -118,6 +121,7 @@ impl Default for Settings {
             export_folder: None,
             export_graphics_card: "auto".into(),
             graphics_card_ok: None,
+            graphics_card_available: None,
             graphics_card_checked: String::new(),
             export_video: true,
             export_audio: false,

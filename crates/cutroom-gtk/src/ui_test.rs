@@ -1049,6 +1049,23 @@ mod tests {
                     .filter_map(|i| list.string(i).map(|s| s.to_string()))
                     .collect()
             };
+            // With KANI_SHOT_DIR set, the Export window is photographed (form, running, done).
+            let shot_dialog = |d: &std::rc::Rc<crate::export_ui::Dialog>, name: &str| {
+                let Ok(dir) = std::env::var("KANI_SHOT_DIR") else {
+                    return;
+                };
+                let (w, h) = (d.window.width(), d.window.height());
+                let paintable = gtk::WidgetPaintable::new(Some(&d.window));
+                let snap = gtk::Snapshot::new();
+                paintable.snapshot(&snap, f64::from(w), f64::from(h));
+                if let (Some(node), Some(native)) = (snap.to_node(), d.window.native()) {
+                    if let Some(renderer) = native.renderer() {
+                        let tex = renderer.render_texture(&node, None);
+                        let _ = tex.save_to_png(format!("{dir}/{name}.png"));
+                        eprintln!("kani: photographed the Export window ({w}x{h}) as {name}");
+                    }
+                }
+            };
             let open_ready = || {
                 app.run_action(Action::Export);
                 let d = crate::export_ui::active().expect("the Export window opens");
@@ -1059,6 +1076,8 @@ mod tests {
                 d
             };
             let d = open_ready();
+            pump_for(1, || false);
+            shot_dialog(&d, "export_form");
             // H.264 goes in MP4, MOV and MKV, not WebM; MP4 carries AAC and MP3.
             let formats = items(&d.format);
             assert!(formats.contains(&"MP4".to_string()), "{formats:?}");
@@ -1079,6 +1098,11 @@ mod tests {
             assert_ne!(sizes, other, "another shape, other sizes");
             d.aspect.set_selected(0);
             assert_eq!(d.size.selected(), project_size, "back on the project's size");
+            // Rendering: Automatic, Hardware, Software.
+            assert_eq!(
+                items(&d.gpu_mode),
+                vec!["Automatic (recommended)".to_string(), "Hardware".to_string(), "Software".to_string()]
+            );
             // The bit rate presets are listed with what they come to.
             let rates = items(&d.bitrate);
             assert!(rates.iter().any(|r| r.starts_with("Recommended - ")), "{rates:?}");
@@ -1137,11 +1161,32 @@ mod tests {
             d.size.set_selected(items(&d.size).len() as u32 - 1);
             d.name.set_text("e2e both");
             crate::export_ui::set_folder_for_tests(&d, out_dir.path());
+            let size_before = (d.window.width(), d.window.height());
             d.export.emit_clicked();
+            pump_for(1, || false);
+            shot_dialog(&d, "export_running");
+            if d.running_for_tests() {
+                assert_eq!(
+                    (d.window.width(), d.window.height()),
+                    size_before,
+                    "the window keeps its size while exporting"
+                );
+                assert!(!d.export.is_visible(), "Export is hidden while exporting");
+                assert!(d.cancel.is_visible() && d.cancel.is_sensitive());
+            }
             assert!(
                 pump_for(240, || crate::export_ui::active()
                     .is_none_or(|x| x.saved.borrow().is_some())),
                 "both files were made"
+            );
+            pump_for(1, || false);
+            shot_dialog(&d, "export_done");
+            assert_eq!(d.cancel.label().as_deref(), Some("Close"));
+            assert_eq!(d.export.label().as_deref(), Some("Show in folder"));
+            assert_eq!(
+                (d.window.width(), d.window.height()),
+                size_before,
+                "the window keeps its size when the export is over"
             );
             assert!(out_dir.path().join("e2e both.mp4").is_file());
             assert!(out_dir.path().join("e2e both.m4a").is_file());

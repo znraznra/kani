@@ -23,6 +23,8 @@ pub struct GpuReport {
     /// Worth using by default: it works, it is a real graphics chip (not a
     /// software imitation) and building whole pictures on it is clearly faster.
     pub recommended: bool,
+    /// It works and is a real graphics chip (what the Export window calls "Available").
+    pub available: bool,
     /// One or two lines for the window.
     pub summary: String,
     /// Detail for the console.
@@ -54,6 +56,7 @@ pub fn test() -> GpuReport {
                 usable: false,
                 summary: format!("Not available: {why}. Kani composites on the processor."),
                 recommended: false,
+                available: false,
                 details,
             };
         }
@@ -220,6 +223,7 @@ pub fn test() -> GpuReport {
     GpuReport {
         usable,
         recommended,
+        available: usable && !software,
         summary: if usable {
             format!(
                 "Works ({}): {}. {}",

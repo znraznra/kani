@@ -179,11 +179,14 @@ export dialog: a picture of the playhead frame and the list of files this will m
   Kani mixes to stereo, so surround is not offered).
 - **Captions**: save the caption layer as `.srt`, `.vtt` or `.ass` (the `.ass` file takes its font, colours and outline
   from the first caption).
-- **Encoder and hardware acceleration**: the encoder (Automatic or a specific one) and whether to put pictures together on
-  the graphics card (Automatic / Always / Never).
+- **Encoder and Rendering**: the encoder (Automatic or a specific one), and Rendering: Automatic (recommended), Hardware
+  (the graphics card puts the pictures together) or Software (the processor does). Beside "Hardware" a short check says
+  whether the graphics card is Available or Not available.
 
-Kani renders every frame itself with the same compositor as the preview and mixes all audible sound. The window shows
-progress and the time left; Cancel (or closing it) stops and removes the half-written files. The originals are always
+Kani renders every frame itself with the same compositor as the preview and mixes all audible sound. When you press
+Export the window keeps its size and its picture, which now follows the frames as they are made; the right-hand side
+shows progress, the time left and a log, and Cancel stays where it was (and stops the export and removes the half-written
+files). When it is over the buttons read Show in folder and Close. The originals are always
 used, never proxies.
 
 The encoder defaults to **Automatic**: the first one that really works on the machine, tried in this order - NVIDIA
@@ -263,7 +266,7 @@ Tiny and Base are fast but often wrong, especially with noise or non-English spe
 
 ## Version numbers
 
-`major.phase.iteration`, for example `0.5.16`:
+`major.phase.iteration`, for example `0.5.17`:
 
 - **major**: the approved official release (0 until one is approved)
 - **phase**: the development phase being worked on (4 = compositor and editing UI, 5 = export, 6 = text, 7 = captions)
