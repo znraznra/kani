@@ -694,7 +694,7 @@ pub fn open(app: &Rc<App>) {
     right.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
     // ---- Encoder and rendering
-    let heading = gtk::Label::new(Some("Speed"));
+    let heading = gtk::Label::new(Some("Advanced Settings"));
     heading.set_xalign(0.0);
     heading.add_css_class("heading");
     let tech_grid = new_grid();
@@ -703,7 +703,7 @@ pub fn open(app: &Rc<App>) {
     encoder.set_tooltip_text(Some(
         "Automatic uses the best encoder that works on this computer (a graphics chip when it has one, else the processor).",
     ));
-    tech_grid.attach(&grid_label("Encode with"), 0, 0, 1, 1);
+    tech_grid.attach(&grid_label("Encoding"), 0, 0, 1, 1);
     tech_grid.attach(&encoder, 1, 0, 1, 1);
     // Rendering: Automatic, Hardware (the graphics card puts the pictures
     // together) or Software (the processor does). Automatic follows the last
@@ -717,7 +717,7 @@ pub fn open(app: &Rc<App>) {
     gpu_mode.set_tooltip_text(Some(
         "Automatic: the graphics card builds the pictures when a check found it works and is clearly faster, otherwise the processor does. Graphics card: use it whenever it can (anything it cannot do falls back to the processor). Processor: the processor does it all.",
     ));
-    tech_grid.attach(&grid_label("Draw with"), 0, 1, 1, 1);
+    tech_grid.attach(&grid_label("Acceleration"), 0, 1, 1, 1);
     tech_grid.attach(&gpu_mode, 1, 1, 1, 1);
     let gpu_button = gtk::Button::with_label("Check");
     gpu_button.set_tooltip_text(Some("Test the graphics card again"));
@@ -730,7 +730,7 @@ pub fn open(app: &Rc<App>) {
     tech_grid.attach(&grid_label("Graphics card"), 0, 2, 1, 1);
     tech_grid.attach(&gpu_row, 1, 2, 1, 1);
     let speed_note = gtk::Label::new(Some(
-        "Encode with: packs the pictures into the video file.\nDraw with: builds each picture (layers, text, effects).",
+        "Encoding: packs the pictures into the video file.\nAcceleration: builds each picture (layers, text, effects).",
     ));
     speed_note.set_xalign(0.0);
     speed_note.set_wrap(true);
