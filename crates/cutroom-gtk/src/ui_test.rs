@@ -1120,7 +1120,7 @@ mod tests {
                 assert!(d.export.is_sensitive());
                 assert_eq!(d.summary.text().as_str(), whole.as_str());
             }
-            // Draw with: Automatic, Graphics card, Processor.
+            // Acceleration: Automatic, Graphics card, Processor.
             assert_eq!(
                 items(&d.gpu_mode),
                 vec!["Automatic (recommended)".to_string(), "Graphics card".to_string(), "Processor".to_string()]
