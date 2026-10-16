@@ -184,11 +184,11 @@ export dialog: a picture of the playhead frame and the list of files this will m
   file format, bit rate and sound for you; changing any choice by hand returns the list to "No preset".
 - **Range**: Whole timeline, a time range (start and end), or only the clips selected on the timeline. Captions files
   are cut and shifted to match.
-- **Encoder and Rendering**: the encoder (Automatic, or a kind that works on this machine such as Hardware (VA-API) or Software; the Codec list then shows only the video formats that kind can make, and falls back to software if a hardware one fails), and Rendering: Automatic (recommended), Hardware
-  (the graphics card puts the pictures together) or Software (the processor does). Beside "Hardware" a short check says
-  whether the graphics card is Available or Not available.
-
-The sound file is made at the same time as the video, on its own thread, so asking for both costs little extra time.
+- **Speed**: two separate jobs, each with Automatic (recommended). **Encode with** packs the pictures into the video
+  file: a graphics chip (named by what is found, such as VA-API) or the processor; the Codec list then shows only the
+  video formats that choice can make, and a failed graphics chip falls back to the processor. **Draw with** builds each
+  picture (layers, text, effects): the graphics card or the processor. Beside "Graphics card" a short check says whether it
+  is Available or Not available.
 
 Kani renders every frame itself with the same compositor as the preview and mixes all audible sound. When you press
 Export the window keeps its size and its picture, which now follows the frames as they are made; the right-hand side
@@ -273,7 +273,7 @@ Tiny and Base are fast but often wrong, especially with noise or non-English spe
 
 ## Version numbers
 
-`major.phase.iteration`, for example `0.5.19`:
+`major.phase.iteration`, for example `0.5.20`:
 
 - **major**: the approved official release (0 until one is approved)
 - **phase**: the development phase being worked on (4 = compositor and editing UI, 5 = export, 6 = text, 7 = captions)

@@ -1120,10 +1120,10 @@ mod tests {
                 assert!(d.export.is_sensitive());
                 assert_eq!(d.summary.text().as_str(), whole.as_str());
             }
-            // Rendering: Automatic, Hardware, Software.
+            // Draw with: Automatic, Graphics card, Processor.
             assert_eq!(
                 items(&d.gpu_mode),
-                vec!["Automatic (recommended)".to_string(), "Hardware".to_string(), "Software".to_string()]
+                vec!["Automatic (recommended)".to_string(), "Graphics card".to_string(), "Processor".to_string()]
             );
             // The bit rate presets are listed with what they come to.
             let rates = items(&d.bitrate);
@@ -1134,13 +1134,13 @@ mod tests {
             // what the kind picked can make.
             let kinds = items(&d.encoder);
             assert!(kinds[0].starts_with("Automatic"), "{kinds:?}");
-            assert!(kinds.iter().any(|k| k == "Software"), "{kinds:?}");
+            assert!(kinds.iter().any(|k| k == "Processor"), "{kinds:?}");
             let all_codecs = items(&d.codec);
-            let soft_at = kinds.iter().position(|k| k == "Software").unwrap() as u32;
+            let soft_at = kinds.iter().position(|k| k == "Processor").unwrap() as u32;
             d.encoder.set_selected(soft_at);
             let soft_codecs = items(&d.codec);
             assert!(soft_codecs.iter().all(|c| all_codecs.contains(c)), "{soft_codecs:?} within {all_codecs:?}");
-            for kind in kinds.iter().filter(|k| k.starts_with("Hardware")) {
+            for kind in kinds.iter().filter(|k| k.starts_with("Graphics chip")) {
                 let at = kinds.iter().position(|k| k == kind).unwrap() as u32;
                 d.encoder.set_selected(at);
                 let hw = items(&d.codec);

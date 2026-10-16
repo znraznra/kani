@@ -356,14 +356,14 @@ impl Encoder {
 /// What the Encoder list calls one kind of encoder.
 pub fn family_label(family: &str) -> &'static str {
     match family {
-        "software" => "Software",
-        "vaapi" => "Hardware (VA-API)",
-        "nvenc" => "Hardware (NVIDIA NVENC)",
-        "qsv" => "Hardware (Intel Quick Sync)",
-        "amf" => "Hardware (AMD AMF)",
-        "videotoolbox" => "Hardware (Apple VideoToolbox)",
-        "mf" => "Hardware (Windows Media Foundation)",
-        _ => "Hardware",
+        "software" => "Processor",
+        "vaapi" => "Graphics chip (VA-API)",
+        "nvenc" => "Graphics chip (NVIDIA NVENC)",
+        "qsv" => "Graphics chip (Intel Quick Sync)",
+        "amf" => "Graphics chip (AMD AMF)",
+        "videotoolbox" => "Graphics chip (Apple VideoToolbox)",
+        "mf" => "Graphics chip (Windows Media Foundation)",
+        _ => "Graphics chip",
     }
 }
 
