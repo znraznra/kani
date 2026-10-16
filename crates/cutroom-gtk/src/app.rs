@@ -73,6 +73,8 @@ pub struct State {
     pub tick_count: u32,
     /// The UI state last written to the project, to save only on change.
     pub ui_saved: Option<cutroom_core::ui_state::UiState>,
+    /// The part of the timeline being picked for export (Shift+Ctrl+X), if any.
+    pub export_range: Option<crate::range_select::ExportRange>,
 }
 
 impl State {
@@ -172,6 +174,7 @@ impl App {
                 last_synced_playhead: Ticks::ZERO,
                 tick_count: 0,
                 ui_saved: None,
+                export_range: None,
             }),
             ui: OnceCell::new(),
             preview: RefCell::new(Preview::new()),
@@ -1136,6 +1139,7 @@ impl App {
             Action::ShowAbout => dialogs::about(self),
             Action::ShowShortcuts => dialogs::shortcuts(self),
             Action::Export => crate::export_ui::open(self),
+            Action::ExportRange => crate::range_select::enter(self),
             Action::SelectTool => {
                 self.state.borrow_mut().tool = Tool::Select;
                 self.refresh();
@@ -1413,6 +1417,17 @@ fn install_controllers(app: &Rc<App>) {
             };
             let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
             let alt = state.contains(gdk::ModifierType::ALT_MASK);
+            // Picking a range to export: Esc leaves that, Enter exports it.
+            if crate::range_select::active(&app) && !ctrl && !alt {
+                if name == "Escape" {
+                    crate::range_select::cancel(&app);
+                    return glib::Propagation::Stop;
+                }
+                if name == "Return" || name == "KP_Enter" {
+                    crate::range_select::export(&app);
+                    return glib::Propagation::Stop;
+                }
+            }
             if alt {
                 return glib::Propagation::Proceed;
             }
@@ -1431,6 +1446,26 @@ fn install_controllers(app: &Rc<App>) {
             );
             if app.state.borrow().session.is_none() && !allowed_without_project {
                 return glib::Propagation::Proceed;
+            }
+            // While a range is being picked, editing keys wait.
+            if crate::range_select::active(&app)
+                && matches!(
+                    action,
+                    Action::Split
+                        | Action::SplitAll
+                        | Action::DeleteLeft
+                        | Action::DeleteRight
+                        | Action::Delete
+                        | Action::RippleDelete
+                        | Action::Cut
+                        | Action::Paste
+                        | Action::Undo
+                        | Action::Redo
+                        | Action::AddText
+                        | Action::ToggleActive
+                )
+            {
+                return glib::Propagation::Stop;
             }
             app.run_action(action);
             glib::Propagation::Stop

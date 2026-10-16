@@ -50,6 +50,7 @@ fn name_of(action: Action) -> Option<&'static str> {
         Action::ShowAbout => "about",
         Action::ShowShortcuts => "show-shortcuts",
         Action::Export => "export",
+        Action::ExportRange => "export-range",
         _ => return None,
     })
 }
@@ -119,6 +120,7 @@ pub fn build(app: &Rc<App>) -> MenuUi {
         Action::ShowAbout,
         Action::ShowShortcuts,
         Action::Export,
+        Action::ExportRange,
     ] {
         register(action);
     }
@@ -183,6 +185,7 @@ pub fn build(app: &Rc<App>) -> MenuUi {
     file.append_section(None, &project);
     let output = gio::Menu::new();
     item(&output, "Export video...", Action::Export);
+    item(&output, "Export range...", Action::ExportRange);
     file.append_section(None, &output);
     let quit = gio::Menu::new();
     item(&quit, "Quit", Action::Quit);
@@ -333,6 +336,7 @@ mod tests {
             Action::ShowAbout,
             Action::ShowShortcuts,
             Action::Export,
+            Action::ExportRange,
         ];
         let mut seen = Vec::new();
         for action in actions {

@@ -23,6 +23,7 @@ mod media;
 mod menu;
 mod navigator;
 mod preview;
+mod range_select;
 mod sample;
 mod strips;
 mod text_render;

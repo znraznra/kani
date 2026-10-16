@@ -52,6 +52,7 @@ pub fn build(app: &Rc<App>) -> TimelineUi {
                 a.scale_factor().max(1),
             );
             pin_ruler(&app, a, cr, f64::from(w));
+            crate::range_select::paint(&app, cr, f64::from(w), f64::from(h), voff(a));
         });
     }
     attach_mouse(app, &area);
@@ -922,6 +923,14 @@ fn attach_mouse(app: &Rc<App>, area: &gtk::DrawingArea) {
             area.grab_focus();
             moved.set(false);
             start.set((x, y));
+            if crate::range_select::active(&app) {
+                // Picking a range to export: only its handles take the mouse.
+                app.state.borrow_mut().drag = Drag::None;
+                if x >= f64::from(HEADER_W) {
+                    crate::range_select::press(&app, x);
+                }
+                return;
+            }
             if x < f64::from(HEADER_W) {
                 return;
             }
@@ -968,6 +977,10 @@ fn attach_mouse(app: &Rc<App>, area: &gtk::DrawingArea) {
         let (app, area, start) = (app.clone(), area.clone(), start.clone());
         Rc::new(move |dx: f64, dy: f64| {
             let (sx, sy) = start.get();
+            if crate::range_select::active(&app) {
+                crate::range_select::drag_to(&app, sx + dx);
+                return;
+            }
             let pos = pos2((sx + dx) as f32, ey(&area, sy + dy) as f32);
             let canvas = canvas_rect(f64::from(area.width()), f64::from(area.height()));
             let scrub = {
@@ -1155,6 +1168,7 @@ fn attach_mouse(app: &Rc<App>, area: &gtk::DrawingArea) {
             if let Some(id) = edge_timer.borrow_mut().take() {
                 id.remove();
             }
+            crate::range_select::release(&app);
             let sound_changed;
             let had_drag = {
                 let mut st = app.state.borrow_mut();
@@ -1193,6 +1207,9 @@ fn attach_mouse(app: &Rc<App>, area: &gtk::DrawingArea) {
     {
         let (app, area) = (app.clone(), area.clone());
         context.connect_pressed(move |_, _, x, y| {
+            if crate::range_select::active(&app) {
+                return;
+            }
             let canvas = canvas_rect(f64::from(area.width()), f64::from(area.height()));
             let hit = {
                 let mut st = app.state.borrow_mut();
@@ -1231,6 +1248,13 @@ fn attach_mouse(app: &Rc<App>, area: &gtk::DrawingArea) {
             let additive = gesture
                 .current_event_state()
                 .intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK);
+            if crate::range_select::active(&app) {
+                crate::range_select::release(&app);
+                if !moved.get() {
+                    crate::range_select::click(&app, x, y, f64::from(area.width()), voff(&area));
+                }
+                return;
+            }
             if moved.get() {
                 return;
             }

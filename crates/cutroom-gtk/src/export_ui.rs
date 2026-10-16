@@ -83,6 +83,9 @@ pub struct Dialog {
     pub cancel: gtk::Button,
     /// The right-hand side: the choices, or the progress while exporting.
     stack: gtk::Stack,
+    /// The scrolled choices on the right (up and down only).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub form_scroll: gtk::ScrolledWindow,
     bar: gtk::ProgressBar,
     note: gtk::Label,
     log: gtk::TextBuffer,
@@ -361,13 +364,48 @@ fn add_compact_style() {
 fn dropdown(items: &[&str]) -> gtk::DropDown {
     let d = gtk::DropDown::from_strings(items);
     d.set_hexpand(true);
+    // The names are cut short with "..." when the dropdown is narrower, so a
+    // long name never makes the window's right-hand side wider than it is.
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let label = gtk::Label::new(None);
+        label.set_xalign(0.0);
+        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        label.set_width_chars(1);
+        item.set_child(Some(&label));
+    });
+    factory.connect_bind(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        if let (Some(label), Some(text)) = (
+            item.child().and_downcast::<gtk::Label>(),
+            item.item().and_downcast::<gtk::StringObject>(),
+        ) {
+            label.set_text(&text.string());
+            label.set_tooltip_text(Some(&text.string()));
+        }
+    });
+    d.set_factory(Some(&factory));
     d
 }
 
 /// Open the Export window.
 pub fn open(app: &Rc<App>) {
+    open_range(app, None);
+}
+
+/// Open the Export window with "From / to" already set to a part of the
+/// timeline (what was picked with Shift+Ctrl+X).
+pub fn open_range(app: &Rc<App>, picked: Option<(Ticks, Ticks)>) {
     let clicked = Instant::now();
     if let Some(existing) = active() {
+        if let Some((a, b)) = picked {
+            use_range(&existing, a, b);
+        }
         existing.window.present();
         return;
     }
@@ -748,7 +786,7 @@ pub fn open(app: &Rc<App>) {
 
     let scroll = gtk::ScrolledWindow::new();
     // The right-hand side is a fixed width whatever the lists say.
-    scroll.set_hscrollbar_policy(gtk::PolicyType::External);
+    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     scroll.set_min_content_height(380);
     scroll.set_min_content_width(390);
     scroll.set_max_content_width(390);
@@ -877,6 +915,7 @@ pub fn open(app: &Rc<App>) {
         export,
         cancel,
         stack,
+        form_scroll: scroll.clone(),
         bar,
         note,
         log,
@@ -1036,6 +1075,9 @@ pub fn open(app: &Rc<App>) {
         glib::timeout_add_local_once(Duration::from_secs(4), move || begin(0));
     }
     dialog.window.present();
+    if let Some((a, b)) = picked {
+        use_range(&dialog, a, b);
+    }
     dialog.name.grab_focus();
 }
 
@@ -1065,6 +1107,30 @@ fn restore_choices(d: &Dialog, settings: &cutroom_core::settings::Settings) {
         .position(|k| *k == settings.export_audio_kbps)
         .unwrap_or(3) as u32;
     set_items(d, &d.audio_bitrate, &labels, at);
+}
+
+#[cfg(test)]
+pub fn debug_state(d: &Dialog) -> String {
+    format!(
+        "ready {} encoders {} usable {} video {} audio {} captions {:?}",
+        d.ready.get(),
+        d.encoders.borrow().len(),
+        range_is_usable(d),
+        d.video_on.is_active(),
+        d.audio_on.is_active(),
+        caption_formats(d)
+    )
+}
+
+/// Set "From / to" to a part of the timeline.
+fn use_range(d: &Rc<Dialog>, start: Ticks, end: Ticks) {
+    if let Some(i) = d.range_modes.iter().position(|m| *m == RangeMode::Custom) {
+        select(d, &d.range, i as u32);
+    }
+    d.range_to.set_value(end.as_seconds_f64());
+    d.range_from.set_value(start.as_seconds_f64());
+    refresh_all(d);
+    start_preview(d);
 }
 
 /// Fill in the choices for a preset (the lists are rebuilt in the order they

@@ -959,6 +959,79 @@ mod tests {
             shot("text");
         }
 
+        // 7h-range. Picking a range on the timeline (Shift+Ctrl+X): handles,
+        // dimming, Esc to leave, and "Export range" opening Export with it.
+        {
+            use crate::range_select as rs;
+            use cutroom_timeline::Ticks as T;
+            {
+                let mut st = app.state.borrow_mut();
+                let s = st.session.as_mut().unwrap();
+                s.set_playhead(T::from_seconds_f64(1.0));
+            }
+            assert!(!rs::active(&app));
+            app.run_action(Action::ExportRange);
+            assert!(rs::active(&app), "Shift+Ctrl+X starts picking a range");
+            let x_of = |t: T| {
+                let st = app.state.borrow();
+                f64::from(cutroom_core::timeline_logic::HEADER_W) + f64::from(st.view.x_for(t))
+            };
+            let range = || app.state.borrow().export_range.unwrap();
+            let r0 = range();
+            assert!(r0.end > r0.start, "the part starts with some length");
+            // Drag the end handle back toward the start.
+            rs::press(&app, x_of(r0.end));
+            rs::drag_to(&app, x_of(r0.start) + 60.0);
+            rs::release(&app);
+            let r1 = range();
+            assert!(r1.end < r0.end && r1.end > r1.start, "the end handle moved: {r0:?} -> {r1:?}");
+            // Drag the whole part along.
+            let len = r1.end - r1.start;
+            rs::press(&app, (x_of(r1.start) + x_of(r1.end)) / 2.0);
+            rs::drag_to(&app, (x_of(r1.start) + x_of(r1.end)) / 2.0 + 30.0);
+            rs::release(&app);
+            let r2 = range();
+            assert_eq!(r2.end - r2.start, len, "moving keeps the length");
+            assert!(r2.start > r1.start, "and moves it later");
+            pump_until(|| false);
+            if let Ok(dir) = std::env::var("KANI_SHOT_DIR") {
+                app.window.set_default_size(1500, 950);
+                pump_until(|| false);
+                let (w, h) = (app.window.width(), app.window.height());
+                let paintable = gtk::WidgetPaintable::new(Some(&app.window));
+                let snap = gtk::Snapshot::new();
+                paintable.snapshot(&snap, f64::from(w), f64::from(h));
+                if let (Some(node), Some(native)) = (snap.to_node(), app.window.native()) {
+                    if let Some(renderer) = native.renderer() {
+                        let _ = renderer.render_texture(&node, None).save_to_png(format!("{dir}/range.png"));
+                    }
+                }
+            }
+            // Esc (or the Cancel button) leaves without exporting.
+            rs::cancel(&app);
+            assert!(!rs::active(&app) && crate::export_ui::active().is_none());
+            // Again, then Export range: the Export window opens with From / to filled in.
+            app.run_action(Action::ExportRange);
+            {
+                let mut st = app.state.borrow_mut();
+                let r = st.export_range.as_mut().unwrap();
+                r.start = T::from_seconds_f64(1.0);
+                r.end = T::from_seconds_f64(3.0);
+            }
+            rs::export(&app);
+            assert!(!rs::active(&app));
+            let d = crate::export_ui::active().expect("Export range opens the Export window");
+            let picked = d
+                .range
+                .selected_item()
+                .and_then(|o| o.downcast::<gtk::StringObject>().ok())
+                .map(|o| o.string().to_string());
+            assert_eq!(picked.as_deref(), Some("From / to"));
+            assert!((d.range_from.value() - 1.0).abs() < 0.01 && (d.range_to.value() - 3.0).abs() < 0.01);
+            d.window.close();
+            assert!(pump_until(|| crate::export_ui::active().is_none()), "the window closed");
+        }
+
         // 7i. Export: the window opens, finds an encoder, and a short export
         // runs through it; the file is a real MP4 with picture and sound.
         {
@@ -972,10 +1045,8 @@ mod tests {
             app.run_action(Action::Export);
             let dialog = crate::export_ui::active().expect("the Export window opens");
             assert!(!dialog.export.is_sensitive(), "waits for the encoder test");
-            assert!(
-                pump_for(60, || dialog.export.is_sensitive()),
-                "an encoder was found"
-            );
+            let ok = pump_for(60, || dialog.export.is_sensitive());
+            assert!(ok, "an encoder was found: {}", crate::export_ui::debug_state(&dialog));
             // Smallest size, to keep the test quick.
             dialog.size.set_selected(
                 dialog
@@ -1119,6 +1190,25 @@ mod tests {
                 d.range.set_selected(0);
                 assert!(d.export.is_sensitive());
                 assert_eq!(d.summary.text().as_str(), whole.as_str());
+            }
+            // The choices scroll up and down only: nothing is wider than the column.
+            {
+                let h = d.form_scroll.hadjustment();
+                let (min_w, _, _, _) = d.form_scroll.child().unwrap().measure(gtk::Orientation::Horizontal, -1);
+                eprintln!("ui_test: form column needs {min_w} px, shows {} of {}", h.page_size(), h.upper());
+                fn walk(w: &gtk::Widget, depth: usize) {
+                    let (m, _, _, _) = w.measure(gtk::Orientation::Horizontal, -1);
+                    if m > 250 {
+                        eprintln!("ui_test: {:indent$}{} min {m}", "", w.type_().name(), indent = depth * 2);
+                    }
+                    let mut c = w.first_child();
+                    while let Some(ch) = c {
+                        walk(&ch, depth + 1);
+                        c = ch.next_sibling();
+                    }
+                }
+                walk(&d.form_scroll.child().unwrap(), 0);
+                assert!(h.upper() <= h.page_size() + 0.5, "no sideways scrolling: {} > {}", h.upper(), h.page_size());
             }
             // Acceleration: Automatic, Graphics card, Processor.
             assert_eq!(

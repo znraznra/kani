@@ -49,6 +49,7 @@ pub enum Action {
     ShowAbout,
     ShowShortcuts,
     Export,
+    ExportRange,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -348,6 +349,15 @@ pub const BINDINGS: &[Binding] = &[
     b("s", true, false, Save, "Save", Convention, true),
     b("e", true, false, Export, "Export the video", CapCut, false),
     b(
+        "x",
+        true,
+        true,
+        ExportRange,
+        "Pick a range on the timeline to export",
+        Convention,
+        false,
+    ),
+    b(
         "n",
         true,
         false,
@@ -517,6 +527,8 @@ mod tests {
     fn ctrl_e_exports() {
         assert_eq!(lookup("e", true, false, false), Some(Export));
         assert_eq!(lookup("e", false, false, false), None);
+        assert_eq!(lookup("x", true, true, false), Some(ExportRange));
+        assert_eq!(lookup("x", true, false, false), Some(Cut), "Ctrl+X stays Cut");
     }
 
     #[test]
