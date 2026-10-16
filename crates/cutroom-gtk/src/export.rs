@@ -337,6 +337,45 @@ static WORKING: [OnceLock<Vec<Encoder>>; 4] = [
     OnceLock::new(),
 ];
 
+impl Encoder {
+    /// The kind of encoder this is, as kept in settings: "software", or the
+    /// hardware maker ("vaapi", "nvenc", ...). Variants of one maker share it.
+    pub fn family(&self) -> &'static str {
+        if !self.hardware {
+            return "software";
+        }
+        for key in ["vaapi", "nvenc", "qsv", "amf", "videotoolbox", "mf"] {
+            if self.id.starts_with(key) {
+                return key;
+            }
+        }
+        "hardware"
+    }
+}
+
+/// What the Encoder list calls one kind of encoder.
+pub fn family_label(family: &str) -> &'static str {
+    match family {
+        "software" => "Software",
+        "vaapi" => "Hardware (VA-API)",
+        "nvenc" => "Hardware (NVIDIA NVENC)",
+        "qsv" => "Hardware (Intel Quick Sync)",
+        "amf" => "Hardware (AMD AMF)",
+        "videotoolbox" => "Hardware (Apple VideoToolbox)",
+        "mf" => "Hardware (Windows Media Foundation)",
+        _ => "Hardware",
+    }
+}
+
+/// Every encoder that works on this machine, for every video format. Slow the
+/// first time (each is test-encoded), so call it from a worker thread.
+pub fn all_working_encoders() -> Vec<Encoder> {
+    VideoCodec::ALL
+        .iter()
+        .flat_map(|c| working_encoders(*c).iter().copied())
+        .collect()
+}
+
 /// The encoders for one video format that work on this machine, best first.
 /// The first call for each format tests them (a second or two), so call it
 /// from a worker thread.

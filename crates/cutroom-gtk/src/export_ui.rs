@@ -99,6 +99,10 @@ pub struct Dialog {
     containers: RefCell<Vec<Container>>,
     audio_formats: RefCell<Vec<AudioFormat>>,
     encoders: RefCell<Vec<Encoder>>,
+    /// The video formats the Codec list shows now (those the chosen kind of encoder can make).
+    codecs: RefCell<Vec<VideoCodec>>,
+    /// The kinds of encoder the Encoder list shows after "Automatic".
+    families: RefCell<Vec<&'static str>>,
     timeline: cutroom_timeline::Timeline,
     sources: HashMap<MediaId, Source>,
     cues: Vec<(f64, f64, String)>,
@@ -879,6 +883,8 @@ pub fn open(app: &Rc<App>) {
         containers: RefCell::new(Vec::new()),
         audio_formats: RefCell::new(Vec::new()),
         encoders: RefCell::new(Vec::new()),
+        codecs: RefCell::new(VideoCodec::ALL.to_vec()),
+        families: RefCell::new(Vec::new()),
         timeline,
         sources,
         cues,
@@ -1036,11 +1042,7 @@ fn restore_choices(d: &Dialog, settings: &cutroom_core::settings::Settings) {
     refresh_bitrate_labels(d, preset);
     // Codec, then the formats that hold it.
     let codec = VideoCodec::from_id(&settings.export_codec).unwrap_or(VideoCodec::H264);
-    select(
-        d,
-        &d.codec,
-        VideoCodec::ALL.iter().position(|c| *c == codec).unwrap_or(0) as u32,
-    );
+    refresh_codecs(d, Some(codec));
     refresh_formats(d, Container::from_id(&settings.export_container));
     // Sound.
     let channels = Channels::from_id(&settings.export_channels).unwrap_or(Channels::Stereo);
@@ -1060,7 +1062,7 @@ fn restore_choices(d: &Dialog, settings: &cutroom_core::settings::Settings) {
 
 /// Fill in the choices for a preset (the lists are rebuilt in the order they
 /// depend on each other), then refresh everything that follows.
-fn apply_preset(app: &Rc<App>, d: &Rc<Dialog>, p: &opts::SitePreset) {
+fn apply_preset(d: &Rc<Dialog>, p: &opts::SitePreset) {
     d.applying.set(true);
     d.video_on.set_active(!p.sound_only);
     d.audio_on.set_active(p.sound_only || d.audio_on.is_active());
@@ -1087,11 +1089,12 @@ fn apply_preset(app: &Rc<App>, d: &Rc<Dialog>, p: &opts::SitePreset) {
             .unwrap_or(0);
         select(d, &d.rate, rate as u32);
         // Video format, file format, bit rate.
-        select(
-            d,
-            &d.codec,
-            VideoCodec::ALL.iter().position(|c| *c == p.codec).unwrap_or(0) as u32,
-        );
+        // A preset's video format may be one the chosen kind of encoder cannot
+        // make: then go back to Automatic, which offers every format found.
+        if !codecs_for(d, chosen_family(d)).contains(&p.codec) {
+            select(d, &d.encoder, 0);
+        }
+        refresh_codecs(d, Some(p.codec));
         refresh_formats(d, Some(p.container));
         refresh_bitrate_labels(d, p.bitrate);
     }
@@ -1106,9 +1109,6 @@ fn apply_preset(app: &Rc<App>, d: &Rc<Dialog>, p: &opts::SitePreset) {
         select(d, &d.audio_bitrate, i as u32);
     }
     d.applying.set(false);
-    if !p.sound_only {
-        find_encoders(app, d);
-    }
     refresh_all(d);
 }
 
@@ -1151,7 +1151,45 @@ fn chosen_rate(d: &Dialog) -> FrameRate {
 }
 
 fn chosen_codec(d: &Dialog) -> VideoCodec {
-    VideoCodec::ALL[(d.codec.selected() as usize).min(VideoCodec::ALL.len() - 1)]
+    let list = d.codecs.borrow();
+    list.get(d.codec.selected() as usize)
+        .or_else(|| list.first())
+        .copied()
+        .unwrap_or(VideoCodec::H264)
+}
+
+/// The kind of encoder picked in the Encoder list (`None` = Automatic).
+fn chosen_family(d: &Dialog) -> Option<&'static str> {
+    (d.encoder.selected() as usize)
+        .checked_sub(1)
+        .and_then(|i| d.families.borrow().get(i).copied())
+}
+
+/// The video formats the chosen kind of encoder can make. Before the encoders
+/// are known (or if none were found) every format is listed.
+fn codecs_for(d: &Dialog, family: Option<&str>) -> Vec<VideoCodec> {
+    let found = d.encoders.borrow();
+    let list: Vec<VideoCodec> = VideoCodec::ALL
+        .iter()
+        .copied()
+        .filter(|c| found.iter().any(|e| e.codec == *c && family.map_or(true, |f| e.family() == f)))
+        .collect();
+    if list.is_empty() {
+        VideoCodec::ALL.to_vec()
+    } else {
+        list
+    }
+}
+
+/// Fill the Codec list with what the chosen encoder can make, keeping `prefer`
+/// (or else the format chosen now) when it is still there.
+fn refresh_codecs(d: &Dialog, prefer: Option<VideoCodec>) {
+    let keep = prefer.unwrap_or_else(|| chosen_codec(d));
+    let list = codecs_for(d, chosen_family(d));
+    let labels: Vec<String> = list.iter().map(|c| c.label().to_string()).collect();
+    let at = list.iter().position(|c| *c == keep).unwrap_or(0) as u32;
+    *d.codecs.borrow_mut() = list;
+    set_items(d, &d.codec, &labels, at);
 }
 
 fn chosen_container(d: &Dialog) -> Container {
@@ -1420,10 +1458,9 @@ fn update_summary(d: &Dialog) {
     d.summary.set_text(&text);
 }
 
-/// Test the encoders for the chosen video format on a worker thread (a second
-/// or two), then offer them.
+/// Test the encoders on a worker thread (a few seconds), then offer the kinds
+/// that work, and the video formats they can make.
 fn find_encoders(app: &Rc<App>, dialog: &Rc<Dialog>) {
-    let codec = chosen_codec(dialog);
     let generation = dialog.search.get() + 1;
     dialog.search.set(generation);
     dialog.ready.set(false);
@@ -1434,7 +1471,7 @@ fn find_encoders(app: &Rc<App>, dialog: &Rc<Dialog>) {
     {
         let found = found.clone();
         std::thread::spawn(move || {
-            let list = export::working_encoders(codec).to_vec();
+            let list = export::all_working_encoders();
             *found.lock().unwrap() = Some(list);
         });
     }
@@ -1450,40 +1487,64 @@ fn find_encoders(app: &Rc<App>, dialog: &Rc<Dialog>) {
             // The video format was changed meanwhile; that search has its own answer.
             return glib::ControlFlow::Break;
         }
-        let mut labels = vec![match list.first() {
-            Some(best) => format!("Automatic ({})", best.label),
-            None => "None found".to_string(),
+        let mut families: Vec<&'static str> = Vec::new();
+        for e in &list {
+            if !families.contains(&e.family()) {
+                families.push(e.family());
+            }
+        }
+        // Hardware first, software last.
+        families.sort_by_key(|f| *f == "software");
+        let mut labels = vec![if list.is_empty() {
+            "None found".to_string()
+        } else {
+            "Automatic (recommended)".to_string()
         }];
-        labels.extend(list.iter().map(|e| e.label.to_string()));
+        labels.extend(families.iter().map(|f| export::family_label(f).to_string()));
         let wanted = app.state.borrow().settings.export_encoder.clone();
-        let index = list
+        // Settings may hold a kind ("software", "vaapi") or an older encoder name.
+        let wanted_family = list
             .iter()
-            .position(|e| e.id == wanted)
+            .find(|e| e.id == wanted)
+            .map(|e| e.family())
+            .unwrap_or("");
+        let index = families
+            .iter()
+            .position(|f| *f == wanted || *f == wanted_family)
             .map_or(0, |i| i as u32 + 1);
+        *dialog.families.borrow_mut() = families;
         set_items(&dialog, &dialog.encoder, &labels, index);
         *dialog.encoders.borrow_mut() = list;
+        let before = chosen_codec(&dialog);
+        refresh_codecs(&dialog, None);
+        if chosen_codec(&dialog) != before {
+            refresh_formats(&dialog, None);
+            refresh_audio_formats(&dialog, None);
+            refresh_bitrate_labels(&dialog, chosen_preset(&dialog));
+        }
         dialog.ready.set(true);
         refresh_all(&dialog);
         glib::ControlFlow::Break
     });
 }
 
-/// The encoders to try: the one picked, then (for "Automatic") all the others.
+/// The encoders to try for the chosen video format: those of the kind picked
+/// (for "Automatic", all of them, best first), then software as the way out.
 fn chosen_encoders(d: &Dialog) -> Vec<Encoder> {
-    let all = d.encoders.borrow().clone();
-    if all.is_empty() {
-        return all;
+    let codec = chosen_codec(d);
+    let family = chosen_family(d);
+    let all: Vec<Encoder> = d.encoders.borrow().iter().filter(|e| e.codec == codec).copied().collect();
+    let mut list: Vec<Encoder> = all
+        .iter()
+        .filter(|e| family.map_or(true, |f| e.family() == f))
+        .copied()
+        .collect();
+    if family.is_some() {
+        // If the kind picked fails, fall back to software rather than give up.
+        let soft: Vec<Encoder> = all.iter().filter(|e| !e.hardware && !list.contains(e)).copied().collect();
+        list.extend(soft);
     }
-    match d.encoder.selected() {
-        0 => all,
-        n => {
-            let mut list = vec![all[(n as usize - 1).min(all.len() - 1)]];
-            // If the one picked fails, fall back to software rather than give up.
-            let first = list[0];
-            list.extend(all.iter().filter(|e| !e.hardware && **e != first).copied());
-            list
-        }
-    }
+    list
 }
 
 /// The job for what is chosen. `video` and `audio` say which files to make.
@@ -1622,7 +1683,7 @@ fn connect(app: &Rc<App>, d: &Rc<Dialog>) {
     {
         // A preset fills the choices in; changing any of them afterwards
         // means it is no longer that preset.
-        let (app2, d2) = (app.clone(), d.clone());
+        let d2 = d.clone();
         d.preset.connect_selected_notify(move |dd| {
             if d2.busy.get() || d2.applying.get() {
                 return;
@@ -1632,7 +1693,7 @@ fn connect(app: &Rc<App>, d: &Rc<Dialog>) {
                 Some(p) => {
                     d2.preset_note.set_text(p.note);
                     d2.preset_note.set_visible(true);
-                    apply_preset(&app2, &d2, p);
+                    apply_preset(&d2, p);
                 }
                 None => d2.preset_note.set_visible(false),
             }
@@ -1695,7 +1756,7 @@ fn connect(app: &Rc<App>, d: &Rc<Dialog>) {
         d.custom_kbps.clone().connect_value_changed(move |_| update_summary(&d));
     }
     {
-        let (app, d) = (app.clone(), d.clone());
+        let d = d.clone();
         d.codec.clone().connect_selected_notify(move |_| {
             if d.busy.get() {
                 return;
@@ -1703,7 +1764,23 @@ fn connect(app: &Rc<App>, d: &Rc<Dialog>) {
             refresh_formats(&d, None);
             refresh_audio_formats(&d, None);
             refresh_bitrate_labels(&d, chosen_preset(&d));
-            find_encoders(&app, &d);
+            refresh_all(&d);
+        });
+    }
+    {
+        // A different kind of encoder: the Codec list shows only what it can make.
+        let d = d.clone();
+        d.encoder.clone().connect_selected_notify(move |_| {
+            if d.busy.get() {
+                return;
+            }
+            let before = chosen_codec(&d);
+            refresh_codecs(&d, None);
+            if chosen_codec(&d) != before {
+                refresh_formats(&d, None);
+                refresh_audio_formats(&d, None);
+                refresh_bitrate_labels(&d, chosen_preset(&d));
+            }
             refresh_all(&d);
         });
     }
@@ -2028,14 +2105,7 @@ fn start(app: &Rc<App>, d: &Rc<Dialog>) {
             }
         }
         st.settings.export_caption_files = wanted;
-        st.settings.export_encoder = match d.encoder.selected() {
-            0 => "auto".into(),
-            n => d
-                .encoders
-                .borrow()
-                .get(n as usize - 1)
-                .map_or("auto".into(), |e| e.id.to_string()),
-        };
+        st.settings.export_encoder = chosen_family(d).map_or("auto".into(), str::to_string);
         st.settings.export_folder = Some(d.folder_path.borrow().clone());
         st.settings.export_graphics_card = match d.gpu_mode.selected() {
             1 => "on",

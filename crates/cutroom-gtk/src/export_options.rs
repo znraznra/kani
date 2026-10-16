@@ -538,6 +538,7 @@ pub fn lossless_kbps(format: AudioFormat, channels: Channels, rate: u32) -> u32 
 /// changed afterwards.
 #[derive(Debug, Clone, Copy)]
 pub struct SitePreset {
+    #[allow(dead_code)]
     pub id: &'static str,
     pub name: &'static str,
     /// What it sets, in a sentence.

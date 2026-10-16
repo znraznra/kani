@@ -1130,7 +1130,26 @@ mod tests {
             assert!(rates.iter().any(|r| r.starts_with("Recommended - ")), "{rates:?}");
             assert!(rates.iter().any(|r| r == "Custom"));
             // Another video format brings its own file formats and sound.
-            d.codec.set_selected(2); // VP9
+            // The Encoder list names kinds of encoder; the Codec list shows only
+            // what the kind picked can make.
+            let kinds = items(&d.encoder);
+            assert!(kinds[0].starts_with("Automatic"), "{kinds:?}");
+            assert!(kinds.iter().any(|k| k == "Software"), "{kinds:?}");
+            let all_codecs = items(&d.codec);
+            let soft_at = kinds.iter().position(|k| k == "Software").unwrap() as u32;
+            d.encoder.set_selected(soft_at);
+            let soft_codecs = items(&d.codec);
+            assert!(soft_codecs.iter().all(|c| all_codecs.contains(c)), "{soft_codecs:?} within {all_codecs:?}");
+            for kind in kinds.iter().filter(|k| k.starts_with("Hardware")) {
+                let at = kinds.iter().position(|k| k == kind).unwrap() as u32;
+                d.encoder.set_selected(at);
+                let hw = items(&d.codec);
+                assert!(!hw.is_empty() && hw.iter().all(|c| all_codecs.contains(c)), "{kind}: {hw:?}");
+            }
+            d.encoder.set_selected(0);
+            assert_eq!(items(&d.codec), all_codecs, "Automatic offers every format found");
+            let vp9_at = items(&d.codec).iter().position(|c| c.contains("VP9")).expect("a VP9 encoder works here");
+            d.codec.set_selected(vp9_at as u32); // VP9
             assert!(
                 pump_for(60, || d.export.is_sensitive()),
                 "the VP9 encoders were looked for"
