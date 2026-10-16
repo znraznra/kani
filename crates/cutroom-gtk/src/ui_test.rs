@@ -1098,6 +1098,28 @@ mod tests {
             assert_ne!(sizes, other, "another shape, other sizes");
             d.aspect.set_selected(0);
             assert_eq!(d.size.selected(), project_size, "back on the project's size");
+            // Range: the whole project, or from / to (and the selected clips when there are some).
+            {
+                let ranges = items(&d.range);
+                assert_eq!(ranges[0], "Whole project");
+                assert_eq!(ranges.last().map(String::as_str), Some("From / to"));
+                assert!(!d.range_from.is_visible(), "the typed range is hidden until asked for");
+                let whole = d.summary.text().to_string();
+                d.range.set_selected(ranges.len() as u32 - 1);
+                assert!(d.range_from.is_visible() && d.range_to.is_visible());
+                d.range_from.set_value(1.0);
+                d.range_to.set_value(3.0);
+                assert!(d.summary.text().starts_with("Duration: 0:02"), "{}", d.summary.text());
+                assert_ne!(d.summary.text().as_str(), whole.as_str());
+                assert!(d.export.is_sensitive());
+                // A part that ends before it starts leaves nothing to export.
+                d.range_to.set_value(0.5);
+                assert!(!d.export.is_sensitive(), "an empty part cannot be exported");
+                assert!(d.summary.text().contains("Nothing is in the chosen part"));
+                d.range.set_selected(0);
+                assert!(d.export.is_sensitive());
+                assert_eq!(d.summary.text().as_str(), whole.as_str());
+            }
             // Rendering: Automatic, Hardware, Software.
             assert_eq!(
                 items(&d.gpu_mode),
@@ -1122,6 +1144,50 @@ mod tests {
             d.codec.set_selected(0); // back to H.264
             assert!(pump_for(60, || d.export.is_sensitive()));
             assert!(items(&d.format).contains(&"MP4".to_string()));
+            // Presets fill the choices in; changing one by hand leaves the preset.
+            {
+                let presets = items(&d.preset);
+                assert_eq!(presets[0], "No preset");
+                for name in ["YouTube Shorts", "TikTok", "LinkedIn video (16:9)", "Sound only: MP3"] {
+                    assert!(presets.iter().any(|p| p == name), "{name} is a preset: {presets:?}");
+                }
+                let at = |name: &str| presets.iter().position(|p| p == name).unwrap() as u32;
+                d.preset.set_selected(at("Instagram feed (4:5)"));
+                assert!(pump_for(60, || d.export.is_sensitive()));
+                assert!(
+                    items(&d.size)[d.size.selected() as usize].starts_with("1080 x 1350"),
+                    "{:?}",
+                    items(&d.size)[d.size.selected() as usize]
+                );
+                assert!(d.video_on.is_active());
+                assert_eq!(items(&d.format)[d.format.selected() as usize], "MP4");
+                assert_eq!(items(&d.audio_format)[d.audio_format.selected() as usize], "AAC");
+                assert_eq!(d.preset.selected(), at("Instagram feed (4:5)"), "the preset stays while nothing is changed");
+                // Another shape and size by hand: no longer that preset.
+                d.rate.set_selected((d.rate.selected() + 1) % items(&d.rate).len() as u32);
+                assert_eq!(d.preset.selected(), 0, "a changed choice leaves the preset");
+                d.preset.set_selected(at("LinkedIn video (16:9)"));
+                assert!(pump_for(60, || d.export.is_sensitive()));
+                assert!(items(&d.size)[d.size.selected() as usize].starts_with("1920 x 1080"));
+                // A format with its own file format and sound.
+                d.preset.set_selected(at("Web page (WebM)"));
+                assert!(pump_for(60, || d.export.is_sensitive()));
+                assert_eq!(items(&d.format)[d.format.selected() as usize], "WebM");
+                assert_eq!(items(&d.audio_format), vec!["Opus".to_string()]);
+                // A sound-only preset switches the video off.
+                d.preset.set_selected(at("Sound only: MP3"));
+                assert!(!d.video_on.is_active() && d.audio_on.is_active());
+                assert_eq!(items(&d.audio_format)[d.audio_format.selected() as usize], "MP3");
+                assert!(d.export.is_sensitive());
+                // Back to the plain H.264 start the rest of the test expects.
+                d.preset.set_selected(0);
+                d.audio_on.set_active(false);
+                d.video_on.set_active(true);
+                d.aspect.set_selected(0);
+                d.codec.set_selected(0);
+                assert!(pump_for(60, || d.export.is_sensitive()));
+                assert!(items(&d.format).contains(&"MP4".to_string()));
+            }
             // With nothing switched on there is nothing to export.
             d.video_on.set_active(false);
             d.audio_on.set_active(false);

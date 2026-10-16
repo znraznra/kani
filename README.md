@@ -179,9 +179,16 @@ export dialog: a picture of the playhead frame and the list of files this will m
   Kani mixes to stereo, so surround is not offered).
 - **Captions**: save the caption layer as `.srt`, `.vtt` or `.ass` (the `.ass` file takes its font, colours and outline
   from the first caption).
+- **Preset**: a list of named sites (YouTube, YouTube Shorts, TikTok, Instagram Reels / feed / story, Facebook,
+  X, LinkedIn, Web page (WebM), Small file, Archive, Sound only: MP3 ...). Choosing one fills in shape, size, codec,
+  file format, bit rate and sound for you; changing any choice by hand returns the list to "No preset".
+- **Range**: Whole timeline, a time range (start and end), or only the clips selected on the timeline. Captions files
+  are cut and shifted to match.
 - **Encoder and Rendering**: the encoder (Automatic or a specific one), and Rendering: Automatic (recommended), Hardware
   (the graphics card puts the pictures together) or Software (the processor does). Beside "Hardware" a short check says
   whether the graphics card is Available or Not available.
+
+The sound file is made at the same time as the video, on its own thread, so asking for both costs little extra time.
 
 Kani renders every frame itself with the same compositor as the preview and mixes all audible sound. When you press
 Export the window keeps its size and its picture, which now follows the frames as they are made; the right-hand side
@@ -256,7 +263,7 @@ Tiny and Base are fast but often wrong, especially with noise or non-English spe
 | 2 | App shell: home screen, editing, autosave (done, now on GTK4) |
 | 3 | Media core: probing, thumbnails, preview, mixed sound, stills, waveforms, filmstrips, proxies, scrub throttling, decoder reporting (done); still to do: check hardware decoding on real machines and footage, proxy auto-creation, proxy encoder choice per machine |
 | 4 | Compositor: **layers, transforms, opacity, on-canvas transform box, crossfades and keyframes (done, CPU)**; deferred: GPU backend, blend modes, skipping decode of fully covered layers |
-| 5 | Export: **MP4 (H.264 + AAC) with the same pictures and sound as the preview, optional graphics-card compositing (Automatic / Always / Never in the Export window; Automatic uses the card only when a check found a real graphics chip clearly faster, and falls back to the processor for anything it cannot draw), a redesigned Export window (video and/or separate sound file, NTSC-to-PAL sizes by aspect ratio, bit rate presets, H.264 / H.265 / VP9 / AV1, MP4 / MOV / MKV / WebM, frame rate, AAC / MP3 / Opus / FLAC / WAV, mono or stereo, .srt / .vtt / .ass caption files, encoder and graphics-card choices), progress and cancel, and the best encoder that works on the machine (NVENC, Quick Sync, VA-API, AMF, VideoToolbox, else x264) with automatic fallback**; still to do: the new H.265 / VP9 / AV1 hardware encoders checked on real machines, export of a range or of selected clips, presets for named sites |
+| 5 | Export: **MP4 (H.264 + AAC) with the same pictures and sound as the preview, optional graphics-card compositing (Automatic / Always / Never in the Export window; Automatic uses the card only when a check found a real graphics chip clearly faster, and falls back to the processor for anything it cannot draw), a redesigned Export window (video and/or separate sound file, NTSC-to-PAL sizes by aspect ratio, bit rate presets, H.264 / H.265 / VP9 / AV1, MP4 / MOV / MKV / WebM, frame rate, AAC / MP3 / Opus / FLAC / WAV, mono or stereo, .srt / .vtt / .ass caption files, encoder and graphics-card choices), progress and cancel, and the best encoder that works on the machine (NVENC, Quick Sync, VA-API, AMF, VideoToolbox, else x264) with automatic fallback**; the sound file is made in parallel with the video; export of a time range or of selected clips; presets for named sites; still to do: the new H.265 / VP9 / AV1 hardware encoders checked on real machines, Windows (EGL, NVENC) |
 | 6 | Text engine and templates: **text clips (font, size, colour, outline, shadow, box, spacing), nine built-in styles, skew and perspective (done)**; still to do: mesh warp / free-form corner pinning, animating skew and perspective, user-saved text styles |
 | 7 | Captions with local Whisper, styled word highlighting: **generate captions from the sound of selected clips (or the whole timeline), five caption looks, the spoken word or the line so far lit up as it is said, editable word by word, .srt / .vtt export (done)**; still to do: real-world accuracy checks on your machine, speaker labels, translation, GPU-accelerated recognition |
 | 8 | Asset libraries and the pack format, with license tracking |
@@ -266,7 +273,7 @@ Tiny and Base are fast but often wrong, especially with noise or non-English spe
 
 ## Version numbers
 
-`major.phase.iteration`, for example `0.5.17`:
+`major.phase.iteration`, for example `0.5.18`:
 
 - **major**: the approved official release (0 until one is approved)
 - **phase**: the development phase being worked on (4 = compositor and editing UI, 5 = export, 6 = text, 7 = captions)

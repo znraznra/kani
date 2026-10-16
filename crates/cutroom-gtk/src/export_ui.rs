@@ -11,7 +11,7 @@ use crate::export_options::{
     AUDIO_BITRATES,
 };
 use cutroom_core::state::{MediaKind, Session};
-use cutroom_timeline::{FrameRate, MediaId, Ticks};
+use cutroom_timeline::{ClipId, FrameRate, MediaId, Ticks};
 use gtk4 as gtk;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
@@ -34,6 +34,19 @@ pub struct Dialog {
     pub video_on: gtk::CheckButton,
     pub audio_on: gtk::CheckButton,
     pub captions_on: gtk::CheckButton,
+    /// Ready-made choices for a place the video is going.
+    pub preset: gtk::DropDown,
+    preset_note: gtk::Label,
+    /// Set while a preset is being filled in (that is not the user changing a choice).
+    applying: Cell<bool>,
+    // Which part of the project.
+    pub range: gtk::DropDown,
+    pub range_from: gtk::SpinButton,
+    pub range_to: gtk::SpinButton,
+    range_row: Vec<gtk::Widget>,
+    range_modes: Vec<RangeMode>,
+    /// The clips selected when the window opened, with where they sit.
+    selection: Vec<(ClipId, Ticks, Ticks)>,
     // Video.
     pub aspect: gtk::DropDown,
     /// The size (resolution) list.
@@ -106,6 +119,16 @@ pub struct Dialog {
     busy: Cell<bool>,
     /// Set once the window has been closed.
     gone: Cell<bool>,
+}
+
+/// Which part of the project to export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RangeMode {
+    Whole,
+    /// The clips selected in the timeline (and the stretch they cover).
+    Selection,
+    /// From and to, typed in.
+    Custom,
 }
 
 struct Running {
@@ -344,7 +367,7 @@ pub fn open(app: &Rc<App>) {
         existing.window.present();
         return;
     }
-    let (project_name, canvas, project_rate, sample_rate, seconds, sources, timeline, cues, look, playhead) = {
+    let (project_name, canvas, project_rate, sample_rate, seconds, sources, timeline, cues, look, playhead, selection) = {
         let st = app.state.borrow();
         let Some(session) = st.session.as_ref() else {
             return;
@@ -376,6 +399,17 @@ pub fn open(app: &Rc<App>) {
             session.caption_cues(),
             session.caption_look(),
             session.playhead,
+            session
+                .selection()
+                .into_iter()
+                .filter_map(|id| {
+                    session
+                        .doc
+                        .timeline
+                        .find_clip(id)
+                        .map(|(_, c)| (id, c.start, c.end()))
+                })
+                .collect::<Vec<_>>(),
         )
     };
     // Stop playback: the preview would only compete for the processor.
@@ -457,6 +491,72 @@ pub fn open(app: &Rc<App>) {
     folder_row.append(&change);
     top.attach(&grid_label("Export to"), 0, 1, 1, 1);
     top.attach(&folder_row, 1, 1, 1, 1);
+    // Presets for places the video is going.
+    let mut preset_names = vec!["No preset".to_string()];
+    preset_names.extend(opts::SITE_PRESETS.iter().map(|p| p.name.to_string()));
+    let preset = dropdown(&preset_names.iter().map(String::as_str).collect::<Vec<_>>());
+    preset.set_tooltip_text(Some(
+        "Fills in the choices below with the usual settings for a place the video is going. You can still change anything afterwards.",
+    ));
+    top.attach(&grid_label("Preset"), 0, 2, 1, 1);
+    top.attach(&preset, 1, 2, 1, 1);
+    let preset_note = gtk::Label::new(None);
+    preset_note.set_xalign(0.0);
+    preset_note.set_wrap(true);
+    preset_note.set_max_width_chars(40);
+    preset_note.add_css_class("dim-label");
+    preset_note.add_css_class("caption");
+    preset_note.set_visible(false);
+    top.attach(&preset_note, 1, 3, 1, 1);
+    // Which part of the project: all of it, the selected clips, or from/to.
+    let mut range_modes = vec![RangeMode::Whole];
+    let mut range_labels = vec!["Whole project".to_string()];
+    if let (Some(first), Some(last)) = (
+        selection.iter().map(|s| s.1).min(),
+        selection.iter().map(|s| s.2).max(),
+    ) {
+        range_modes.push(RangeMode::Selection);
+        range_labels.push(format!(
+            "Selected clips ({}, {})",
+            selection.len(),
+            clock((last - first).as_seconds_f64())
+        ));
+    }
+    range_modes.push(RangeMode::Custom);
+    range_labels.push("From / to".to_string());
+    let range = dropdown(&range_labels.iter().map(String::as_str).collect::<Vec<_>>());
+    top.attach(&grid_label("Range"), 0, 4, 1, 1);
+    top.attach(&range, 1, 4, 1, 1);
+    let spin = |value: f64| {
+        let b = gtk::SpinButton::with_range(0.0, seconds, 0.1);
+        b.set_digits(1);
+        b.set_value(value);
+        b.set_hexpand(true);
+        b
+    };
+    let range_from = spin(0.0);
+    let range_to = spin(seconds);
+    range_from.set_tooltip_text(Some("Start, in seconds on the timeline"));
+    range_to.set_tooltip_text(Some("End, in seconds on the timeline"));
+    let at_playhead = |target: &gtk::SpinButton| {
+        let b = gtk::Button::from_icon_name("go-jump-symbolic");
+        b.set_tooltip_text(Some("Use the playhead"));
+        let (target, at) = (target.clone(), playhead.as_seconds_f64().clamp(0.0, seconds));
+        b.connect_clicked(move |_| target.set_value(at));
+        b
+    };
+    let range_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    range_box.append(&range_from);
+    range_box.append(&at_playhead(&range_from));
+    range_box.append(&gtk::Label::new(Some("to")));
+    range_box.append(&range_to);
+    range_box.append(&at_playhead(&range_to));
+    let range_label = grid_label("");
+    top.attach(&range_label, 0, 5, 1, 1);
+    top.attach(&range_box, 1, 5, 1, 1);
+    range_label.set_visible(false);
+    range_box.set_visible(false);
+    let range_row: Vec<gtk::Widget> = vec![range_label.upcast(), range_box.upcast()];
     right.append(&top);
     right.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
@@ -727,6 +827,15 @@ pub fn open(app: &Rc<App>) {
         name,
         folder,
         ext,
+        preset,
+        preset_note,
+        applying: Cell::new(false),
+        range,
+        range_from,
+        range_to,
+        range_row,
+        range_modes,
+        selection,
         video_on,
         audio_on,
         captions_on,
@@ -949,6 +1058,69 @@ fn restore_choices(d: &Dialog, settings: &cutroom_core::settings::Settings) {
     set_items(d, &d.audio_bitrate, &labels, at);
 }
 
+/// Fill in the choices for a preset (the lists are rebuilt in the order they
+/// depend on each other), then refresh everything that follows.
+fn apply_preset(app: &Rc<App>, d: &Rc<Dialog>, p: &opts::SitePreset) {
+    d.applying.set(true);
+    d.video_on.set_active(!p.sound_only);
+    d.audio_on.set_active(p.sound_only || d.audio_on.is_active());
+    if !p.sound_only {
+        // Shape, then the size in that shape.
+        let shape = p.aspect.unwrap_or(d.aspects[0].1);
+        let at = d
+            .aspects
+            .iter()
+            .position(|(_, a)| opts::same_shape(*a, shape))
+            .unwrap_or(0) as u32;
+        select(d, &d.aspect, at);
+        refresh_resolutions(d);
+        if p.short_side > 0 {
+            let list = d.resolutions.borrow().clone();
+            if let Some(i) = list.iter().position(|r| r.width.min(r.height) == p.short_side) {
+                select(d, &d.size, i as u32);
+            }
+        }
+        // Frame rate: the project's own unless the preset names one.
+        let rate = p
+            .fps
+            .and_then(|f| d.rates.iter().position(|r| (r.as_f64() - f64::from(f)).abs() < 0.01))
+            .unwrap_or(0);
+        select(d, &d.rate, rate as u32);
+        // Video format, file format, bit rate.
+        select(
+            d,
+            &d.codec,
+            VideoCodec::ALL.iter().position(|c| *c == p.codec).unwrap_or(0) as u32,
+        );
+        refresh_formats(d, Some(p.container));
+        refresh_bitrate_labels(d, p.bitrate);
+    }
+    // Sound.
+    select(
+        d,
+        &d.channels,
+        Channels::ALL.iter().position(|c| *c == p.channels).unwrap_or(0) as u32,
+    );
+    refresh_audio_formats(d, Some(p.audio_format));
+    if let Some(i) = AUDIO_BITRATES.iter().position(|k| *k == p.audio_kbps) {
+        select(d, &d.audio_bitrate, i as u32);
+    }
+    d.applying.set(false);
+    if !p.sound_only {
+        find_encoders(app, d);
+    }
+    refresh_all(d);
+}
+
+/// The user changed a choice by hand: it is no longer the chosen preset.
+fn forget_preset(d: &Dialog) {
+    if d.busy.get() || d.applying.get() || d.preset.selected() == 0 {
+        return;
+    }
+    select(d, &d.preset, 0);
+    d.preset_note.set_visible(false);
+}
+
 /// Everything that follows from the current choices.
 fn refresh_all(d: &Dialog) {
     refresh_enabled(d);
@@ -1129,7 +1301,11 @@ fn refresh_enabled(d: &Dialog) {
         .set_sensitive(audio_format_is_lossy(d));
     let anything = video || audio || !caption_formats(d).is_empty();
     let video_ready = !video || (d.ready.get() && !d.encoders.borrow().is_empty());
-    d.export.set_sensitive(anything && video_ready);
+    for w in &d.range_row {
+        w.set_visible(chosen_range_mode(d) == RangeMode::Custom);
+    }
+    d.export
+        .set_sensitive(anything && video_ready && range_is_usable(d));
 }
 
 fn audio_format_is_lossy(d: &Dialog) -> bool {
@@ -1223,12 +1399,12 @@ fn update_summary(d: &Dialog) {
     let audio_kbps = (d.video_on.is_active() || d.audio_on.is_active()).then(|| chosen_audio_kbps(d));
     let mut bytes = 0.0;
     if let Some(v) = video_kbps {
-        bytes += opts::estimated_bytes(d.seconds, Some(v), audio_kbps);
+        bytes += opts::estimated_bytes(export_seconds(d), Some(v), audio_kbps);
     }
     if d.audio_on.is_active() {
-        bytes += opts::estimated_bytes(d.seconds, None, audio_kbps);
+        bytes += opts::estimated_bytes(export_seconds(d), None, audio_kbps);
     }
-    let mut text = format!("Duration: {}", clock(d.seconds));
+    let mut text = format!("Duration: {}", clock(export_seconds(d)));
     if bytes > 0.0 {
         text.push_str(&format!(" | Size: about {}", megabytes(bytes)));
     }
@@ -1237,6 +1413,9 @@ fn update_summary(d: &Dialog) {
             "No {} video encoder was found. Pick another video format, or install GStreamer's plug-in for it.",
             chosen_codec(d).name()
         );
+    }
+    if !range_is_usable(d) {
+        text = "Nothing is in the chosen part: the start must come before the end.".to_string();
     }
     d.summary.set_text(&text);
 }
@@ -1308,13 +1487,58 @@ fn chosen_encoders(d: &Dialog) -> Vec<Encoder> {
 }
 
 /// The job for what is chosen. `video` and `audio` say which files to make.
+fn chosen_range_mode(d: &Dialog) -> RangeMode {
+    d.range_modes
+        .get(d.range.selected() as usize)
+        .copied()
+        .unwrap_or(RangeMode::Whole)
+}
+
+/// The part of the timeline to export: where it starts and ends (`None` = to
+/// the end), and the clips to keep (`None` = all of them).
+fn chosen_range(d: &Dialog) -> (Ticks, Option<Ticks>, Option<Vec<ClipId>>) {
+    match chosen_range_mode(d) {
+        RangeMode::Whole => (Ticks::ZERO, None, None),
+        RangeMode::Selection => {
+            let first = d.selection.iter().map(|s| s.1).min().unwrap_or(Ticks::ZERO);
+            let last = d.selection.iter().map(|s| s.2).max();
+            (first, last, Some(d.selection.iter().map(|s| s.0).collect()))
+        }
+        RangeMode::Custom => (
+            Ticks::from_seconds_f64(d.range_from.value()),
+            Some(Ticks::from_seconds_f64(d.range_to.value())),
+            None,
+        ),
+    }
+}
+
+/// How long the exported part is, in seconds.
+fn export_seconds(d: &Dialog) -> f64 {
+    let (start, end, _) = chosen_range(d);
+    let end = end.map_or(d.seconds, |e| e.as_seconds_f64().min(d.seconds));
+    (end - start.as_seconds_f64()).max(0.0)
+}
+
+/// Is there anything in the chosen part?
+fn range_is_usable(d: &Dialog) -> bool {
+    export_seconds(d) >= 0.1
+}
+
 fn make_job(d: &Dialog, gpu: bool) -> Job {
+    let (range_start, range_end, keep) = chosen_range(d);
+    let mut timeline = d.timeline.clone();
+    if let Some(keep) = &keep {
+        // Selected clips only: everything else is taken out of the copy.
+        for track in &mut timeline.tracks {
+            track.clips.retain(|c| keep.contains(&c.id));
+        }
+    }
     let (width, height) = chosen_resolution(d);
     let fill = d.fit.selected() == 1;
     let (cw, ch) = opts::canvas_inside((width, height), d.project, fill);
     let video = d.video_on.is_active();
     Job {
-        timeline: d.timeline.clone(),
+        timeline,
         sources: d.sources.clone(),
         width,
         height,
@@ -1330,6 +1554,8 @@ fn make_job(d: &Dialog, gpu: bool) -> Job {
         encoders: if video { chosen_encoders(d) } else { Vec::new() },
         output: video.then(|| output_path(d)),
         audio_output: d.audio_on.is_active().then(|| audio_path(d)),
+        range_start,
+        range_end,
         limit_seconds: test_limit(),
         gpu,
     }
@@ -1338,7 +1564,14 @@ fn make_job(d: &Dialog, gpu: bool) -> Job {
 /// Draw one picture of the project at the playhead on the left, on a worker thread.
 fn start_preview(d: &Rc<Dialog>) {
     let job = make_job(d, false);
-    let at = d.playhead.min(d.timeline.duration());
+    let (range_start, range_end, _) = chosen_range(d);
+    let last = range_end.unwrap_or_else(|| d.timeline.duration()).min(d.timeline.duration());
+    // The playhead's picture, or the first one of the part when the playhead is outside it.
+    let at = if d.playhead >= range_start && d.playhead < last {
+        d.playhead
+    } else {
+        range_start
+    };
     let found: Arc<Mutex<Option<Option<(u32, u32, Vec<u8>)>>>> = Arc::new(Mutex::new(None));
     {
         let found = found.clone();
@@ -1366,7 +1599,7 @@ fn start_preview(d: &Rc<Dialog>) {
                 );
                 d.preview.set_paintable(Some(&texture));
                 d.preview_note
-                    .set_text(&format!("The picture at {} on the timeline", clock(d.playhead.as_seconds_f64())));
+                    .set_text(&format!("The picture at {} on the timeline", clock(at.as_seconds_f64())));
             }
             None => d.preview_note.set_text("No preview picture could be made."),
         }
@@ -1385,6 +1618,49 @@ fn connect(app: &Rc<App>, d: &Rc<Dialog>) {
             refresh_bitrate_labels(&d, chosen_preset(&d));
             refresh_all(&d);
         });
+    }
+    {
+        // A preset fills the choices in; changing any of them afterwards
+        // means it is no longer that preset.
+        let (app2, d2) = (app.clone(), d.clone());
+        d.preset.connect_selected_notify(move |dd| {
+            if d2.busy.get() || d2.applying.get() {
+                return;
+            }
+            let at = dd.selected() as usize;
+            match at.checked_sub(1).and_then(|i| opts::SITE_PRESETS.get(i)) {
+                Some(p) => {
+                    d2.preset_note.set_text(p.note);
+                    d2.preset_note.set_visible(true);
+                    apply_preset(&app2, &d2, p);
+                }
+                None => d2.preset_note.set_visible(false),
+            }
+        });
+        let dropdowns = [
+            &d.aspect, &d.size, &d.bitrate, &d.codec, &d.format, &d.rate,
+            &d.audio_format, &d.audio_bitrate, &d.channels,
+        ];
+        for dd in dropdowns {
+            let d2 = d.clone();
+            dd.connect_selected_notify(move |_| forget_preset(&d2));
+        }
+        for check in [&d.video_on, &d.audio_on] {
+            let d2 = d.clone();
+            check.connect_toggled(move |_| forget_preset(&d2));
+        }
+    }
+    {
+        // The part of the project: the list, and the typed from / to.
+        let d2 = d.clone();
+        d.range.connect_selected_notify(move |_| {
+            refresh_all(&d2);
+            start_preview(&d2);
+        });
+        for spin in [&d.range_from, &d.range_to] {
+            let d2 = d.clone();
+            spin.connect_value_changed(move |_| refresh_all(&d2));
+        }
     }
     {
         let d = d.clone();
@@ -1700,11 +1976,22 @@ fn write_captions(d: &Dialog) -> (Vec<PathBuf>, Vec<String>) {
     } else {
         d.project
     };
+    // Only the captions in the exported part, timed from its start.
+    let cues = if chosen_range_mode(d) == RangeMode::Whole {
+        d.cues.clone()
+    } else {
+        let (start, end, _) = chosen_range(d);
+        opts::cues_in_range(
+            &d.cues,
+            start.as_seconds_f64(),
+            end.map_or(d.seconds, |e| e.as_seconds_f64()),
+        )
+    };
     for ext in caption_formats(d) {
         let text = match ext {
-            "srt" => cutroom_captions::srt::to_srt(&d.cues),
-            "vtt" => cutroom_captions::srt::to_vtt(&d.cues),
-            _ => cutroom_captions::srt::to_ass(&d.cues, &ass_style(d, h), w, h),
+            "srt" => cutroom_captions::srt::to_srt(&cues),
+            "vtt" => cutroom_captions::srt::to_vtt(&cues),
+            _ => cutroom_captions::srt::to_ass(&cues, &ass_style(d, h), w, h),
         };
         let path = caption_path(d, ext);
         match std::fs::write(&path, text) {

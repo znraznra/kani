@@ -530,6 +530,229 @@ pub fn lossless_kbps(format: AudioFormat, channels: Channels, rate: u32) -> u32 
     }
 }
 
+// -------------------------------------------------------------- presets
+
+/// A ready-made set of choices for a place the video is going (or for sound
+/// alone). They are the usual settings people use for those places, not rules
+/// the places enforce: they are a starting point, and every choice can still be
+/// changed afterwards.
+#[derive(Debug, Clone, Copy)]
+pub struct SitePreset {
+    pub id: &'static str,
+    pub name: &'static str,
+    /// What it sets, in a sentence.
+    pub note: &'static str,
+    /// The picture's shape, or `None` for the project's own.
+    pub aspect: Option<(u32, u32)>,
+    /// The size by its shorter side in lines (as in the size list), or 0 for the
+    /// project's own size.
+    pub short_side: u32,
+    /// Frames per second, or `None` for the project's own.
+    pub fps: Option<u32>,
+    pub codec: VideoCodec,
+    pub container: Container,
+    pub bitrate: BitratePreset,
+    pub audio_format: AudioFormat,
+    pub audio_kbps: u32,
+    pub channels: Channels,
+    /// Only a sound file (the video is switched off).
+    pub sound_only: bool,
+}
+
+const fn video_preset(
+    id: &'static str,
+    name: &'static str,
+    note: &'static str,
+    aspect: Option<(u32, u32)>,
+    short_side: u32,
+    bitrate: BitratePreset,
+    audio_kbps: u32,
+) -> SitePreset {
+    SitePreset {
+        id,
+        name,
+        note,
+        aspect,
+        short_side,
+        fps: None,
+        codec: VideoCodec::H264,
+        container: Container::Mp4,
+        bitrate,
+        audio_format: AudioFormat::Aac,
+        audio_kbps,
+        channels: Channels::Stereo,
+        sound_only: false,
+    }
+}
+
+/// The presets, in the order they are listed.
+pub const SITE_PRESETS: [SitePreset; 14] = [
+    video_preset(
+        "youtube-shorts",
+        "YouTube Shorts",
+        "Vertical 9:16, 1080 x 1920, H.264 in MP4, AAC sound.",
+        Some((9, 16)),
+        1080,
+        BitratePreset::Recommended,
+        192,
+    ),
+    video_preset(
+        "tiktok",
+        "TikTok",
+        "Vertical 9:16, 1080 x 1920, H.264 in MP4, AAC sound.",
+        Some((9, 16)),
+        1080,
+        BitratePreset::Recommended,
+        192,
+    ),
+    video_preset(
+        "instagram-reels",
+        "Instagram Reels and Stories",
+        "Vertical 9:16, 1080 x 1920, H.264 in MP4, AAC sound.",
+        Some((9, 16)),
+        1080,
+        BitratePreset::Recommended,
+        192,
+    ),
+    video_preset(
+        "instagram-feed",
+        "Instagram feed (4:5)",
+        "Portrait 4:5, 1080 x 1350, H.264 in MP4, AAC sound.",
+        Some((4, 5)),
+        1080,
+        BitratePreset::Recommended,
+        192,
+    ),
+    video_preset(
+        "square",
+        "Square post (1:1)",
+        "Square 1:1, 1080 x 1080, H.264 in MP4, AAC sound. Works on LinkedIn, Facebook and Instagram.",
+        Some((1, 1)),
+        1080,
+        BitratePreset::Recommended,
+        192,
+    ),
+    video_preset(
+        "linkedin",
+        "LinkedIn video (16:9)",
+        "Landscape 16:9, 1920 x 1080, H.264 in MP4, AAC sound.",
+        Some((16, 9)),
+        1080,
+        BitratePreset::Recommended,
+        192,
+    ),
+    video_preset(
+        "youtube-1080",
+        "YouTube (1080p)",
+        "Landscape 16:9, 1920 x 1080, H.264 in MP4, a higher bit rate, AAC sound.",
+        Some((16, 9)),
+        1080,
+        BitratePreset::High,
+        256,
+    ),
+    video_preset(
+        "youtube-4k",
+        "YouTube (4K)",
+        "Landscape 16:9, 3840 x 2160, H.264 in MP4, a higher bit rate, AAC sound. Slow without a hardware encoder.",
+        Some((16, 9)),
+        2160,
+        BitratePreset::High,
+        256,
+    ),
+    video_preset(
+        "x",
+        "X (Twitter) (16:9, 720p)",
+        "Landscape 16:9, 1280 x 720, H.264 in MP4, AAC sound.",
+        Some((16, 9)),
+        720,
+        BitratePreset::Recommended,
+        128,
+    ),
+    video_preset(
+        "chat",
+        "Small file (chat apps, email)",
+        "The project's shape at 720p, H.264 in MP4, a low bit rate, AAC sound.",
+        None,
+        720,
+        BitratePreset::Low,
+        128,
+    ),
+    SitePreset {
+        id: "web",
+        name: "Web page (WebM)",
+        note: "The project's shape at 1080p, VP9 in WebM, Opus sound. Slow without a hardware encoder.",
+        aspect: None,
+        short_side: 1080,
+        fps: None,
+        codec: VideoCodec::Vp9,
+        container: Container::WebM,
+        bitrate: BitratePreset::Recommended,
+        audio_format: AudioFormat::Opus,
+        audio_kbps: 128,
+        channels: Channels::Stereo,
+        sound_only: false,
+    },
+    SitePreset {
+        id: "master",
+        name: "High-quality master",
+        note: "The project's own size and shape, H.265 in MKV at the highest bit rate, lossless FLAC sound. Big files, for keeping.",
+        aspect: None,
+        short_side: 0,
+        fps: None,
+        codec: VideoCodec::H265,
+        container: Container::Mkv,
+        bitrate: BitratePreset::Maximum,
+        audio_format: AudioFormat::Flac,
+        audio_kbps: 320,
+        channels: Channels::Stereo,
+        sound_only: false,
+    },
+    SitePreset {
+        id: "sound-mp3",
+        name: "Sound only: MP3",
+        note: "Just the project's sound, as an MP3 at 192 kbps stereo. Plays everywhere.",
+        aspect: None,
+        short_side: 0,
+        fps: None,
+        codec: VideoCodec::H264,
+        container: Container::Mp4,
+        bitrate: BitratePreset::Recommended,
+        audio_format: AudioFormat::Mp3,
+        audio_kbps: 192,
+        channels: Channels::Stereo,
+        sound_only: true,
+    },
+    SitePreset {
+        id: "sound-flac",
+        name: "Sound only: lossless (FLAC)",
+        note: "Just the project's sound, as a lossless FLAC file.",
+        aspect: None,
+        short_side: 0,
+        fps: None,
+        codec: VideoCodec::H264,
+        container: Container::Mp4,
+        bitrate: BitratePreset::Recommended,
+        audio_format: AudioFormat::Flac,
+        audio_kbps: 320,
+        channels: Channels::Stereo,
+        sound_only: true,
+    },
+];
+
+/// The captions that fall in `start..end` (seconds on the timeline), as they
+/// read in a file that begins at `start`: shifted back by `start` and cut off at
+/// the edges. Captions wholly outside are left out.
+pub fn cues_in_range(
+    cues: &[(f64, f64, String)],
+    start: f64,
+    end: f64,
+) -> Vec<(f64, f64, String)> {
+    cues.iter()
+        .filter(|(a, b, _)| *b > start && *a < end)
+        .map(|(a, b, text)| ((a.max(start) - start), (b.min(end) - start), text.clone()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -696,5 +919,67 @@ mod tests {
         assert!((estimated_bytes(10.0, None, Some(192)) - 240_000.0).abs() < 1.0);
         assert_eq!(lossless_kbps(AudioFormat::Wav, Channels::Stereo, 48_000), 1536);
         assert_eq!(lossless_kbps(AudioFormat::Flac, Channels::Mono, 48_000), 384);
+    }
+
+    #[test]
+    fn captions_are_cut_to_the_chosen_part_and_start_from_zero() {
+        let cues = vec![
+            (0.0, 2.0, "before".to_string()),
+            (3.0, 6.0, "across the start".to_string()),
+            (7.0, 8.0, "inside".to_string()),
+            (9.0, 12.0, "across the end".to_string()),
+            (13.0, 14.0, "after".to_string()),
+        ];
+        let part = cues_in_range(&cues, 5.0, 10.0);
+        let words: Vec<&str> = part.iter().map(|c| c.2.as_str()).collect();
+        assert_eq!(words, ["across the start", "inside", "across the end"]);
+        assert_eq!((part[0].0, part[0].1), (0.0, 1.0));
+        assert_eq!((part[1].0, part[1].1), (2.0, 3.0));
+        assert_eq!((part[2].0, part[2].1), (4.0, 5.0));
+    }
+
+    #[test]
+    fn every_preset_asks_for_things_that_fit_together() {
+        let mut ids = std::collections::HashSet::new();
+        for p in SITE_PRESETS {
+            assert!(ids.insert(p.id), "{} is listed twice", p.id);
+            assert!(!p.name.is_empty() && !p.note.is_empty());
+            if !p.sound_only {
+                assert!(
+                    p.codec.containers().contains(&p.container),
+                    "{}: {} cannot go in {}",
+                    p.name,
+                    p.codec.name(),
+                    p.container.label()
+                );
+                assert!(
+                    p.container.audio_formats().contains(&p.audio_format),
+                    "{}: {} cannot go in {}",
+                    p.name,
+                    p.audio_format.label(),
+                    p.container.label()
+                );
+                assert!(
+                    p.short_side == 0 || TIERS.iter().any(|t| t.0 == p.short_side),
+                    "{}: {} is not a size on offer",
+                    p.name,
+                    p.short_side
+                );
+                // A shape the list offers.
+                if let Some(a) = p.aspect {
+                    assert!(ASPECTS.contains(&a), "{}: {a:?}", p.name);
+                }
+            }
+            if p.audio_format.is_lossy() {
+                assert!(AUDIO_BITRATES.contains(&p.audio_kbps), "{}", p.name);
+            }
+        }
+        // A preset's size really is what its note says.
+        let shorts = SITE_PRESETS.iter().find(|p| p.id == "youtube-shorts").unwrap();
+        let list = resolutions(shorts.aspect.unwrap(), (1080, 1920));
+        assert!(list.iter().any(|r| (r.width, r.height) == (1080, 1920)));
+        let feed = SITE_PRESETS.iter().find(|p| p.id == "instagram-feed").unwrap();
+        let list = resolutions(feed.aspect.unwrap(), (1080, 1920));
+        assert!(list.iter().any(|r| (r.width, r.height) == (1080, 1350)), "{list:?}");
     }
 }

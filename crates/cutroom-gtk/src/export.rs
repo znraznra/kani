@@ -607,6 +607,10 @@ pub struct Job {
     pub output: Option<PathBuf>,
     /// A file of the project's sound alone, or `None` for none.
     pub audio_output: Option<PathBuf>,
+    /// Where on the timeline the export begins (zero for the whole project), and
+    /// where it ends (`None` = the end of the timeline).
+    pub range_start: Ticks,
+    pub range_end: Option<Ticks>,
     /// Export only this many seconds from the start (used by tests; `None` = all of it).
     pub limit_seconds: Option<f64>,
     /// Put video layers together on the graphics card (falls back to the
@@ -617,7 +621,14 @@ pub struct Job {
 impl Job {
     /// How much of the timeline is exported.
     fn duration(&self) -> Ticks {
-        let all = self.timeline.duration();
+        let end = self
+            .range_end
+            .map_or(self.timeline.duration(), |e| e.min(self.timeline.duration()));
+        let all = if end > self.range_start {
+            end - self.range_start
+        } else {
+            Ticks::ZERO
+        };
         match self.limit_seconds {
             Some(limit) => all.min(Ticks::from_seconds_f64(limit)),
             None => all,
@@ -1750,7 +1761,7 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
             if progress.cancel.load(Ordering::Relaxed) {
                 return Err(ExportError::Cancelled);
             }
-            let at = frame_time(i, job.fps);
+            let at = job.range_start + frame_time(i, job.fps);
             let t0 = std::time::Instant::now();
             renderer.picture(at)?;
             picture_time += t0.elapsed();
@@ -1857,7 +1868,10 @@ fn push_audio(
     rate: u32,
 ) -> Result<()> {
     let start = index * block as u64;
-    let samples = renderer.sound(start as f64 / f64::from(rate), block);
+    // The sound is read from the timeline at `range_start` onwards, but stamped
+    // from zero: the exported file starts at its own beginning.
+    let offset = renderer.job.range_start.as_seconds_f64();
+    let samples = renderer.sound(offset + start as f64 / f64::from(rate), block);
     let mut bytes = Vec::with_capacity(samples.len() * 4);
     for s in samples {
         bytes.extend_from_slice(&s.to_le_bytes());
@@ -2043,6 +2057,34 @@ fn export_video(
     outcome
 }
 
+/// Make the file of the project's sound alone, written under a temporary name
+/// and moved into place only when it is complete.
+fn make_sound_file(job: &Job, progress: &Progress, path: &Path) -> Result<()> {
+    let temp = temp_name(path);
+    let _ = std::fs::remove_file(&temp);
+    let started = std::time::Instant::now();
+    match run_audio_file(job, progress, &temp) {
+        Ok(()) => match std::fs::rename(&temp, path) {
+            Ok(()) => {
+                eprintln!(
+                    "kani: saved the sound file ({}) in {:.1} s",
+                    job.audio_format.label(),
+                    started.elapsed().as_secs_f64()
+                );
+                Ok(())
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&temp);
+                fail(format!("could not save {}: {e}", path.display()))
+            }
+        },
+        Err(e) => {
+            let _ = std::fs::remove_file(&temp);
+            Err(e)
+        }
+    }
+}
+
 /// Export the job. Blocks; run it on a worker thread. Each file appears at its
 /// path only if everything worked (it is written under a temporary name
 /// first); a cancelled or failed export leaves nothing behind.
@@ -2050,6 +2092,9 @@ pub fn export(job: &Job, progress: &Progress) -> Result<Report> {
     gst::init().map_err(|e| ExportError::Failed(e.to_string()))?;
     if job.timeline.duration() <= Ticks::ZERO {
         return fail("There is nothing on the timeline to export.");
+    }
+    if job.duration() <= Ticks::ZERO {
+        return fail("The chosen part of the timeline is empty.");
     }
     if job.output.is_none() && job.audio_output.is_none() {
         return fail("Nothing to export: choose video or audio.");
@@ -2065,53 +2110,49 @@ pub fn export(job: &Job, progress: &Progress) -> Result<Report> {
         .audio_only
         .store(job.output.is_none(), Ordering::Relaxed);
     let started = std::time::Instant::now();
-    let mut report = match &job.output {
-        Some(output) => export_video(job, progress, output, started)?,
+    // The video file and the sound file are made at the same time, each on its
+    // own thread: the sound is a light job next to the pictures, so it comes
+    // for free instead of adding its time to the end.
+    let (video_result, sound_result) = match (&job.output, &job.audio_output) {
+        (Some(video), Some(sound)) => std::thread::scope(|scope| {
+            let sound_thread = scope.spawn(|| make_sound_file(job, progress, sound));
+            let video_result = export_video(job, progress, video, started);
+            if video_result.is_err() {
+                // The video failed or was cancelled: stop the sound too.
+                progress.cancel.store(true, Ordering::Relaxed);
+            }
+            let sound_result = sound_thread
+                .join()
+                .unwrap_or_else(|_| fail("the sound file stopped unexpectedly"));
+            (Some(video_result), Some(sound_result))
+        }),
+        (Some(video), None) => (Some(export_video(job, progress, video, started)), None),
+        (None, Some(sound)) => {
+            progress.audio_pass.store(true, Ordering::Relaxed);
+            (None, Some(make_sound_file(job, progress, sound)))
+        }
+        (None, None) => (None, None),
+    };
+    let mut report = match video_result {
+        Some(result) => result?,
         None => Report {
             encoder: "sound only".into(),
             ..Report::default()
         },
     };
-    if let Some(path) = &job.audio_output {
-        progress.audio_pass.store(true, Ordering::Relaxed);
-        let temp = temp_name(path);
-        let _ = std::fs::remove_file(&temp);
-        let sound_started = std::time::Instant::now();
-        match run_audio_file(job, progress, &temp) {
-            Ok(()) => match std::fs::rename(&temp, path) {
-                Ok(()) => {
-                    report.audio_saved = true;
-                    eprintln!(
-                        "kani: saved the sound file ({}) in {:.1} s",
-                        job.audio_format.label(),
-                        sound_started.elapsed().as_secs_f64()
-                    );
-                }
-                Err(e) => {
-                    let _ = std::fs::remove_file(&temp);
-                    let message = format!("could not save {}: {e}", path.display());
-                    if job.output.is_some() {
-                        report.warnings.push(message);
-                    } else {
-                        return fail(message);
-                    }
-                }
-            },
-            Err(ExportError::Cancelled) => {
-                let _ = std::fs::remove_file(&temp);
-                return Err(ExportError::Cancelled);
-            }
-            Err(ExportError::Failed(message)) => {
-                let _ = std::fs::remove_file(&temp);
-                if job.output.is_some() {
-                    report
-                        .warnings
-                        .push(format!("The sound file could not be made: {message}"));
-                } else {
-                    return fail(message);
-                }
+    match sound_result {
+        Some(Ok(())) => report.audio_saved = true,
+        Some(Err(ExportError::Cancelled)) => return Err(ExportError::Cancelled),
+        Some(Err(ExportError::Failed(message))) => {
+            if job.output.is_some() {
+                report
+                    .warnings
+                    .push(format!("The sound file could not be made: {message}"));
+            } else {
+                return fail(message);
             }
         }
+        None => {}
     }
     report.elapsed = started.elapsed();
     Ok(report)
@@ -2231,6 +2272,8 @@ mod tests {
                 .filter(|e| e.element == "x264enc")
                 .collect(),
             output: Some(dir.join("out").join("result.mp4")),
+            range_start: Ticks::ZERO,
+            range_end: None,
             limit_seconds: None,
             gpu: false,
         })
@@ -2601,6 +2644,8 @@ mod tests {
                 .filter(|e| e.element == "x264enc")
                 .collect(),
             output: Some(out),
+            range_start: Ticks::ZERO,
+            range_end: None,
             limit_seconds: None,
             gpu: false,
         };
@@ -2741,6 +2786,8 @@ mod tests {
                 .filter(|e| e.element == "x264enc")
                 .collect(),
             output: Some(out),
+            range_start: Ticks::ZERO,
+            range_end: None,
             limit_seconds: None,
             gpu: false,
         };
@@ -3089,6 +3136,40 @@ mod tests {
         progress.show(100, 50, &vec![0u8; 100 * 50 * 4], 4, true);
         let small = progress.live.lock().unwrap().take().unwrap();
         assert_eq!((small.width, small.height), (100, 50));
+    }
+
+    #[test]
+    fn only_the_chosen_part_of_the_timeline_is_exported() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut job) = small_job(dir.path()) else {
+            return;
+        };
+        // The timeline is 3 s long; take 1.0 s to 2.5 s.
+        job.range_start = Ticks::from_seconds_f64(1.0);
+        job.range_end = Some(Ticks::from_seconds_f64(2.5));
+        let sound = dir.path().join("out").join("part.m4a");
+        job.audio_output = Some(sound.clone());
+        let video = job.output.clone().unwrap();
+        let report = export(&job, &Progress::default()).expect("export");
+        assert_eq!(report.frames, 45, "1.5 s at 30 fps");
+        for (path, what) in [(&video, "video"), (&sound, "sound")] {
+            if let Some(info) = ffprobe(path, &["-show_entries", "format=duration"]) {
+                if let Some(seconds) = info
+                    .lines()
+                    .find_map(|l| l.strip_prefix("duration="))
+                    .and_then(|v| v.parse::<f64>().ok())
+                {
+                    assert!((seconds - 1.5).abs() < 0.2, "{what} is {seconds} s, not 1.5");
+                }
+            }
+        }
+        // A part past the end is refused, not made empty.
+        job.range_start = Ticks::from_seconds_f64(5.0);
+        job.range_end = None;
+        match export(&job, &Progress::default()) {
+            Err(ExportError::Failed(m)) => assert!(m.contains("empty"), "{m}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
