@@ -10,6 +10,7 @@ mod crossfade_ui;
 mod dialogs;
 mod editor;
 mod export;
+mod export_options;
 mod export_ui;
 mod fonts;
 mod gpu;

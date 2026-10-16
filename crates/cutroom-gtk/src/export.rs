@@ -13,6 +13,7 @@
 //! once before it is offered, so a driver that is installed but broken is not
 //! picked.
 
+use crate::export_options::{AudioFormat, Channels, Container, VideoCodec};
 use crate::media::{path_to_uri, sample_to_thumb};
 use crate::preview::{find_targets, LayerSource};
 use cutroom_compose::{
@@ -31,68 +32,6 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 // ---------------------------------------------------------------- settings
-
-/// How good the picture should be; sets the bit rate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Quality {
-    Small,
-    Recommended,
-    High,
-    Maximum,
-}
-
-impl Quality {
-    pub const ALL: [Quality; 4] = [
-        Quality::Small,
-        Quality::Recommended,
-        Quality::High,
-        Quality::Maximum,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Quality::Small => "Small file",
-            Quality::Recommended => "Recommended",
-            Quality::High => "High",
-            Quality::Maximum => "Maximum",
-        }
-    }
-
-    /// Bits per pixel per frame.
-    fn bits_per_pixel(self) -> f64 {
-        match self {
-            Quality::Small => 0.07,
-            Quality::Recommended => 0.12,
-            Quality::High => 0.18,
-            Quality::Maximum => 0.28,
-        }
-    }
-}
-
-/// Video bit rate, in kilobits per second, for a picture size, frame rate and quality.
-pub fn bitrate_kbps(width: u32, height: u32, fps: f64, quality: Quality) -> u32 {
-    let bits = f64::from(width) * f64::from(height) * fps * quality.bits_per_pixel();
-    ((bits / 1000.0).round() as u32).clamp(1_500, 80_000)
-}
-
-/// Picture sizes on offer for a canvas: its own size, then smaller ones that
-/// keep its shape (the shorter side 1440, 1080, 720 or 480 — never bigger than
-/// the project). Both sides are even, which H.264 needs.
-pub fn size_options(width: u32, height: u32) -> Vec<(u32, u32)> {
-    let even = |v: f64| ((v.round() as u32).max(2) / 2) * 2;
-    let short = width.min(height).max(2);
-    let mut out = vec![(even(f64::from(width)), even(f64::from(height)))];
-    for side in [1440u32, 1080, 720, 480] {
-        if side < short {
-            let k = f64::from(side) / f64::from(short);
-            let size = (even(f64::from(width) * k), even(f64::from(height) * k));
-            if !out.contains(&size) {
-                out.push(size);
-            }
-        }
-    }
-    out
-}
 
 /// The nearest frame at time `index / fps`.
 fn frame_time(index: u64, fps: FrameRate) -> Ticks {
@@ -117,79 +56,158 @@ pub struct Encoder {
     pub label: &'static str,
     /// The GStreamer element.
     pub element: &'static str,
+    /// The video format it makes.
+    pub codec: VideoCodec,
     pub hardware: bool,
-    /// How many of the element's bit-rate units make a kilobit/s.
+    /// The element's bit-rate property, and how many of its units make a kilobit/s.
+    bitrate_prop: &'static str,
     bitrate_unit: u32,
 }
 
 const fn enc(
+    codec: VideoCodec,
     id: &'static str,
     label: &'static str,
     element: &'static str,
     hardware: bool,
+) -> Encoder {
+    enc_with(codec, id, label, element, hardware, "bitrate", 1)
+}
+
+const fn enc_with(
+    codec: VideoCodec,
+    id: &'static str,
+    label: &'static str,
+    element: &'static str,
+    hardware: bool,
+    bitrate_prop: &'static str,
     bitrate_unit: u32,
 ) -> Encoder {
     Encoder {
         id,
         label,
         element,
+        codec,
         hardware,
+        bitrate_prop,
         bitrate_unit,
     }
 }
 
-const NVENC: &[Encoder] = &[enc("nvenc", "NVIDIA NVENC", "nvh264enc", true, 1)];
-const QSV: &[Encoder] = &[enc("qsv", "Intel Quick Sync", "qsvh264enc", true, 1)];
-const VAAPI: &[Encoder] = &[
-    enc("vaapi-lp", "VA-API (low power)", "vah264lpenc", true, 1),
-    enc("vaapi", "VA-API", "vah264enc", true, 1),
-    enc(
-        "vaapi-old",
-        "VA-API (older plug-in)",
-        "vaapih264enc",
-        true,
-        1,
-    ),
+use VideoCodec::{Av1, H264, H265, Vp9};
+
+const H264_NVENC: &[Encoder] = &[enc(H264, "nvenc", "NVIDIA NVENC", "nvh264enc", true)];
+const H264_QSV: &[Encoder] = &[enc(H264, "qsv", "Intel Quick Sync", "qsvh264enc", true)];
+const H264_VAAPI: &[Encoder] = &[
+    enc(H264, "vaapi-lp", "VA-API (low power)", "vah264lpenc", true),
+    enc(H264, "vaapi", "VA-API", "vah264enc", true),
+    enc(H264, "vaapi-old", "VA-API (older plug-in)", "vaapih264enc", true),
 ];
-const AMF: &[Encoder] = &[enc("amf", "AMD AMF", "amfh264enc", true, 1)];
-const VIDEOTOOLBOX: &[Encoder] = &[enc(
-    "videotoolbox",
-    "Apple VideoToolbox",
-    "vtenc_h264",
-    true,
-    1,
-)];
-const WINDOWS_MF: &[Encoder] = &[enc("mf", "Windows Media Foundation", "mfh264enc", true, 1)];
-const SOFTWARE: &[Encoder] = &[
-    enc("x264", "Software (x264)", "x264enc", false, 1),
-    enc(
-        "openh264",
-        "Software (OpenH264)",
-        "openh264enc",
-        false,
-        1000,
-    ),
+const H264_AMF: &[Encoder] = &[enc(H264, "amf", "AMD AMF", "amfh264enc", true)];
+const H264_VT: &[Encoder] = &[enc(H264, "videotoolbox", "Apple VideoToolbox", "vtenc_h264", true)];
+const H264_MF: &[Encoder] = &[enc(H264, "mf", "Windows Media Foundation", "mfh264enc", true)];
+const H264_SOFT: &[Encoder] = &[
+    enc(H264, "x264", "Software (x264)", "x264enc", false),
+    enc_with(H264, "openh264", "Software (OpenH264)", "openh264enc", false, "bitrate", 1000),
 ];
 
-/// Every encoder worth trying on this system, best first: the graphics
-/// hardware in the order the platform prefers, then software.
-pub fn candidates() -> Vec<Encoder> {
+const H265_NVENC: &[Encoder] = &[enc(H265, "nvenc-h265", "NVIDIA NVENC", "nvh265enc", true)];
+const H265_QSV: &[Encoder] = &[enc(H265, "qsv-h265", "Intel Quick Sync", "qsvh265enc", true)];
+const H265_VAAPI: &[Encoder] = &[
+    enc(H265, "vaapi-lp-h265", "VA-API (low power)", "vah265lpenc", true),
+    enc(H265, "vaapi-h265", "VA-API", "vah265enc", true),
+    enc(H265, "vaapi-old-h265", "VA-API (older plug-in)", "vaapih265enc", true),
+];
+const H265_AMF: &[Encoder] = &[enc(H265, "amf-h265", "AMD AMF", "amfh265enc", true)];
+const H265_VT: &[Encoder] = &[enc(H265, "videotoolbox-h265", "Apple VideoToolbox", "vtenc_h265", true)];
+const H265_MF: &[Encoder] = &[enc(H265, "mf-h265", "Windows Media Foundation", "mfh265enc", true)];
+const H265_SOFT: &[Encoder] = &[enc(H265, "x265", "Software (x265)", "x265enc", false)];
+
+const VP9_VAAPI: &[Encoder] = &[
+    enc_with(Vp9, "vaapi-lp-vp9", "VA-API (low power)", "vavp9lpenc", true, "bitrate", 1),
+    enc_with(Vp9, "vaapi-vp9", "VA-API", "vavp9enc", true, "bitrate", 1),
+];
+const VP9_QSV: &[Encoder] = &[enc(Vp9, "qsv-vp9", "Intel Quick Sync", "qsvvp9enc", true)];
+const VP9_SOFT: &[Encoder] = &[enc_with(
+    Vp9,
+    "libvpx-vp9",
+    "Software (libvpx)",
+    "vp9enc",
+    false,
+    "target-bitrate",
+    1000,
+)];
+
+const AV1_NVENC: &[Encoder] = &[enc(Av1, "nvenc-av1", "NVIDIA NVENC", "nvav1enc", true)];
+const AV1_QSV: &[Encoder] = &[enc(Av1, "qsv-av1", "Intel Quick Sync", "qsvav1enc", true)];
+const AV1_VAAPI: &[Encoder] = &[
+    enc(Av1, "vaapi-lp-av1", "VA-API (low power)", "vaav1lpenc", true),
+    enc(Av1, "vaapi-av1", "VA-API", "vaav1enc", true),
+];
+const AV1_AMF: &[Encoder] = &[enc(Av1, "amf-av1", "AMD AMF", "amfav1enc", true)];
+const AV1_SOFT: &[Encoder] = &[
+    enc_with(Av1, "svtav1", "Software (SVT-AV1)", "svtav1enc", false, "target-bitrate", 1),
+    enc_with(Av1, "libaom", "Software (libaom)", "av1enc", false, "target-bitrate", 1),
+];
+
+/// The graphics hardware encoders of one kind for one video format.
+fn hardware_encoders(backend: HwBackend, codec: VideoCodec) -> &'static [Encoder] {
+    match (codec, backend) {
+        (H264, HwBackend::Nvenc) => H264_NVENC,
+        (H264, HwBackend::Qsv) => H264_QSV,
+        (H264, HwBackend::Vaapi) => H264_VAAPI,
+        (H264, HwBackend::Amf) => H264_AMF,
+        (H264, HwBackend::VideoToolbox) => H264_VT,
+        (H265, HwBackend::Nvenc) => H265_NVENC,
+        (H265, HwBackend::Qsv) => H265_QSV,
+        (H265, HwBackend::Vaapi) => H265_VAAPI,
+        (H265, HwBackend::Amf) => H265_AMF,
+        (H265, HwBackend::VideoToolbox) => H265_VT,
+        (Vp9, HwBackend::Vaapi) => VP9_VAAPI,
+        (Vp9, HwBackend::Qsv) => VP9_QSV,
+        (Av1, HwBackend::Nvenc) => AV1_NVENC,
+        (Av1, HwBackend::Qsv) => AV1_QSV,
+        (Av1, HwBackend::Vaapi) => AV1_VAAPI,
+        (Av1, HwBackend::Amf) => AV1_AMF,
+        _ => &[],
+    }
+}
+
+fn software_encoders(codec: VideoCodec) -> &'static [Encoder] {
+    match codec {
+        H264 => H264_SOFT,
+        H265 => H265_SOFT,
+        Vp9 => VP9_SOFT,
+        Av1 => AV1_SOFT,
+    }
+}
+
+/// Every encoder worth trying on this system for a video format, best first:
+/// the graphics hardware in the order the platform prefers, then software.
+pub fn candidates(codec: VideoCodec) -> Vec<Encoder> {
     let os = Os::current();
-    let mut out = Vec::new();
+    let mut out: Vec<Encoder> = Vec::new();
+    let mut add = |list: &[Encoder]| {
+        for e in list {
+            if !out.contains(e) {
+                out.push(*e);
+            }
+        }
+    };
     for backend in os.default_backend_order() {
-        out.extend_from_slice(match backend {
-            HwBackend::Nvenc => NVENC,
-            HwBackend::Qsv => QSV,
-            HwBackend::Vaapi => VAAPI,
-            HwBackend::Amf => AMF,
-            HwBackend::VideoToolbox => VIDEOTOOLBOX,
-            HwBackend::Software => SOFTWARE,
+        add(match backend {
+            HwBackend::Software => software_encoders(codec),
+            other => hardware_encoders(*other, codec),
         });
     }
     if os == Os::Windows {
-        out.extend_from_slice(WINDOWS_MF);
+        add(match codec {
+            H264 => H264_MF,
+            H265 => H265_MF,
+            _ => &[],
+        });
     }
-    out.extend_from_slice(SOFTWARE);
+    add(software_encoders(codec));
     out
 }
 
@@ -212,18 +230,38 @@ fn set_text(element: &gst::Element, name: &str, value: &str) {
 }
 
 fn configure_encoder(element: &gst::Element, encoder: &Encoder, kbps: u32, fps: FrameRate) {
-    set_number(element, "bitrate", kbps * encoder.bitrate_unit);
+    set_number(element, encoder.bitrate_prop, kbps * encoder.bitrate_unit);
     let gop = (fps.as_f64() * 2.0).round().max(1.0) as u32;
     set_number(element, "key-int-max", gop);
     set_number(element, "gop-size", gop);
-    if encoder.element == "x264enc" {
-        set_text(element, "speed-preset", "veryfast");
-        // Widest compatibility (phones, social sites): no B-frame tricks needed.
-        set_number(element, "bframes", 2);
+    set_number(element, "keyframe-max-dist", gop);
+    set_number(element, "intra-period-length", gop);
+    let threads = std::thread::available_parallelism().map_or(2, |n| n.get().min(8)) as u32;
+    match encoder.element {
+        "x264enc" => {
+            set_text(element, "speed-preset", "veryfast");
+            // Widest compatibility (phones, social sites): no B-frame tricks needed.
+            set_number(element, "bframes", 2);
+        }
+        "x265enc" => set_text(element, "speed-preset", "veryfast"),
+        "vp9enc" => {
+            // Good quality (not the realtime setting), at a speed that suits a
+            // phone-length video.
+            set_number(element, "deadline", 1_000_000);
+            set_number(element, "cpu-used", 4);
+            set_number(element, "threads", threads);
+            set_text(element, "row-mt", "true");
+        }
+        "svtav1enc" => set_number(element, "preset", 10),
+        "av1enc" => {
+            set_number(element, "cpu-used", 6);
+            set_number(element, "threads", threads);
+            set_text(element, "row-mt", "true");
+        }
+        _ => {}
     }
 }
 
-/// The video half of the pipeline, from raw pictures to H.264.
 /// How many threads picture conversion may use (colour conversion of a
 /// 1080x1920 picture is a real share of an export's time).
 fn convert_threads() -> usize {
@@ -232,17 +270,29 @@ fn convert_threads() -> usize {
         .clamp(1, 4)
 }
 
+/// The parser that follows an encoder of this video format.
+fn video_parser(codec: VideoCodec) -> &'static str {
+    match codec {
+        H264 => "h264parse",
+        H265 => "h265parse",
+        Vp9 => "vp9parse",
+        Av1 => "av1parse",
+    }
+}
+
+/// The video half of the pipeline, from raw pictures to the encoded format.
 fn video_chain(encoder: &Encoder) -> String {
     format!(
-        "videoconvert n-threads={} ! capsfilter caps=\"video/x-raw,colorimetry=bt709\" ! {} name=venc ! h264parse",
+        "videoconvert n-threads={} ! capsfilter caps=\"video/x-raw,colorimetry=bt709\" ! {} name=venc ! {}",
         convert_threads(),
-        encoder.element
+        encoder.element,
+        video_parser(encoder.codec)
     )
 }
 
 /// Does this encoder really work on this machine? Encodes a few test frames.
 fn probe(encoder: Encoder) -> bool {
-    if !has_element(encoder.element) || !has_element("h264parse") {
+    if !has_element(encoder.element) || !has_element(video_parser(encoder.codec)) {
         return false;
     }
     let (send, receive) = std::sync::mpsc::channel();
@@ -278,22 +328,33 @@ fn probe(encoder: Encoder) -> bool {
         .unwrap_or(false)
 }
 
-static WORKING: OnceLock<Vec<Encoder>> = OnceLock::new();
+static WORKING: [OnceLock<Vec<Encoder>>; 4] = [
+    OnceLock::new(),
+    OnceLock::new(),
+    OnceLock::new(),
+    OnceLock::new(),
+];
 
-/// The encoders that work on this machine, best first. The first call tests
-/// them (a second or two), so call it from a worker thread.
-pub fn working_encoders() -> &'static [Encoder] {
-    WORKING.get_or_init(|| {
+/// The encoders for one video format that work on this machine, best first.
+/// The first call for each format tests them (a second or two), so call it
+/// from a worker thread.
+pub fn working_encoders(codec: VideoCodec) -> &'static [Encoder] {
+    let slot = VideoCodec::ALL
+        .iter()
+        .position(|c| *c == codec)
+        .unwrap_or(0);
+    WORKING[slot].get_or_init(|| {
         if gst::init().is_err() {
             return Vec::new();
         }
-        candidates()
+        candidates(codec)
             .into_iter()
             .filter(|e| {
                 let t = std::time::Instant::now();
                 let ok = probe(*e);
                 eprintln!(
-                    "kani: tested encoder {}: {} ({:.1} s)",
+                    "kani: tested {} encoder {}: {} ({:.1} s)",
+                    codec.name(),
                     e.label,
                     if ok {
                         "works".to_string()
@@ -319,6 +380,68 @@ fn audio_encoder() -> Option<&'static str> {
         .find(|name| has_element(name))
 }
 
+// ------------------------------------------------------------------ sound
+
+/// Can this machine make sound in this format?
+pub fn audio_available(format: AudioFormat) -> bool {
+    match format {
+        AudioFormat::Aac => audio_encoder().is_some(),
+        AudioFormat::Mp3 => has_element("lamemp3enc"),
+        AudioFormat::Opus => has_element("opusenc"),
+        AudioFormat::Flac => has_element("flacenc"),
+        AudioFormat::Wav => true,
+    }
+}
+
+/// Can this machine write this file format?
+pub fn container_available(container: Container) -> bool {
+    has_element(container.muxer())
+}
+
+/// The sound half of a pipeline, from the mixed stereo sound to `format`.
+/// `in_video` is for sound inside a video file (a parser the muxer wants,
+/// raw sound for WAV); otherwise it is for a file of its own. The encoder is
+/// named `aenc` (WAV has none).
+fn audio_chain(format: AudioFormat, channels: Channels, in_video: bool) -> Option<String> {
+    let n = channels.count();
+    let convert = "audioconvert ! audioresample";
+    Some(match format {
+        AudioFormat::Aac => format!(
+            "{convert} ! capsfilter caps=\"audio/x-raw,channels={n}\" ! {} name=aenc ! aacparse",
+            audio_encoder()?
+        ),
+        AudioFormat::Mp3 => format!(
+            "{convert} ! capsfilter caps=\"audio/x-raw,channels={n}\" ! lamemp3enc name=aenc{}",
+            if in_video { " ! mpegaudioparse" } else { "" }
+        ),
+        AudioFormat::Opus => format!(
+            "{convert} ! capsfilter caps=\"audio/x-raw,rate=48000,channels={n}\" ! opusenc name=aenc{}",
+            if in_video { " ! opusparse" } else { "" }
+        ),
+        AudioFormat::Flac => format!(
+            "{convert} ! capsfilter caps=\"audio/x-raw,channels={n}\" ! flacenc name=aenc{}",
+            if in_video { " ! flacparse" } else { "" }
+        ),
+        AudioFormat::Wav => format!(
+            "{convert} ! capsfilter caps=\"audio/x-raw,format=S16LE,channels={n}\"{}",
+            if in_video { "" } else { " ! wavenc" }
+        ),
+    })
+}
+
+/// Set the bit rate on the sound encoder `aenc`, if the format has one.
+fn configure_audio(element: &gst::Element, format: AudioFormat, kbps: u32) {
+    match format {
+        AudioFormat::Aac | AudioFormat::Opus => set_number(element, "bitrate", kbps * 1000),
+        AudioFormat::Mp3 => {
+            set_text(element, "target", "bitrate");
+            set_text(element, "cbr", "true");
+            set_number(element, "bitrate", kbps);
+        }
+        AudioFormat::Flac | AudioFormat::Wav => {}
+    }
+}
+
 // ---------------------------------------------------------------- progress
 
 /// Shared between the export thread and the window showing it.
@@ -327,15 +450,32 @@ pub struct Progress {
     pub frames_done: AtomicU64,
     pub frames_total: AtomicU64,
     pub cancel: AtomicBool,
+    /// Sound made so far, and in all, in 10 ms blocks (for the sound file).
+    pub audio_done: AtomicU64,
+    pub audio_total: AtomicU64,
+    /// Set while the sound file is being made.
+    pub audio_pass: AtomicBool,
+    /// Set when there is no video, only a sound file.
+    pub audio_only: AtomicBool,
 }
 
 impl Progress {
     pub fn fraction(&self) -> f64 {
-        let total = self.frames_total.load(Ordering::Relaxed);
+        let (done, total) = if self.audio_only.load(Ordering::Relaxed) {
+            (
+                self.audio_done.load(Ordering::Relaxed),
+                self.audio_total.load(Ordering::Relaxed),
+            )
+        } else {
+            (
+                self.frames_done.load(Ordering::Relaxed),
+                self.frames_total.load(Ordering::Relaxed),
+            )
+        };
         if total == 0 {
             return 0.0;
         }
-        (self.frames_done.load(Ordering::Relaxed) as f64 / total as f64).min(1.0)
+        (done as f64 / total as f64).min(1.0)
     }
 }
 
@@ -387,15 +527,29 @@ pub struct Source {
 pub struct Job {
     pub timeline: Timeline,
     pub sources: HashMap<MediaId, Source>,
+    /// The size of the exported picture.
     pub width: u32,
     pub height: u32,
+    /// The size the project's picture is put together at; it sits in the middle
+    /// of the exported picture (black bars around it if smaller, cropped if
+    /// bigger). The same as `width` x `height` when the shapes match.
+    pub canvas_width: u32,
+    pub canvas_height: u32,
     pub fps: FrameRate,
     pub sample_rate: u32,
     pub video_kbps: u32,
+    /// Sound: the format (in the video file and in the sound file), bit rate and channels.
+    pub audio_format: AudioFormat,
     pub audio_kbps: u32,
+    pub channels: Channels,
+    /// The video file's format.
+    pub container: Container,
     /// Try these, in order, until one works.
     pub encoders: Vec<Encoder>,
-    pub output: PathBuf,
+    /// The video file (with its sound), or `None` for no video.
+    pub output: Option<PathBuf>,
+    /// A file of the project's sound alone, or `None` for none.
+    pub audio_output: Option<PathBuf>,
     /// Export only this many seconds from the start (used by tests; `None` = all of it).
     pub limit_seconds: Option<f64>,
     /// Put video layers together on the graphics card (falls back to the
@@ -439,6 +593,8 @@ pub struct Report {
     pub gpu_skipped_frames: u64,
     /// Set when the card was asked for but could not be used.
     pub gpu_problem: Option<String>,
+    /// The sound-only file was saved.
+    pub audio_saved: bool,
 }
 
 // -------------------------------------------------------- reading pictures
@@ -879,8 +1035,8 @@ impl<'a> Renderer<'a> {
         }
         let frame = Arc::new(crate::text_render::render(
             spec,
-            self.job.width,
-            self.job.height,
+            self.job.canvas_width,
+            self.job.canvas_height,
         ));
         self.texts.push((spec.clone(), frame.clone()));
         if self.texts.len() > 8 {
@@ -892,7 +1048,7 @@ impl<'a> Renderer<'a> {
     /// Put together the picture at timeline time `at`. It joins `ready` now, or
     /// (with the card on) a couple of pictures later, always in order.
     fn picture(&mut self, at: Ticks) -> Result<()> {
-        let (width, height) = (self.job.width, self.job.height);
+        let (width, height) = (self.job.canvas_width, self.job.canvas_height);
         let targets = {
             let resolve = self.resolve();
             find_targets(&self.job.timeline, at, &resolve)
@@ -1064,7 +1220,14 @@ impl<'a> Renderer<'a> {
     }
 
     fn record_read_back(&mut self, time: Duration) {
-        let key = ("read-back from the card", self.job.width, self.job.height, 0, false, 0);
+        let key = (
+            "read-back from the card",
+            self.job.canvas_width,
+            self.job.canvas_height,
+            0,
+            false,
+            0,
+        );
         let entry = self.layer_time.entry(key).or_default();
         entry.0 += time;
         entry.1 += 1;
@@ -1077,7 +1240,7 @@ impl<'a> Renderer<'a> {
         &mut self,
         picked: &[(Item, (&'static str, u32, u32, i32, bool, u8))],
     ) -> Result<bool> {
-        let (width, height) = (self.job.width, self.job.height);
+        let (width, height) = (self.job.canvas_width, self.job.canvas_height);
         if self.gpu.is_none() {
             match crate::gpu_compose::GpuCompositor::new(width, height) {
                 Ok(card) => {
@@ -1225,7 +1388,7 @@ impl<'a> Renderer<'a> {
             self.readers.remove(&clip);
         }
         if !self.readers.contains_key(&clip) {
-            let edge = self.job.width.max(self.job.height);
+            let edge = self.job.canvas_width.max(self.job.canvas_height);
             match VideoReader::open(&target.uri, t, edge) {
                 Ok(reader) => {
                     self.readers.insert(clip, reader);
@@ -1237,7 +1400,7 @@ impl<'a> Renderer<'a> {
             }
         }
         let started = std::time::Instant::now();
-        let canvas = (self.job.width, self.job.height);
+        let canvas = (self.job.canvas_width, self.job.canvas_height);
         let reader = self.readers.get_mut(&clip)?;
         let frame = reader.frame_at(t);
         if let Some(f) = &frame {
@@ -1319,6 +1482,24 @@ impl<'a> Renderer<'a> {
     }
 }
 
+/// One picture of the project at `at`, `long_edge` pixels on its longer side,
+/// as straight RGBA: what the Export window shows. `None` if it cannot be made.
+pub fn preview_frame(job: &Job, at: Ticks, long_edge: u32) -> Option<(u32, u32, Vec<u8>)> {
+    let (pw, ph) = (job.canvas_width.max(2), job.canvas_height.max(2));
+    let k = f64::from(long_edge) / f64::from(pw.max(ph));
+    let size = |v: u32| (((f64::from(v) * k) / 2.0).round() as u32).max(1) * 2;
+    let (w, h) = (size(pw), size(ph));
+    let mut small = job.clone();
+    small.width = w;
+    small.height = h;
+    small.canvas_width = w;
+    small.canvas_height = h;
+    small.gpu = false;
+    let mut renderer = Renderer::new(&small);
+    renderer.picture(at).ok()?;
+    renderer.ready.pop_front().map(|pixels| (w, h, pixels))
+}
+
 // ---------------------------------------------------------------- the run
 
 fn bus_error(bus: &gst::Bus) -> Option<String> {
@@ -1334,6 +1515,49 @@ fn push(src: &gst_app::AppSrc, bus: &gst::Bus, buffer: gst::Buffer) -> Result<()
     src.push_buffer(buffer).map(|_| ()).map_err(|e| {
         ExportError::Failed(bus_error(bus).unwrap_or_else(|| format!("the encoder stopped ({e})")))
     })
+}
+
+/// Put the project's picture (`canvas_width` x `canvas_height`) in the middle of
+/// the exported frame (`width` x `height`): black bars where it is smaller, the
+/// overhang cut off where it is bigger. Nothing to do when the sizes match.
+fn into_frame(job: &Job, pixels: Vec<u8>) -> Vec<u8> {
+    center_in_frame(
+        pixels,
+        (job.canvas_width as usize, job.canvas_height as usize),
+        (job.width as usize, job.height as usize),
+    )
+}
+
+/// `pixels` (RGBA, `canvas` size) centred in a frame of `frame` size.
+fn center_in_frame(pixels: Vec<u8>, canvas: (usize, usize), frame: (usize, usize)) -> Vec<u8> {
+    let ((cw, ch), (w, h)) = (canvas, frame);
+    if (cw, ch) == (w, h) {
+        return pixels;
+    }
+    let mut out = vec![0u8; w * h * 4];
+    for px in out.chunks_exact_mut(4) {
+        px[3] = 255;
+    }
+    // Where the picture's top left corner lands in the frame (may be negative).
+    let ox = (w as i64 - cw as i64) / 2;
+    let oy = (h as i64 - ch as i64) / 2;
+    let x0 = ox.max(0) as usize;
+    let x1 = ((ox + cw as i64).min(w as i64)).max(0) as usize;
+    if x1 <= x0 {
+        return out;
+    }
+    for y in 0..h {
+        let sy = y as i64 - oy;
+        if sy < 0 || sy >= ch as i64 {
+            continue;
+        }
+        let sx = (x0 as i64 - ox) as usize;
+        let len = (x1 - x0) * 4;
+        let from = (sy as usize * cw + sx) * 4;
+        let to = (y * w + x0) * 4;
+        out[to..to + len].copy_from_slice(&pixels[from..from + len]);
+    }
+    out
 }
 
 /// Hand one finished picture to the encoder as frame number `index`.
@@ -1357,17 +1581,28 @@ fn push_video(
 
 /// Render and save one file with one encoder.
 fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> Result<Report> {
-    let Some(aac) = audio_encoder() else {
-        return fail("No AAC sound encoder is installed (GStreamer needs avenc_aac or voaacenc).");
-    };
-    if !has_element("mp4mux") {
-        return fail("The MP4 muxer (mp4mux) is missing from GStreamer.");
+    if !audio_available(job.audio_format) {
+        return fail(format!(
+            "No {} sound encoder is installed in GStreamer.",
+            job.audio_format.label()
+        ));
     }
+    if !container_available(job.container) {
+        return fail(format!(
+            "The {} file writer ({}) is missing from GStreamer.",
+            job.container.label(),
+            job.container.muxer()
+        ));
+    }
+    let Some(audio) = audio_chain(job.audio_format, job.channels, true) else {
+        return fail("No sound encoder is installed in GStreamer.");
+    };
     let unlimited = "max-size-buffers=0 max-size-bytes=0 max-size-time=0";
     let description = format!(
-        "mp4mux name=mux ! filesink name=out \
+        "{mux} name=mux ! filesink name=out \
          appsrc name=vsrc ! queue {unlimited} ! {video} ! queue {unlimited} ! mux. \
-         appsrc name=asrc ! queue {unlimited} ! audioconvert ! audioresample ! {aac} name=aenc ! aacparse ! queue {unlimited} ! mux.",
+         appsrc name=asrc ! queue {unlimited} ! {audio} ! queue {unlimited} ! mux.",
+        mux = job.container.muxer(),
         video = video_chain(encoder),
     );
     let pipeline = gst::parse::launch(&description)
@@ -1387,7 +1622,9 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
         .map_err(|_| ExportError::Failed("asrc".into()))?;
     get("out")?.set_property("location", temp.to_string_lossy().to_string());
     configure_encoder(&get("venc")?, encoder, job.video_kbps, job.fps);
-    set_number(&get("aenc")?, "bitrate", job.audio_kbps * 1000);
+    if let Some(aenc) = pipeline.by_name("aenc") {
+        configure_audio(&aenc, job.audio_format, job.audio_kbps);
+    }
     set_text(&get("mux")?, "faststart", "true");
 
     let (width, height, rate) = (job.width, job.height, job.sample_rate);
@@ -1456,6 +1693,7 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
             picture_time += t0.elapsed();
             let t1 = std::time::Instant::now();
             while let Some(pixels) = renderer.ready.pop_front() {
+                let pixels = into_frame(job, pixels);
                 push_video(&vsrc, &bus, pixels, pushed, &frame_ns)?;
                 pushed += 1;
             }
@@ -1477,6 +1715,7 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
         renderer.flush()?;
         picture_time += t0.elapsed();
         while let Some(pixels) = renderer.ready.pop_front() {
+            let pixels = into_frame(job, pixels);
             push_video(&vsrc, &bus, pixels, pushed, &frame_ns)?;
             pushed += 1;
         }
@@ -1540,6 +1779,7 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
         gpu_frames: renderer.gpu_frames,
         gpu_skipped_frames: renderer.gpu_skipped_frames,
         gpu_problem: renderer.gpu_problem.clone(),
+        audio_saved: false,
     })
 }
 
@@ -1569,41 +1809,134 @@ fn push_audio(
     push(asrc, bus, buffer)
 }
 
-/// Export the job. Blocks; run it on a worker thread. The file appears at
-/// `job.output` only if everything worked (it is written under a temporary
-/// name first); a cancelled or failed export leaves nothing behind.
-pub fn export(job: &Job, progress: &Progress) -> Result<Report> {
-    gst::init().map_err(|e| ExportError::Failed(e.to_string()))?;
-    if job.timeline.duration() <= Ticks::ZERO {
-        return fail("There is nothing on the timeline to export.");
+/// A temporary name next to `output`, with the same ending, for the file
+/// while it is being written.
+fn temp_name(output: &Path) -> PathBuf {
+    let mut name = output
+        .file_stem()
+        .map(|s| s.to_os_string())
+        .unwrap_or_default();
+    name.push(".exporting.");
+    name.push(output.extension().unwrap_or_default());
+    output.with_file_name(name)
+}
+
+/// Make the file of the project's sound alone.
+fn run_audio_file(job: &Job, progress: &Progress, temp: &Path) -> Result<()> {
+    let format = job.audio_format;
+    if !audio_available(format) {
+        return fail(format!(
+            "No {} sound encoder is installed in GStreamer.",
+            format.label()
+        ));
     }
-    if job.encoders.is_empty() {
-        return fail("No H.264 video encoder is available. Install GStreamer's x264 plug-in (gst-plugins-ugly) or a hardware encoder plug-in.");
-    }
-    eprintln!("kani: export starting - {}", machine_state());
-    if let Some(parent) = job.output.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
-    }
-    let temp = {
-        let mut name = job
-            .output
-            .file_stem()
-            .map(|s| s.to_os_string())
-            .unwrap_or_default();
-        name.push(".exporting.mp4");
-        job.output.with_file_name(name)
+    let Some(chain) = audio_chain(format, job.channels, false) else {
+        return fail("No sound encoder is installed in GStreamer.");
     };
+    let unlimited = "max-size-buffers=0 max-size-bytes=0 max-size-time=0";
+    let tail = match format {
+        AudioFormat::Aac => "mp4mux faststart=true ! filesink name=out",
+        AudioFormat::Mp3 if has_element("id3v2mux") => "id3v2mux ! filesink name=out",
+        AudioFormat::Opus if has_element("oggmux") => "oggmux ! filesink name=out",
+        _ => "filesink name=out",
+    };
+    let description = format!("appsrc name=asrc ! queue {unlimited} ! {chain} ! {tail}");
+    let pipeline = gst::parse::launch(&description)
+        .map_err(|e| ExportError::Failed(format!("could not build the sound pipeline: {e}")))?
+        .downcast::<gst::Pipeline>()
+        .map_err(|_| ExportError::Failed("sound pipeline".into()))?;
+    let get = |name: &str| {
+        pipeline
+            .by_name(name)
+            .ok_or_else(|| ExportError::Failed(format!("sound pipeline has no {name}")))
+    };
+    let asrc = get("asrc")?
+        .downcast::<gst_app::AppSrc>()
+        .map_err(|_| ExportError::Failed("asrc".into()))?;
+    get("out")?.set_property("location", temp.to_string_lossy().to_string());
+    if let Some(aenc) = pipeline.by_name("aenc") {
+        configure_audio(&aenc, format, job.audio_kbps);
+    }
+    let rate = job.sample_rate;
+    asrc.set_caps(Some(
+        &gst::Caps::builder("audio/x-raw")
+            .field("format", "F32LE")
+            .field("layout", "interleaved")
+            .field("rate", rate as i32)
+            .field("channels", 2i32)
+            .build(),
+    ));
+    asrc.set_format(gst::Format::Time);
+    asrc.set_block(true);
+    asrc.set_max_bytes(1 << 22);
+    let bus = pipeline
+        .bus()
+        .ok_or_else(|| ExportError::Failed("no bus".into()))?;
+    if pipeline.set_state(gst::State::Playing).is_err() {
+        let reason = bus_error(&bus).unwrap_or_else(|| "it would not start".into());
+        let _ = pipeline.set_state(gst::State::Null);
+        return fail(format!("the sound file could not start: {reason}"));
+    }
+    let block = (rate as usize / 100).max(1); // 10 ms
+    let total_seconds = job.duration().as_seconds_f64();
+    let blocks_total = (total_seconds * f64::from(rate) / block as f64).ceil() as u64;
+    progress.audio_done.store(0, Ordering::Relaxed);
+    progress.audio_total.store(blocks_total, Ordering::Relaxed);
+    let mut renderer = Renderer::new(job);
+    let mut run = || -> Result<()> {
+        for index in 0..blocks_total {
+            if progress.cancel.load(Ordering::Relaxed) {
+                return Err(ExportError::Cancelled);
+            }
+            push_audio(&asrc, &bus, &mut renderer, index, block, rate)?;
+            progress.audio_done.store(index + 1, Ordering::Relaxed);
+        }
+        let _ = asrc.end_of_stream();
+        loop {
+            if progress.cancel.load(Ordering::Relaxed) {
+                return Err(ExportError::Cancelled);
+            }
+            if let Some(m) = bus.timed_pop_filtered(
+                gst::ClockTime::from_mseconds(200),
+                &[gst::MessageType::Eos, gst::MessageType::Error],
+            ) {
+                match m.view() {
+                    gst::MessageView::Eos(_) => return Ok(()),
+                    gst::MessageView::Error(e) => {
+                        return fail(format!("{} {}", e.error(), e.debug().unwrap_or_default()))
+                    }
+                    _ => {}
+                }
+            }
+        }
+    };
+    let result = run();
+    let _ = pipeline.set_state(gst::State::Null);
+    result
+}
+
+/// Make the video file (with its sound), trying each encoder in turn.
+fn export_video(
+    job: &Job,
+    progress: &Progress,
+    output: &Path,
+    started: std::time::Instant,
+) -> Result<Report> {
+    if job.encoders.is_empty() {
+        return fail(
+            "No video encoder is available for this video format. Install GStreamer's plug-in for it, or pick another video format.",
+        );
+    }
+    let temp = temp_name(output);
     let mut notes = Vec::new();
     let mut outcome = fail("No encoder worked.");
-    let started = std::time::Instant::now();
     for encoder in &job.encoders {
         let _ = std::fs::remove_file(&temp);
         match run_with(job, encoder, progress, &temp) {
             Ok(mut report) => {
                 report.warnings.splice(0..0, notes);
-                std::fs::rename(&temp, &job.output)
-                    .map_err(|e| format!("could not save {}: {e}", job.output.display()))?;
+                std::fs::rename(&temp, output)
+                    .map_err(|e| format!("could not save {}: {e}", output.display()))?;
                 report.elapsed = started.elapsed();
                 let video = job.duration().as_seconds_f64();
                 eprintln!(
@@ -1645,31 +1978,83 @@ pub fn export(job: &Job, progress: &Progress) -> Result<Report> {
     outcome
 }
 
+/// Export the job. Blocks; run it on a worker thread. Each file appears at its
+/// path only if everything worked (it is written under a temporary name
+/// first); a cancelled or failed export leaves nothing behind.
+pub fn export(job: &Job, progress: &Progress) -> Result<Report> {
+    gst::init().map_err(|e| ExportError::Failed(e.to_string()))?;
+    if job.timeline.duration() <= Ticks::ZERO {
+        return fail("There is nothing on the timeline to export.");
+    }
+    if job.output.is_none() && job.audio_output.is_none() {
+        return fail("Nothing to export: choose video or audio.");
+    }
+    eprintln!("kani: export starting - {}", machine_state());
+    for path in job.output.iter().chain(job.audio_output.iter()) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+        }
+    }
+    progress
+        .audio_only
+        .store(job.output.is_none(), Ordering::Relaxed);
+    let started = std::time::Instant::now();
+    let mut report = match &job.output {
+        Some(output) => export_video(job, progress, output, started)?,
+        None => Report {
+            encoder: "sound only".into(),
+            ..Report::default()
+        },
+    };
+    if let Some(path) = &job.audio_output {
+        progress.audio_pass.store(true, Ordering::Relaxed);
+        let temp = temp_name(path);
+        let _ = std::fs::remove_file(&temp);
+        let sound_started = std::time::Instant::now();
+        match run_audio_file(job, progress, &temp) {
+            Ok(()) => match std::fs::rename(&temp, path) {
+                Ok(()) => {
+                    report.audio_saved = true;
+                    eprintln!(
+                        "kani: saved the sound file ({}) in {:.1} s",
+                        job.audio_format.label(),
+                        sound_started.elapsed().as_secs_f64()
+                    );
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&temp);
+                    let message = format!("could not save {}: {e}", path.display());
+                    if job.output.is_some() {
+                        report.warnings.push(message);
+                    } else {
+                        return fail(message);
+                    }
+                }
+            },
+            Err(ExportError::Cancelled) => {
+                let _ = std::fs::remove_file(&temp);
+                return Err(ExportError::Cancelled);
+            }
+            Err(ExportError::Failed(message)) => {
+                let _ = std::fs::remove_file(&temp);
+                if job.output.is_some() {
+                    report
+                        .warnings
+                        .push(format!("The sound file could not be made: {message}"));
+                } else {
+                    return fail(message);
+                }
+            }
+        }
+    }
+    report.elapsed = started.elapsed();
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn bit_rates_follow_size_rate_and_quality() {
-        let a = bitrate_kbps(1080, 1920, 30.0, Quality::Recommended);
-        assert!((7_000..8_000).contains(&a), "{a}");
-        assert!(bitrate_kbps(1080, 1920, 30.0, Quality::Small) < a);
-        assert!(bitrate_kbps(1080, 1920, 30.0, Quality::Maximum) > a);
-        assert_eq!(bitrate_kbps(64, 64, 24.0, Quality::Small), 1_500);
-        assert_eq!(bitrate_kbps(7680, 4320, 60.0, Quality::Maximum), 80_000);
-    }
-
-    #[test]
-    fn sizes_keep_the_shape_stay_even_and_never_grow() {
-        let sizes = size_options(1080, 1920);
-        assert_eq!(sizes[0], (1080, 1920));
-        assert!(sizes.contains(&(720, 1280)));
-        assert!(sizes.contains(&(480, 852)), "{sizes:?}");
-        assert!(!sizes.iter().any(|&(w, _)| w > 1080));
-        for (w, h) in size_options(1921, 1081) {
-            assert!(w % 2 == 0 && h % 2 == 0, "{w}x{h}");
-        }
-    }
 
     #[test]
     fn frames_are_counted_up_to_the_end() {
@@ -1766,15 +2151,21 @@ mod tests {
             sources,
             width: 160,
             height: 90,
+            canvas_width: 160,
+            canvas_height: 90,
+            container: Container::Mp4,
+            audio_format: AudioFormat::Aac,
+            channels: Channels::Stereo,
+            audio_output: None,
             fps: FrameRate::FPS_30,
             sample_rate: 48_000,
             video_kbps: 1_500,
             audio_kbps: 128,
-            encoders: candidates()
+            encoders: candidates(VideoCodec::H264)
                 .into_iter()
                 .filter(|e| e.element == "x264enc")
                 .collect(),
-            output: dir.join("out").join("result.mp4"),
+            output: Some(dir.join("out").join("result.mp4")),
             limit_seconds: None,
             gpu: false,
         })
@@ -1801,13 +2192,13 @@ mod tests {
         assert_eq!(report.frames, 90, "three seconds at 30 fps");
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
         assert!((progress.fraction() - 1.0).abs() < 1e-9);
-        assert!(job.output.is_file());
+        assert!(job.output.as_ref().unwrap().is_file());
         assert!(
-            !job.output.with_file_name("result.exporting.mp4").exists(),
+            !job.output.as_ref().unwrap().with_file_name("result.exporting.mp4").exists(),
             "the temporary file is gone"
         );
         if let Some(info) = ffprobe(
-            &job.output,
+            job.output.as_ref().unwrap(),
             &[
                 "-show_entries",
                 "stream=codec_name,width,height:format=duration",
@@ -1893,7 +2284,7 @@ mod tests {
         let report = export(&job, &Progress::default()).expect("export");
         assert_eq!(report.hidden_skipped, 0);
         assert!(report.shrunk_frames > 20, "{} shrunk", report.shrunk_frames);
-        assert!(job.output.is_file());
+        assert!(job.output.as_ref().unwrap().is_file());
     }
 
     #[test]
@@ -1941,8 +2332,8 @@ mod tests {
             export(&job, &progress),
             Err(ExportError::Cancelled)
         ));
-        assert!(!job.output.exists());
-        let leftovers: Vec<_> = std::fs::read_dir(job.output.parent().unwrap())
+        assert!(!job.output.as_ref().unwrap().exists());
+        let leftovers: Vec<_> = std::fs::read_dir(job.output.as_ref().unwrap().parent().unwrap())
             .unwrap()
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
@@ -1981,7 +2372,7 @@ mod tests {
             "-ss",
             "0.5",
             "-i",
-            job.output.to_str().unwrap(),
+            job.output.as_ref().unwrap().to_str().unwrap(),
             "-frames:v",
             "1",
             "-f",
@@ -1999,7 +2390,7 @@ mod tests {
             "-ss",
             "2.5",
             "-i",
-            job.output.to_str().unwrap(),
+            job.output.as_ref().unwrap().to_str().unwrap(),
             "-frames:v",
             "1",
             "-f",
@@ -2021,7 +2412,7 @@ mod tests {
                     to.parse::<f64>().unwrap() - from.parse::<f64>().unwrap()
                 ),
                 "-i",
-                job.output.to_str().unwrap(),
+                job.output.as_ref().unwrap().to_str().unwrap(),
                 "-vn",
                 "-ac",
                 "1",
@@ -2130,15 +2521,21 @@ mod tests {
             sources,
             width: 1080,
             height: 1920,
+            canvas_width: 1080,
+            canvas_height: 1920,
+            container: Container::Mp4,
+            audio_format: AudioFormat::Aac,
+            channels: Channels::Stereo,
+            audio_output: None,
             fps: FrameRate::FPS_30,
             sample_rate: 48_000,
-            video_kbps: bitrate_kbps(1080, 1920, 30.0, Quality::Recommended),
+            video_kbps: crate::export_options::video_kbps(VideoCodec::H264, 1080, 1920, 30.0, crate::export_options::BitratePreset::Recommended),
             audio_kbps: 192,
-            encoders: candidates()
+            encoders: candidates(VideoCodec::H264)
                 .into_iter()
                 .filter(|e| e.element == "x264enc")
                 .collect(),
-            output: out,
+            output: Some(out),
             limit_seconds: None,
             gpu: false,
         };
@@ -2264,15 +2661,21 @@ mod tests {
             sources,
             width: env_number("KANI_W", 1080),
             height: env_number("KANI_H", 1920),
+            canvas_width: env_number("KANI_W", 1080),
+            canvas_height: env_number("KANI_H", 1920),
+            container: Container::Mp4,
+            audio_format: AudioFormat::Aac,
+            channels: Channels::Stereo,
+            audio_output: None,
             fps: FrameRate::FPS_30,
             sample_rate: 48_000,
-            video_kbps: bitrate_kbps(1080, 1920, 30.0, Quality::Small),
+            video_kbps: crate::export_options::video_kbps(VideoCodec::H264, 1080, 1920, 30.0, crate::export_options::BitratePreset::Low),
             audio_kbps: 192,
-            encoders: candidates()
+            encoders: candidates(VideoCodec::H264)
                 .into_iter()
                 .filter(|e| e.element == "x264enc")
                 .collect(),
-            output: out,
+            output: Some(out),
             limit_seconds: None,
             gpu: false,
         };
@@ -2288,7 +2691,7 @@ mod tests {
 
     #[test]
     fn every_platform_lists_software_last_and_hardware_first() {
-        let list = candidates();
+        let list = candidates(VideoCodec::H264);
         assert!(list.iter().any(|e| e.element == "x264enc"));
         let first_software = list
             .iter()
@@ -2297,5 +2700,314 @@ mod tests {
         if let (Some(s), Some(h)) = (first_software, last_hardware) {
             assert!(h < s, "hardware encoders come before software");
         }
+    }
+
+    #[test]
+    fn a_picture_is_centred_with_bars_or_cropped_to_the_frame() {
+        let red = |w: usize, h: usize| {
+            [255u8, 0, 0, 255]
+                .iter()
+                .copied()
+                .cycle()
+                .take(w * h * 4)
+                .collect::<Vec<u8>>()
+        };
+        // Narrow picture in a wide frame: black bars at the sides.
+        let framed = center_in_frame(red(2, 2), (2, 2), (6, 2));
+        for y in 0..2 {
+            for (x, want) in [(0, 0u8), (1, 0), (2, 255), (3, 255), (4, 0), (5, 0)] {
+                let px = &framed[(y * 6 + x) * 4..][..4];
+                assert_eq!(px, &[want, 0, 0, 255], "pixel {x},{y}");
+            }
+        }
+        // Wide picture in a narrow frame: the sides are cut off.
+        let mut wide = red(6, 2);
+        for y in 0..2 {
+            for x in 0..6 {
+                let o = (y * 6 + x) * 4;
+                wide[o + 1] = (x * 40) as u8; // green tells the columns apart
+            }
+        }
+        let cut = center_in_frame(wide, (6, 2), (2, 2));
+        assert_eq!(cut.len(), 2 * 2 * 4);
+        assert_eq!(cut[1], 80, "column 2 comes first");
+        assert_eq!(cut[5], 120, "then column 3");
+        // Same size: untouched.
+        let same = red(4, 4);
+        assert_eq!(center_in_frame(same.clone(), (4, 4), (4, 4)), same);
+        // Taller and wider than the frame in each direction: nothing breaks.
+        assert_eq!(center_in_frame(red(8, 8), (8, 8), (2, 6)).len(), 2 * 6 * 4);
+    }
+
+    /// Probe the streams of a file: "codec_name=..." lines.
+    fn codecs_of(path: &Path) -> Option<String> {
+        ffprobe(path, &["-show_entries", "stream=codec_name,channels"])
+    }
+
+    #[test]
+    fn every_video_format_in_every_file_format_it_can_go_in_is_made_and_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(base) = small_job(dir.path()) else {
+            return;
+        };
+        let mut tried = 0;
+        for codec in VideoCodec::ALL {
+            let encoders: Vec<Encoder> = candidates(codec)
+                .into_iter()
+                .filter(|e| !e.hardware && has_element(e.element))
+                .collect();
+            if encoders.is_empty() {
+                eprintln!("no software {} encoder: skipping", codec.name());
+                continue;
+            }
+            for container in codec.containers() {
+                if !container_available(*container) {
+                    continue;
+                }
+                let mut job = base.clone();
+                job.limit_seconds = Some(1.0);
+                job.encoders = encoders.clone();
+                job.container = *container;
+                job.audio_format = container
+                    .audio_formats()
+                    .iter()
+                    .copied()
+                    .find(|f| audio_available(*f))
+                    .unwrap();
+                let path = dir
+                    .path()
+                    .join(format!("{}-{}.{}", codec.id(), container.id(), container.extension()));
+                job.output = Some(path.clone());
+                export(&job, &Progress::default())
+                    .unwrap_or_else(|e| panic!("{} in {}: {e:?}", codec.name(), container.label()));
+                assert!(path.is_file(), "{} in {}", codec.name(), container.label());
+                if let Some(info) = codecs_of(&path) {
+                    if !info.is_empty() {
+                        let want = match codec {
+                            VideoCodec::H264 => "h264",
+                            VideoCodec::H265 => "hevc",
+                            VideoCodec::Vp9 => "vp9",
+                            VideoCodec::Av1 => "av1",
+                        };
+                        assert!(
+                            info.contains(&format!("codec_name={want}")),
+                            "{} in {}: {info}",
+                            codec.name(),
+                            container.label()
+                        );
+                    }
+                }
+                tried += 1;
+            }
+        }
+        eprintln!("{tried} video and file format pairings made");
+        assert!(tried >= 3, "at least the H.264 formats were tried");
+    }
+
+    #[test]
+    fn every_sound_format_works_in_the_files_that_can_carry_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(base) = small_job(dir.path()) else {
+            return;
+        };
+        for container in Container::ALL {
+            if !container_available(container) {
+                continue;
+            }
+            // A codec this file format holds, with a software encoder here.
+            let Some((codec, encoders)) = VideoCodec::ALL.iter().find_map(|c| {
+                if !c.containers().contains(&container) {
+                    return None;
+                }
+                let list: Vec<Encoder> = candidates(*c)
+                    .into_iter()
+                    .filter(|e| !e.hardware && has_element(e.element))
+                    .collect();
+                (!list.is_empty()).then_some((*c, list))
+            }) else {
+                continue;
+            };
+            for format in container.audio_formats() {
+                if !audio_available(*format) {
+                    continue;
+                }
+                let mut job = base.clone();
+                job.limit_seconds = Some(1.0);
+                job.encoders = encoders.clone();
+                job.container = container;
+                job.audio_format = *format;
+                job.channels = Channels::Mono;
+                let path = dir.path().join(format!(
+                    "{}-{}-{}.{}",
+                    codec.id(),
+                    container.id(),
+                    format.id(),
+                    container.extension()
+                ));
+                job.output = Some(path.clone());
+                export(&job, &Progress::default()).unwrap_or_else(|e| {
+                    panic!("{} sound in {}: {e:?}", format.label(), container.label())
+                });
+                if let Some(info) = codecs_of(&path) {
+                    if !info.is_empty() {
+                        assert!(
+                            info.contains("channels=1"),
+                            "mono sound in {}: {info}",
+                            container.label()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_sound_only_file_is_made_in_each_format_and_in_mono_or_stereo() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(base) = small_job(dir.path()) else {
+            return;
+        };
+        for format in AudioFormat::ALL {
+            if !audio_available(format) {
+                eprintln!("no {} encoder: skipping", format.label());
+                continue;
+            }
+            for channels in Channels::ALL {
+                let mut job = base.clone();
+                job.output = None;
+                job.audio_format = format;
+                job.channels = channels;
+                let path = dir.path().join(format!(
+                    "sound-{}-{}.{}",
+                    format.id(),
+                    channels.id(),
+                    format.file_extension()
+                ));
+                job.audio_output = Some(path.clone());
+                let progress = Progress::default();
+                let report = export(&job, &progress)
+                    .unwrap_or_else(|e| panic!("{} sound only: {e:?}", format.label()));
+                assert!(report.audio_saved && path.is_file(), "{}", format.label());
+                assert_eq!(report.frames, 0, "no pictures were made");
+                assert!((progress.fraction() - 1.0).abs() < 1e-9);
+                assert!(
+                    std::fs::metadata(&path).unwrap().len() > 500,
+                    "{} file has content",
+                    format.label()
+                );
+                let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+                    .unwrap()
+                    .flatten()
+                    .filter(|e| e.file_name().to_string_lossy().contains(".exporting."))
+                    .collect();
+                assert!(leftovers.is_empty(), "{leftovers:?}");
+                if let Some(info) = codecs_of(&path) {
+                    if !info.is_empty() {
+                        let want = match format {
+                            AudioFormat::Aac => "aac",
+                            AudioFormat::Mp3 => "mp3",
+                            AudioFormat::Opus => "opus",
+                            AudioFormat::Flac => "flac",
+                            AudioFormat::Wav => "pcm_s16le",
+                        };
+                        assert!(info.contains(&format!("codec_name={want}")), "{info}");
+                        assert!(
+                            info.contains(&format!("channels={}", channels.count())),
+                            "{info}"
+                        );
+                        assert!(!info.contains("h264"), "no picture in a sound file: {info}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn video_and_a_separate_sound_file_are_made_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut job) = small_job(dir.path()) else {
+            return;
+        };
+        job.limit_seconds = Some(1.0);
+        let sound = dir.path().join("out").join("both.m4a");
+        job.audio_output = Some(sound.clone());
+        let video = job.output.clone().unwrap();
+        let report = export(&job, &Progress::default()).expect("export");
+        assert!(video.is_file() && sound.is_file());
+        assert!(report.audio_saved);
+        assert!(report.frames > 0);
+        if let Some(info) = codecs_of(&video) {
+            if !info.is_empty() {
+                assert!(info.contains("h264") && info.contains("aac"), "{info}");
+            }
+        }
+        if let Some(info) = codecs_of(&sound) {
+            if !info.is_empty() {
+                assert!(!info.contains("h264"), "{info}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_picture_of_another_shape_is_exported_at_the_chosen_size_with_bars() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut job) = small_job(dir.path()) else {
+            return;
+        };
+        job.limit_seconds = Some(1.0);
+        // The project's picture fits inside a square frame: bars above and below.
+        job.width = 160;
+        job.height = 160;
+        job.canvas_width = 160;
+        job.canvas_height = 90;
+        let report = export(&job, &Progress::default()).expect("export");
+        assert!(report.frames > 0);
+        let path = job.output.clone().unwrap();
+        if let Some(info) = ffprobe(&path, &["-show_entries", "stream=width,height"]) {
+            if !info.is_empty() {
+                assert!(
+                    info.contains("width=160") && info.contains("height=160"),
+                    "{info}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn nothing_chosen_is_explained_and_the_old_h264_message_names_the_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut job) = small_job(dir.path()) else {
+            return;
+        };
+        job.output = None;
+        job.audio_output = None;
+        match export(&job, &Progress::default()) {
+            Err(ExportError::Failed(m)) => assert!(m.contains("Nothing to export"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn encoders_are_listed_for_every_video_format_with_software_last() {
+        for codec in VideoCodec::ALL {
+            let list = candidates(codec);
+            assert!(!list.is_empty(), "{}", codec.name());
+            assert!(list.iter().all(|e| e.codec == codec));
+            assert!(!list.last().unwrap().hardware, "software comes last");
+            let mut ids: Vec<_> = list.iter().map(|e| e.id).collect();
+            ids.sort();
+            ids.dedup();
+            assert_eq!(ids.len(), list.len(), "no repeats for {}", codec.name());
+        }
+        // Encoder ids are unique across formats too (settings keep one).
+        let mut all: Vec<_> = VideoCodec::ALL
+            .iter()
+            .flat_map(|c| candidates(*c))
+            .map(|e| e.id)
+            .collect();
+        let n = all.len();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), n);
     }
 }

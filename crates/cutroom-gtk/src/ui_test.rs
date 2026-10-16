@@ -1039,6 +1039,116 @@ mod tests {
             );
         }
 
+        // 7j. The redesigned Export window: the choices follow each other, and
+        // each kind of file is made (video with sound, sound alone, both).
+        {
+            let items = |dd: &gtk::DropDown| -> Vec<String> {
+                let model = dd.model().expect("a list");
+                let list = model.downcast::<gtk::StringList>().expect("strings");
+                (0..list.n_items())
+                    .filter_map(|i| list.string(i).map(|s| s.to_string()))
+                    .collect()
+            };
+            let open_ready = || {
+                app.run_action(Action::Export);
+                let d = crate::export_ui::active().expect("the Export window opens");
+                assert!(
+                    pump_for(60, || d.export.is_sensitive()),
+                    "an encoder was found"
+                );
+                d
+            };
+            let d = open_ready();
+            // H.264 goes in MP4, MOV and MKV, not WebM; MP4 carries AAC and MP3.
+            let formats = items(&d.format);
+            assert!(formats.contains(&"MP4".to_string()), "{formats:?}");
+            assert!(!formats.contains(&"WebM".to_string()), "{formats:?}");
+            assert!(items(&d.audio_format)[0].starts_with("AAC"));
+            // The size list has the NTSC and PAL sizes for the chosen shape, and
+            // changes with the shape.
+            let sizes = items(&d.size);
+            assert!(sizes.iter().any(|s| s.contains("NTSC")), "{sizes:?}");
+            assert!(sizes.iter().any(|s| s.contains("PAL")), "{sizes:?}");
+            assert!(
+                sizes.iter().any(|s| s.contains("project")),
+                "the project's own size is listed: {sizes:?}"
+            );
+            let project_size = d.size.selected();
+            d.aspect.set_selected(1);
+            let other = items(&d.size);
+            assert_ne!(sizes, other, "another shape, other sizes");
+            d.aspect.set_selected(0);
+            assert_eq!(d.size.selected(), project_size, "back on the project's size");
+            // The bit rate presets are listed with what they come to.
+            let rates = items(&d.bitrate);
+            assert!(rates.iter().any(|r| r.starts_with("Recommended - ")), "{rates:?}");
+            assert!(rates.iter().any(|r| r == "Custom"));
+            // Another video format brings its own file formats and sound.
+            d.codec.set_selected(2); // VP9
+            assert!(
+                pump_for(60, || d.export.is_sensitive()),
+                "the VP9 encoders were looked for"
+            );
+            assert_eq!(items(&d.format)[0], "WebM");
+            // The file format stays MP4 while it can hold the new codec ...
+            assert_eq!(items(&d.format)[d.format.selected() as usize], "MP4");
+            // ... and picking WebM leaves only the sound WebM can carry.
+            d.format.set_selected(0);
+            assert_eq!(items(&d.audio_format), vec!["Opus".to_string()]);
+            d.codec.set_selected(0); // back to H.264
+            assert!(pump_for(60, || d.export.is_sensitive()));
+            assert!(items(&d.format).contains(&"MP4".to_string()));
+            // With nothing switched on there is nothing to export.
+            d.video_on.set_active(false);
+            d.audio_on.set_active(false);
+            assert!(!d.export.is_sensitive(), "nothing chosen");
+            // Sound only: every installed sound format is offered.
+            d.audio_on.set_active(true);
+            let sound = items(&d.audio_format);
+            assert!(sound.len() >= 2, "{sound:?}");
+            assert!(d.export.is_sensitive());
+            d.size.set_selected(items(&d.size).len() as u32 - 1);
+            let out_dir = tempfile::tempdir().unwrap();
+            d.name.set_text("e2e sound");
+            crate::export_ui::set_folder_for_tests(&d, out_dir.path());
+            d.export.emit_clicked();
+            assert!(
+                pump_for(240, || crate::export_ui::active()
+                    .is_none_or(|x| x.saved.borrow().is_some())),
+                "the sound file was made"
+            );
+            let saved = d.saved.borrow().clone().expect("a file was saved");
+            assert_eq!(saved.file_name().unwrap(), "e2e sound.m4a");
+            assert!(std::fs::metadata(&saved).unwrap().len() > 500);
+            assert!(!out_dir.path().join("e2e sound.mp4").exists(), "no video was asked for");
+            d.window.close();
+            assert!(pump_for(5, || crate::export_ui::active().is_none()));
+
+            // Video and sound together: the video file, and the sound as its own file.
+            let d = open_ready();
+            // The window remembers the last choices: sound only, no video.
+            assert!(d.audio_on.is_active() && !d.video_on.is_active());
+            d.video_on.set_active(true);
+            d.audio_on.set_active(true);
+            assert!(
+                pump_for(60, || d.export.is_sensitive()),
+                "the video encoders were found"
+            );
+            d.size.set_selected(items(&d.size).len() as u32 - 1);
+            d.name.set_text("e2e both");
+            crate::export_ui::set_folder_for_tests(&d, out_dir.path());
+            d.export.emit_clicked();
+            assert!(
+                pump_for(240, || crate::export_ui::active()
+                    .is_none_or(|x| x.saved.borrow().is_some())),
+                "both files were made"
+            );
+            assert!(out_dir.path().join("e2e both.mp4").is_file());
+            assert!(out_dir.path().join("e2e both.m4a").is_file());
+            d.window.close();
+            assert!(pump_for(5, || crate::export_ui::active().is_none()));
+        }
+
         // 8. Appearance.
         app.set_theme(ThemeChoice::Dark);
         assert!(app.state.borrow().dark);

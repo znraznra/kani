@@ -2283,6 +2283,23 @@ impl Session {
         cues
     }
 
+    /// The look of the first caption (its text style and where it sits), for
+    /// caption files that carry a style.
+    pub fn caption_look(&self) -> Option<(cutroom_timeline::TextSpec, cutroom_timeline::Transform)> {
+        let mut clips: Vec<_> = self
+            .doc
+            .timeline
+            .tracks
+            .iter()
+            .filter(|t| !t.hidden)
+            .flat_map(|t| t.clips.iter())
+            .filter(|c| c.is_caption() && !c.disabled)
+            .collect();
+        clips.sort_by_key(|c| c.start);
+        let clip = clips.first()?;
+        Some((clip.text.clone()?, clip.transform))
+    }
+
     /// The words and look of a text clip (None for other clips).
     pub fn clip_text(&self, clip: ClipId) -> Option<cutroom_timeline::TextSpec> {
         self.doc.timeline.find_clip(clip)?.1.text.clone()

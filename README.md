@@ -166,11 +166,25 @@ Ctrl+E opens Export. Not enabled yet: select all, full-screen preview.
 
 ## Export
 
-**File > Export video** (or the Export button, or Ctrl+E) opens the Export window. Pick a name and folder, the size
-(the project size, or smaller with the same shape), the frame rate, the quality (which sets the bit rate) and the encoder,
-then press Export. Kani renders every frame itself with the same compositor as the preview and mixes all audible
-sound, then writes an MP4 (H.264 video, AAC sound). The window shows progress and the time left; Cancel (or closing it)
-stops and removes the half-written file. The originals are always used, never proxies.
+**File > Export video** (or the Export button, or Ctrl+E) opens the Export window, laid out like a typical editor's
+export dialog: a picture of the playhead frame and the list of files this will make on the left, the choices on the right.
+
+- **Video** and **Audio** each have a tick box. Video on makes the video file (with its sound inside). Audio on makes the
+  project's sound alone as its own file. Both on makes both files.
+- **Video**: aspect ratio, and a resolution list (from NTSC to PAL sizes up to 4K, plus the project's own size, which is
+  the default for the project's shape). When the chosen shape differs from the project's, pick black bars or crop. Bit
+  rate presets (Low, Recommended, High, Maximum, Custom), codec (H.264, H.265, VP9, AV1), file format (MP4, MOV, MKV,
+  WebM, only those that can hold the codec), frame rate, and the colour space (Rec. 709 SDR, which is what Kani works in).
+- **Audio**: format (AAC, MP3, Opus, FLAC, WAV, as the file format allows), bit rate, and channels (Stereo or Mono;
+  Kani mixes to stereo, so surround is not offered).
+- **Captions**: save the caption layer as `.srt`, `.vtt` or `.ass` (the `.ass` file takes its font, colours and outline
+  from the first caption).
+- **Encoder and hardware acceleration**: the encoder (Automatic or a specific one) and whether to put pictures together on
+  the graphics card (Automatic / Always / Never).
+
+Kani renders every frame itself with the same compositor as the preview and mixes all audible sound. The window shows
+progress and the time left; Cancel (or closing it) stops and removes the half-written files. The originals are always
+used, never proxies.
 
 The encoder defaults to **Automatic**: the first one that really works on the machine, tried in this order - NVIDIA
 NVENC, Intel Quick Sync, VA-API on Linux (NVENC, Quick Sync, AMD AMF on Windows, VideoToolbox on a Mac), then
@@ -239,7 +253,7 @@ Tiny and Base are fast but often wrong, especially with noise or non-English spe
 | 2 | App shell: home screen, editing, autosave (done, now on GTK4) |
 | 3 | Media core: probing, thumbnails, preview, mixed sound, stills, waveforms, filmstrips, proxies, scrub throttling, decoder reporting (done); still to do: check hardware decoding on real machines and footage, proxy auto-creation, proxy encoder choice per machine |
 | 4 | Compositor: **layers, transforms, opacity, on-canvas transform box, crossfades and keyframes (done, CPU)**; deferred: GPU backend, blend modes, skipping decode of fully covered layers |
-| 5 | Export: **MP4 (H.264 + AAC) with the same pictures and sound as the preview, optional graphics-card compositing (Automatic / Always / Never in the Export window; Automatic uses the card only when a check found a real graphics chip clearly faster, and falls back to the processor for anything it cannot draw), size / frame rate / quality choices, progress and cancel, and the best encoder that works on the machine (NVENC, Quick Sync, VA-API, AMF, VideoToolbox, else x264) with automatic fallback**; still to do: hardware encoders checked on real machines, H.265 / VP9 / AV1 and other containers, export of a range or of selected clips, presets for named sites |
+| 5 | Export: **MP4 (H.264 + AAC) with the same pictures and sound as the preview, optional graphics-card compositing (Automatic / Always / Never in the Export window; Automatic uses the card only when a check found a real graphics chip clearly faster, and falls back to the processor for anything it cannot draw), a redesigned Export window (video and/or separate sound file, NTSC-to-PAL sizes by aspect ratio, bit rate presets, H.264 / H.265 / VP9 / AV1, MP4 / MOV / MKV / WebM, frame rate, AAC / MP3 / Opus / FLAC / WAV, mono or stereo, .srt / .vtt / .ass caption files, encoder and graphics-card choices), progress and cancel, and the best encoder that works on the machine (NVENC, Quick Sync, VA-API, AMF, VideoToolbox, else x264) with automatic fallback**; still to do: the new H.265 / VP9 / AV1 hardware encoders checked on real machines, export of a range or of selected clips, presets for named sites |
 | 6 | Text engine and templates: **text clips (font, size, colour, outline, shadow, box, spacing), nine built-in styles, skew and perspective (done)**; still to do: mesh warp / free-form corner pinning, animating skew and perspective, user-saved text styles |
 | 7 | Captions with local Whisper, styled word highlighting: **generate captions from the sound of selected clips (or the whole timeline), five caption looks, the spoken word or the line so far lit up as it is said, editable word by word, .srt / .vtt export (done)**; still to do: real-world accuracy checks on your machine, speaker labels, translation, GPU-accelerated recognition |
 | 8 | Asset libraries and the pack format, with license tracking |
@@ -249,7 +263,7 @@ Tiny and Base are fast but often wrong, especially with noise or non-English spe
 
 ## Version numbers
 
-`major.phase.iteration`, for example `0.5.15`:
+`major.phase.iteration`, for example `0.5.16`:
 
 - **major**: the approved official release (0 until one is approved)
 - **phase**: the development phase being worked on (4 = compositor and editing UI, 5 = export, 6 = text, 7 = captions)

@@ -80,6 +80,22 @@ pub struct Settings {
     pub graphics_card_ok: Option<bool>,
     /// The Kani version that made that check (it is made again after an update).
     pub graphics_card_checked: String,
+    /// Export: make a video file / a sound-only file.
+    pub export_video: bool,
+    pub export_audio: bool,
+    /// Export: video format by id ("h264", "h265", "vp9", "av1") and file format ("mp4" ...).
+    pub export_codec: String,
+    pub export_container: String,
+    /// Export: sound format ("aac" ...), its bit rate in kbps and channels ("stereo", "mono").
+    pub export_audio_format: String,
+    pub export_audio_kbps: u32,
+    pub export_channels: String,
+    /// Export: your own video bit rate in kbps, used by the Custom preset.
+    pub export_custom_kbps: u32,
+    /// Export: crop to fill when the shape differs from the project's (else black bars).
+    pub export_fill: bool,
+    /// Export: caption files to save next to the video ("srt", "vtt", "ass").
+    pub export_caption_files: Vec<String>,
 }
 
 impl Default for Settings {
@@ -103,6 +119,16 @@ impl Default for Settings {
             export_graphics_card: "auto".into(),
             graphics_card_ok: None,
             graphics_card_checked: String::new(),
+            export_video: true,
+            export_audio: false,
+            export_codec: "h264".into(),
+            export_container: "mp4".into(),
+            export_audio_format: "aac".into(),
+            export_audio_kbps: 192,
+            export_channels: "stereo".into(),
+            export_custom_kbps: 0,
+            export_fill: false,
+            export_caption_files: Vec::new(),
         }
     }
 }
