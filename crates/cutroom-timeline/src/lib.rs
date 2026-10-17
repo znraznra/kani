@@ -20,7 +20,9 @@ pub use error::EditError;
 pub use history::History;
 pub use ids::{ClipId, MediaId, TrackId};
 pub use keyframes::{Keyframe, Prop};
-pub use model::{Clip, Timeline, Track, TrackKind, Transform, DEFAULT_VOLUME, MAX_VOLUME};
+pub use model::{
+    Clip, Timeline, Track, TrackKind, Transform, Warp, DEFAULT_VOLUME, MAX_VOLUME, MESH_SIDE,
+};
 pub use snap::{
     snap, snap_points, snap_points_with_extra, snap_span, snap_span_with_extra, snap_with_extra,
 };

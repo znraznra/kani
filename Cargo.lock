@@ -249,7 +249,7 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
 name = "cutroom-captions"
-version = "0.5.23"
+version = "0.5.24"
 dependencies = [
  "tempfile",
  "thiserror",
@@ -260,14 +260,14 @@ dependencies = [
 
 [[package]]
 name = "cutroom-compose"
-version = "0.5.23"
+version = "0.5.24"
 dependencies = [
  "cutroom-timeline",
 ]
 
 [[package]]
 name = "cutroom-core"
-version = "0.5.23"
+version = "0.5.24"
 dependencies = [
  "cutroom-captions",
  "cutroom-project",
@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "cutroom-gtk"
-version = "0.5.23"
+version = "0.5.24"
 dependencies = [
  "cutroom-captions",
  "cutroom-compose",
@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "cutroom-platform"
-version = "0.5.23"
+version = "0.5.24"
 dependencies = [
  "cutroom-timeline",
  "directories",
@@ -312,7 +312,7 @@ dependencies = [
 
 [[package]]
 name = "cutroom-project"
-version = "0.5.23"
+version = "0.5.24"
 dependencies = [
  "blake3",
  "cutroom-timeline",
@@ -324,7 +324,7 @@ dependencies = [
 
 [[package]]
 name = "cutroom-timeline"
-version = "0.5.23"
+version = "0.5.24"
 dependencies = [
  "serde",
  "serde_json",

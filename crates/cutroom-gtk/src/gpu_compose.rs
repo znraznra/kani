@@ -562,6 +562,10 @@ impl GpuCompositor {
 
     /// Lay `frame` over the picture like [`cutroom_compose::Canvas::draw`] would.
     pub fn draw(&mut self, frame: &Arc<Frame>, placement: &Placement) -> Result<(), String> {
+        if placement.has_distort() {
+            // Corner pin and mesh warp bend the picture itself: the processor does those.
+            return Err(format!("{UNSUPPORTED}corner pin or mesh warp"));
+        }
         let Some(quad) = self.quad(frame, placement)? else {
             return Ok(());
         };

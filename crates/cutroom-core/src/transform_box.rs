@@ -75,6 +75,21 @@ impl BoxGeom {
         ]
     }
 
+    /// Where a point of the picture is on the canvas, given in the picture's
+    /// unit square ((0, 0) top left, (1, 1) bottom right).
+    pub fn at_unit(&self, u: f32, v: f32) -> (f32, f32) {
+        self.to_canvas((u - 0.5) * 2.0 * self.hw, (v - 0.5) * 2.0 * self.hh)
+    }
+
+    /// The reverse of `at_unit`: the picture's unit square coordinates of a canvas point.
+    pub fn to_unit(&self, x: f32, y: f32) -> (f32, f32) {
+        let (lx, ly) = self.local(x, y);
+        (
+            lx / (2.0 * self.hw.max(1e-3)) + 0.5,
+            ly / (2.0 * self.hh.max(1e-3)) + 0.5,
+        )
+    }
+
     /// The rotate knob. `offset` is its distance above the top edge.
     pub fn rotate_knob(&self, offset: f32) -> (f32, f32) {
         self.to_canvas(0.0, -self.hh - offset)

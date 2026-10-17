@@ -1172,7 +1172,11 @@ impl<'a> Renderer<'a> {
                 LayerSource::Still(path) => (self.still(path), false, true),
                 LayerSource::Video(target) => {
                     let t = layer.transform.clamped();
-                    let flat = t.skew_x == 0 && t.skew_y == 0 && t.persp_x == 0 && t.persp_y == 0;
+                    let flat = t.skew_x == 0
+                        && t.skew_y == 0
+                        && t.persp_x == 0
+                        && t.persp_y == 0
+                        && t.warp.is_identity();
                     (
                         self.video_frame(layer.clip, target, t.scale as f32 / 1000.0, flat),
                         false,
@@ -1212,7 +1216,7 @@ impl<'a> Renderer<'a> {
             let milli = t.scale;
             // What else is special about this layer (shown in the timing table).
             let flags = u8::from(t.rotation != 0)
-                | u8::from(t.skew_x != 0 || t.skew_y != 0 || t.persp_x != 0 || t.persp_y != 0) << 1
+                | u8::from(t.skew_x != 0 || t.skew_y != 0 || t.persp_x != 0 || t.persp_y != 0 || !t.warp.is_identity()) << 1
                 | u8::from(t.opacity < 1000) << 2
                 | u8::from(t.flip_h || t.flip_v) << 3;
             let mut cached = None;

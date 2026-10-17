@@ -8,6 +8,49 @@ pub enum TrackKind {
     Audio,
 }
 
+/// How many points a side of the mesh has (a 4 x 4 grid is 3 x 3 patches).
+pub const MESH_SIDE: usize = 4;
+
+/// Corner pin and mesh warp: the picture itself is bent before it is placed.
+///
+/// Every number is how far a point has moved from where it starts, in
+/// thousandths of the picture's width (x) or height (y). All zero is no bend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Warp {
+    /// Corner pin: top left, top right, bottom right, bottom left, each (x, y).
+    /// The picture is drawn in the four-sided shape the corners make, with
+    /// true perspective.
+    pub pin: [i32; 8],
+    /// Mesh warp: the points of a 4 x 4 grid, row by row from the top left,
+    /// each (x, y). The picture follows the grid, patch by patch.
+    pub mesh: [i32; MESH_SIDE * MESH_SIDE * 2],
+}
+
+impl Warp {
+    /// The furthest a point may move, in thousandths of the picture's size.
+    pub const MAX: i32 = 2000;
+
+    pub fn is_identity(&self) -> bool {
+        self.pin.iter().all(|v| *v == 0) && self.mesh.iter().all(|v| *v == 0)
+    }
+
+    pub fn pin_is_identity(&self) -> bool {
+        self.pin.iter().all(|v| *v == 0)
+    }
+
+    pub fn mesh_is_identity(&self) -> bool {
+        self.mesh.iter().all(|v| *v == 0)
+    }
+
+    pub fn clamped(mut self) -> Warp {
+        for v in self.pin.iter_mut().chain(self.mesh.iter_mut()) {
+            *v = (*v).clamp(-Self::MAX, Self::MAX);
+        }
+        self
+    }
+}
+
 /// How a clip's picture is placed on the canvas. Whole-number units keep the
 /// model exact (and `Eq`) and independent of any preview resolution.
 ///
@@ -38,6 +81,8 @@ pub struct Transform {
     pub persp_x: i32,
     /// Perspective along y: positive makes the bottom smaller, negative the top.
     pub persp_y: i32,
+    /// Corner pin and mesh warp (nothing by default).
+    pub warp: Warp,
 }
 
 impl Default for Transform {
@@ -54,6 +99,7 @@ impl Default for Transform {
             skew_y: 0,
             persp_x: 0,
             persp_y: 0,
+            warp: Warp::default(),
         }
     }
 }
@@ -79,6 +125,7 @@ impl Transform {
             skew_y: self.skew_y.clamp(-Self::SKEW_MAX, Self::SKEW_MAX),
             persp_x: self.persp_x.clamp(-Self::PERSP_MAX, Self::PERSP_MAX),
             persp_y: self.persp_y.clamp(-Self::PERSP_MAX, Self::PERSP_MAX),
+            warp: self.warp.clamped(),
             ..self
         }
     }

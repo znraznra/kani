@@ -395,6 +395,48 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
     column.append(&flips);
     column.append(&grid);
 
+    // Bending: corner pin and mesh warp, dragged with handles on the preview.
+    let bend = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let bend_label = gtk::Label::new(Some("Distort"));
+    bend_label.set_xalign(0.0);
+    bend_label.add_css_class("cc-field-label");
+    bend.append(&bend_label);
+    let modes = gtk::DropDown::from_strings(&["Off", "Corner pin", "Mesh warp"]);
+    modes.set_hexpand(true);
+    modes.set_tooltip_text(Some(
+        "Bend the picture by dragging handles on the preview: four corners (corner pin) or a 4 x 4 grid (mesh warp)",
+    ));
+    modes.set_selected(match app.state.borrow().distort_mode {
+        crate::transform_overlay::Distort::Off => 0,
+        crate::transform_overlay::Distort::Pin => 1,
+        crate::transform_overlay::Distort::Mesh => 2,
+    });
+    {
+        let app = app.clone();
+        modes.connect_selected_notify(move |d| {
+            app.state.borrow_mut().distort_mode = match d.selected() {
+                1 => crate::transform_overlay::Distort::Pin,
+                2 => crate::transform_overlay::Distort::Mesh,
+                _ => crate::transform_overlay::Distort::Off,
+            };
+            app.ui().editor.queue_overlay();
+        });
+    }
+    bend.append(&modes);
+    let unbend = crate::icons::button(crate::icons::RESET, "Remove the bend (corner pin and mesh warp)");
+    unbend.set_sensitive(!initial.warp.is_identity());
+    {
+        let (current, changed) = (current.clone(), changed.clone());
+        unbend.connect_clicked(move |_| {
+            let mut t = current.get();
+            t.warp = cutroom_timeline::Warp::default();
+            changed(t);
+        });
+    }
+    bend.append(&unbend);
+    column.append(&bend);
+    column.append(&grid);
+
     let reset = crate::icons::button(crate::icons::RESET, "Reset position, size, rotation, opacity, skew and perspective (and remove their keyframes)");
     {
         let app = app.clone();
@@ -446,6 +488,7 @@ mod tests {
             skew_y: -300,
             persp_x: 400,
             persp_y: -250,
+            warp: Default::default(),
         };
         let s = to_sliders(&t);
         assert_eq!(

@@ -1665,6 +1665,11 @@ impl Session {
                 } else {
                     cur.persp_y
                 },
+                warp: if new.warp != old.warp {
+                    new.warp
+                } else {
+                    cur.warp
+                },
             };
             steps.extend(self.transform_steps(*t, merged));
         }
@@ -1691,6 +1696,8 @@ impl Session {
         let mut keys = c.keyframes.clone();
         base.flip_h = new.flip_h;
         base.flip_v = new.flip_v;
+        // Corner pin and mesh warp are not animated: they are the clip's own.
+        base.warp = new.warp;
         for prop in cutroom_timeline::Prop::TRANSFORM {
             if prop.get(&new) == prop.get(&shown) {
                 continue;

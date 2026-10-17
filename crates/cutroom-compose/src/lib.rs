@@ -6,6 +6,8 @@
 
 use cutroom_timeline::Transform;
 
+pub mod warp;
+
 /// A picture: tightly packed RGBA, 8 bits per channel, straight (not
 /// premultiplied) alpha.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +127,11 @@ pub struct Placement {
     /// Perspective along x and y (see `Transform::persp_x`); 0.0 is none.
     pub persp_x: f32,
     pub persp_y: f32,
+    /// Corner pin: how far the four corners (top left, top right, bottom
+    /// right, bottom left; x, y) are moved, in units of the picture's size.
+    pub pin: [f32; 8],
+    /// Mesh warp: how far the points of the 4 x 4 grid are moved (x, y each).
+    pub mesh: [f32; 32],
     /// Draw the picture at its own pixel size (scale 1.0 = one picture pixel per
     /// canvas pixel) instead of fitting it inside the canvas. Used for text.
     pub natural: bool,
@@ -133,6 +140,11 @@ pub struct Placement {
 impl Placement {
     fn is_warped(&self) -> bool {
         self.skew_x != 0.0 || self.skew_y != 0.0 || self.persp_x != 0.0 || self.persp_y != 0.0
+    }
+
+    /// Is the picture itself bent (corner pin or mesh warp)?
+    pub fn has_distort(&self) -> bool {
+        self.pin.iter().any(|v| *v != 0.0) || self.mesh.iter().any(|v| *v != 0.0)
     }
 }
 
@@ -150,6 +162,8 @@ impl Default for Placement {
             skew_y: 0.0,
             persp_x: 0.0,
             persp_y: 0.0,
+            pin: [0.0; 8],
+            mesh: [0.0; 32],
             natural: false,
         }
     }
@@ -169,6 +183,8 @@ impl From<&Transform> for Placement {
             skew_y: t.skew_y as f32 / 10.0,
             persp_x: t.persp_x as f32 / 1000.0,
             persp_y: t.persp_y as f32 / 1000.0,
+            pin: t.warp.pin.map(|v| v as f32 / 1000.0),
+            mesh: t.warp.mesh.map(|v| v as f32 / 1000.0),
             natural: false,
         }
     }
@@ -183,6 +199,7 @@ pub fn covers_canvas(width: u32, height: u32, frame_w: u32, frame_h: u32, p: &Pl
         || p.scale <= 0.0
         || p.rotation != 0.0
         || p.is_warped()
+        || p.has_distort()
         || frame_w == 0
         || frame_h == 0
     {
@@ -203,7 +220,7 @@ pub fn is_plain_copy(width: u32, height: u32, frame_w: u32, frame_h: u32, p: &Pl
     if frame_w == 0 || frame_h == 0 {
         return false;
     }
-    if p.is_warped() || p.rotation != 0.0 || p.flip_h || p.flip_v {
+    if p.is_warped() || p.has_distort() || p.rotation != 0.0 || p.flip_h || p.flip_v {
         return false;
     }
     let (cw, ch) = (width as f32, height as f32);
@@ -383,6 +400,34 @@ impl Canvas {
         }
         let (cw, ch) = (self.width as f32, self.height as f32);
         let (sw, sh) = (frame.width as f32, frame.height as f32);
+        if placement.has_distort() {
+            // A bent picture: bend it first, then place the result as if it were
+            // the picture (same centre, same size per picture pixel).
+            let straight = Placement {
+                pin: [0.0; 8],
+                mesh: [0.0; 32],
+                ..*placement
+            };
+            match warp::bend_frame(frame, &placement.pin, &placement.mesh) {
+                Some(bent) => {
+                    let fit = if placement.natural {
+                        1.0
+                    } else {
+                        (cw / sw).min(ch / sh)
+                    };
+                    self.draw(
+                        &bent,
+                        &Placement {
+                            scale: placement.scale * fit,
+                            natural: true,
+                            ..straight
+                        },
+                    );
+                }
+                None => self.draw(frame, &straight),
+            }
+            return;
+        }
         let fit = if placement.natural {
             1.0
         } else {
@@ -1568,6 +1613,7 @@ mod tests {
             skew_y: 0,
             persp_x: 0,
             persp_y: -500,
+            warp: Default::default(),
         };
         let p = Placement::from(&t);
         assert_eq!(
@@ -1661,5 +1707,27 @@ mod tests {
         assert_eq!(count(&c, RED), 8, "4 x 2 pixels, not stretched to fill");
         assert_eq!(c.pixel(10, 10), RED);
         assert_eq!(c.pixel(5, 10), BLACK);
+    }
+
+    #[test]
+    fn a_pinned_corner_pulls_the_drawn_picture_in() {
+        // Pull the top right corner of a full-canvas picture to the left.
+        let mut pin = [0.0f32; 8];
+        pin[2] = -0.5;
+        let placement = Placement {
+            pin,
+            ..Default::default()
+        };
+        let c = draw((40, 40), &Frame::solid(40, 40, RED), placement);
+        assert_eq!(c.pixel(2, 37), RED, "bottom left is still picture");
+        assert_eq!(c.pixel(38, 2), BLACK, "top right corner was pulled away");
+        assert!(count(&c, RED) < 40 * 40, "less of the canvas is covered");
+        assert!(count(&c, RED) > 400, "but the picture is still there");
+    }
+
+    #[test]
+    fn a_picture_without_a_bend_is_drawn_exactly_as_before() {
+        let plain = draw((40, 40), &Frame::solid(40, 40, RED), Placement::default());
+        assert_eq!(count(&plain, RED), 40 * 40);
     }
 }
