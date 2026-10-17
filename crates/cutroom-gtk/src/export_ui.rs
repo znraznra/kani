@@ -1100,7 +1100,9 @@ fn restore_choices(d: &Dialog, settings: &cutroom_core::settings::Settings) {
         &d.channels,
         Channels::ALL.iter().position(|c| *c == channels).unwrap_or(0) as u32,
     );
-    refresh_audio_formats(d, AudioFormat::from_id(&settings.export_audio_format));
+    // The sound format always starts on AAC (the one that plays everywhere);
+    // a preset or a choice made in this window lasts only for that export.
+    refresh_audio_formats(d, Some(AudioFormat::Aac));
     let labels: Vec<String> = AUDIO_BITRATES.iter().map(|k| format!("{k} kbps")).collect();
     let at = AUDIO_BITRATES
         .iter()
@@ -2165,7 +2167,6 @@ fn start(app: &Rc<App>, d: &Rc<Dialog>) {
         st.settings.export_audio = d.audio_on.is_active();
         st.settings.export_codec = chosen_codec(d).id().to_string();
         st.settings.export_container = chosen_container(d).id().to_string();
-        st.settings.export_audio_format = chosen_audio_format(d).id().to_string();
         st.settings.export_audio_kbps = AUDIO_BITRATES
             [(d.audio_bitrate.selected() as usize).min(AUDIO_BITRATES.len() - 1)];
         st.settings.export_channels = chosen_channels(d).id().to_string();

@@ -176,7 +176,7 @@ export dialog: a picture of the playhead frame and the list of files this will m
   the default for the project's shape). When the chosen shape differs from the project's, pick black bars or crop. Bit
   rate presets (Low, Recommended, High, Maximum, Custom), codec (H.264, H.265, VP9, AV1), file format (MP4, MOV, MKV,
   WebM, only those that can hold the codec), frame rate, and the colour space (Rec. 709 SDR, which is what Kani works in).
-- **Audio**: format (AAC, MP3, Opus, FLAC, WAV, as the file format allows), bit rate, and channels (Stereo or Mono;
+- **Audio**: format (starts on AAC every time you open the window; AAC, MP3, Opus, FLAC, WAV, as the file format allows), bit rate, and channels (Stereo or Mono;
   Kani mixes to stereo, so surround is not offered).
 - **Captions**: save the caption layer as `.srt`, `.vtt` or `.ass` (the `.ass` file takes its font, colours and outline
   from the first caption).
@@ -282,7 +282,7 @@ Tiny and Base are fast but often wrong, especially with noise or non-English spe
 
 ## Version numbers
 
-`major.phase.iteration`, for example `0.5.22`:
+`major.phase.iteration`, for example `0.5.23`:
 
 - **major**: the approved official release (0 until one is approved)
 - **phase**: the development phase being worked on (4 = compositor and editing UI, 5 = export, 6 = text, 7 = captions)

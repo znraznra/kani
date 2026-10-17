@@ -169,6 +169,7 @@ impl AudioFormat {
         AudioFormat::Wav,
     ];
 
+    #[allow(dead_code)]
     pub fn id(self) -> &'static str {
         match self {
             AudioFormat::Aac => "aac",
@@ -179,6 +180,7 @@ impl AudioFormat {
         }
     }
 
+    #[allow(dead_code)]
     pub fn from_id(id: &str) -> Option<AudioFormat> {
         AudioFormat::ALL.into_iter().find(|f| f.id() == id)
     }

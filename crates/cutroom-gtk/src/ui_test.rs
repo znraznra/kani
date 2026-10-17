@@ -1154,6 +1154,7 @@ mod tests {
             assert!(formats.contains(&"MP4".to_string()), "{formats:?}");
             assert!(!formats.contains(&"WebM".to_string()), "{formats:?}");
             assert!(items(&d.audio_format)[0].starts_with("AAC"));
+            assert_eq!(items(&d.audio_format)[d.audio_format.selected() as usize], "AAC", "the sound format starts on AAC");
             // The size list has the NTSC and PAL sizes for the chosen shape, and
             // changes with the shape.
             let sizes = items(&d.size);
