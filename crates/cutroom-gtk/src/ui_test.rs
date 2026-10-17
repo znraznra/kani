@@ -953,10 +953,25 @@ mod tests {
                 s.select_only(id);
                 id
             };
-            let _ = id;
             app.refresh();
             pump_until(|| false);
             shot("text");
+            // Morph: a skewed, mesh-warped text clip with its mesh handles.
+            {
+                let mut st = app.state.borrow_mut();
+                st.distort_modes
+                    .insert(id, crate::transform_overlay::Distort::Mesh);
+                let s = st.session.as_mut().unwrap();
+                let mut t = s.transform_at_playhead(id).unwrap();
+                t.skew_x = 200;
+                t.warp.mesh[10] = 150;
+                t.warp.pin[2] = -200;
+                s.edit_transform(id, t);
+            }
+            app.sync_preview(true);
+            app.refresh();
+            pump_until(|| false);
+            shot("morph");
         }
 
         // 7h-range. Picking a range on the timeline (Shift+Ctrl+X): handles,

@@ -1665,11 +1665,8 @@ impl Session {
                 } else {
                     cur.persp_y
                 },
-                warp: if new.warp != old.warp {
-                    new.warp
-                } else {
-                    cur.warp
-                },
+                // The bend is each clip's own: a group edit never carries it over.
+                warp: cur.warp,
             };
             steps.extend(self.transform_steps(*t, merged));
         }
@@ -1696,9 +1693,10 @@ impl Session {
         let mut keys = c.keyframes.clone();
         base.flip_h = new.flip_h;
         base.flip_v = new.flip_v;
-        // Corner pin and mesh warp are not animated: they are the clip's own.
-        base.warp = new.warp;
-        for prop in cutroom_timeline::Prop::TRANSFORM {
+        for prop in cutroom_timeline::Prop::TRANSFORM
+            .into_iter()
+            .chain(cutroom_timeline::Prop::WARP)
+        {
             if prop.get(&new) == prop.get(&shown) {
                 continue;
             }
@@ -2159,7 +2157,7 @@ impl Session {
                 .into_iter()
                 .map(|k| cutroom_timeline::Keyframe { time: to, ..k }),
         );
-        keys.sort_by_key(|k| (k.prop as u8, k.time));
+        keys.sort_by_key(|k| (k.prop.order(), k.time));
         self.exec(Edit::SetClipKeyframes {
             clip,
             keyframes: keys,
@@ -2331,13 +2329,50 @@ impl Session {
             .keyframes
             .iter()
             .copied()
-            .filter(|k| !cutroom_timeline::Prop::TRANSFORM.contains(&k.prop))
+            .filter(|k| !k.prop.is_picture())
             .collect();
         let mut steps = Vec::new();
         if !c.transform.is_default() {
             steps.push(Edit::SetClipTransform {
                 clip,
                 transform: cutroom_timeline::Transform::default(),
+            });
+        }
+        if keys.len() != c.keyframes.len() {
+            steps.push(Edit::SetClipKeyframes {
+                clip,
+                keyframes: keys,
+            });
+        }
+        match steps.len() {
+            0 => false,
+            1 => self.exec(steps.remove(0)),
+            _ => self.exec(Edit::Batch(steps)),
+        }
+    }
+
+    /// Put some of a clip's picture settings back to their defaults and drop
+    /// their keyframes (the Reset buttons of the Morph section). One undo step.
+    pub fn reset_props(&mut self, clip: ClipId, props: &[cutroom_timeline::Prop]) -> bool {
+        let Some((_, c)) = self.doc.timeline.find_clip(clip) else {
+            return false;
+        };
+        let plain = cutroom_timeline::Transform::default();
+        let mut base = c.transform;
+        for p in props {
+            p.set(&mut base, p.get(&plain));
+        }
+        let keys: Vec<_> = c
+            .keyframes
+            .iter()
+            .copied()
+            .filter(|k| !props.contains(&k.prop))
+            .collect();
+        let mut steps = Vec::new();
+        if base != c.transform {
+            steps.push(Edit::SetClipTransform {
+                clip,
+                transform: base,
             });
         }
         if keys.len() != c.keyframes.len() {
@@ -4344,6 +4379,75 @@ mod tests {
         assert!(session.edit_transform(id, moved));
         let now = session.transform_at_playhead(id).unwrap();
         assert_eq!((now.skew_x, now.persp_y, now.x), (150, -300, 120));
+    }
+
+    #[test]
+    fn a_bend_is_keyed_as_one_element_and_follows_its_keyframes() {
+        use cutroom_timeline::Prop;
+        let (tmp, mut session) = new_session();
+        let m = import_one(&tmp, &mut session, "a.mp4");
+        let id = session.add_media_to_timeline(m).unwrap();
+        let start = session.doc.timeline.find_clip(id).unwrap().1.start;
+        session.set_playhead(start);
+        assert!(session.toggle_keyframes(id, &Prop::WARP));
+        assert_eq!(
+            session
+                .doc
+                .timeline
+                .find_clip(id)
+                .unwrap()
+                .1
+                .keyframes
+                .iter()
+                .filter(|k| matches!(k.prop, Prop::Warp(_)))
+                .count(),
+            40,
+            "pin and mesh are keyed together"
+        );
+        // Bend a corner and a mesh point one second in.
+        session.set_playhead(start + Ticks::from_seconds_f64(1.0));
+        assert!(session.toggle_keyframes(id, &Prop::WARP));
+        let mut t = session.transform_at_playhead(id).unwrap();
+        t.warp.pin[2] = -400;
+        t.warp.mesh[10] = 200;
+        assert!(session.edit_transform(id, t));
+        let clip = session.doc.timeline.find_clip(id).unwrap().1;
+        assert!(clip.transform.warp.is_identity(), "the clip's own value is kept");
+        assert_eq!(clip.transform_at(start + Ticks::from_seconds_f64(1.0)).warp.pin[2], -400);
+        assert_eq!(clip.transform_at(start + Ticks::from_seconds_f64(0.5)).warp.pin[2], -200);
+        assert_eq!(clip.transform_at(start).warp.mesh[10], 0);
+        // Reset the bend on its own: skew stays.
+        let mut skew = session.transform_at_playhead(id).unwrap();
+        skew.skew_x = 120;
+        session.edit_transform(id, skew);
+        assert!(session.reset_props(id, &Prop::WARP));
+        let clip = session.doc.timeline.find_clip(id).unwrap().1;
+        assert!(clip.transform.warp.is_identity());
+        assert!(!clip.keyframes.iter().any(|k| matches!(k.prop, Prop::Warp(_))));
+        assert_eq!(clip.transform_at(start).skew_x, 120, "skew untouched by a bend reset");
+        session.undo();
+        let clip = session.doc.timeline.find_clip(id).unwrap().1;
+        assert!(clip.keyframes.iter().any(|k| matches!(k.prop, Prop::Warp(_))), "one undo step");
+    }
+
+    #[test]
+    fn a_bend_belongs_to_its_own_clip_and_is_not_shared_in_a_group_edit() {
+        let (tmp, mut session) = new_session();
+        let m = import_one(&tmp, &mut session, "a.mp4");
+        let a = session.add_media_to_timeline(m).unwrap();
+        let b = session.add_media_to_timeline(m).unwrap();
+        session.select_many(&[a, b]);
+        let mut t = session.transform_at_playhead(a).unwrap();
+        t.warp.pin[0] = 100;
+        t.x = 50;
+        let targets = session.group_targets(a, false);
+        session.edit_transform_for(a, t, &targets);
+        let (ta, tb) = (
+            session.doc.timeline.find_clip(a).unwrap().1.transform,
+            session.doc.timeline.find_clip(b).unwrap().1.transform,
+        );
+        assert_eq!(ta.warp.pin[0], 100);
+        assert!(tb.warp.is_identity(), "the other clip is not bent");
     }
 
     #[test]

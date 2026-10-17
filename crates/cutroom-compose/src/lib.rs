@@ -6,6 +6,7 @@
 
 use cutroom_timeline::Transform;
 
+pub mod mapping;
 pub mod warp;
 
 /// A picture: tightly packed RGBA, 8 bits per channel, straight (not

@@ -1,5 +1,8 @@
 //! The box over the preview: drag the picture to move it, a corner to scale
 //! it, the knob above it to turn it (hold Shift to turn in 15 degree steps).
+//! The box follows the picture as it is drawn (slant, perspective, bend).
+//! Click a corner to switch between the box, corner pin and mesh warp
+//! handles, as in Photoshop's transform box.
 
 use crate::app::App;
 use crate::theme;
@@ -8,6 +11,8 @@ use cutroom_timeline::{ClipId, Transform};
 use gtk4 as gtk;
 use gtk4::gdk;
 use gtk4::prelude::*;
+use cutroom_compose::mapping::Mapper;
+use cutroom_compose::Placement;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -16,7 +21,7 @@ const REACH: f64 = 11.0;
 /// Where the knob floats above the picture on screen, in pixels.
 const KNOB_PX: f64 = 28.0;
 
-/// Which bending handles the preview shows over the selected clip.
+/// Which handles the preview shows over a clip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Distort {
     /// The usual box: move, scale, turn.
@@ -28,14 +33,41 @@ pub enum Distort {
     Mesh,
 }
 
+impl Distort {
+    /// What a click on a corner switches to.
+    pub fn next(self) -> Distort {
+        match self {
+            Distort::Off => Distort::Pin,
+            Distort::Pin => Distort::Mesh,
+            Distort::Mesh => Distort::Off,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Distort::Off => "Transform",
+            Distort::Pin => "Corner pin",
+            Distort::Mesh => "Mesh warp",
+        }
+    }
+}
+
 const SQUARE: [(f32, f32); 4] = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
 
 #[derive(Clone, Copy)]
 struct Shown {
     clip: ClipId,
     canvas: (f32, f32),
+    media: (f32, f32),
     geom: BoxGeom,
     transform: Transform,
+    placement: Placement,
+}
+
+impl Shown {
+    fn mapper(&self) -> Mapper {
+        Mapper::new(&self.placement, self.canvas, self.media)
+    }
 }
 
 fn media_size(
@@ -55,6 +87,16 @@ fn media_size(
     let path = session.media_path(media)?;
     let (_, w, h) = gtk::gdk_pixbuf::Pixbuf::file_info(path)?;
     (w > 0 && h > 0).then_some((w as f32, h as f32))
+}
+
+/// The handles shown for `clip` (each clip has its own).
+pub fn mode_of(app: &App, clip: ClipId) -> Distort {
+    app.state
+        .borrow()
+        .distort_modes
+        .get(&clip)
+        .copied()
+        .unwrap_or_default()
 }
 
 /// The box to show now, if the selected clip's picture is on screen.
@@ -81,36 +123,33 @@ fn current(app: &App) -> Option<Shown> {
         Some((c, t)) if c == id => t,
         _ => clip.transform_at(session.playhead),
     };
-    let geom = match &clip.text_at(session.playhead) {
+    let mut placement = Placement::from(&transform);
+    let (geom, media) = match &clip.text_at(session.playhead) {
         Some(spec) => {
             let b = crate::text_render::bounds(spec, canvas.0 as u32, canvas.1 as u32)?;
-            BoxGeom::unfitted(canvas, (b.w as f32, b.h as f32), &transform)?
+            let size = (b.w as f32, b.h as f32);
+            placement.natural = true;
+            (BoxGeom::unfitted(canvas, size, &transform)?, size)
         }
         None => {
             let media = media_size(session, clip.media)?;
-            BoxGeom::new(canvas, media, &transform)?
+            (BoxGeom::new(canvas, media, &transform)?, media)
         }
     };
     Some(Shown {
         clip: id,
         canvas,
+        media,
         geom,
         transform,
+        placement,
     })
 }
 
-fn unit_to_canvas(shown: &Shown, u: f32, v: f32) -> (f32, f32) {
-    let u = if shown.transform.flip_h { 1.0 - u } else { u };
-    let v = if shown.transform.flip_v { 1.0 - v } else { v };
-    shown.geom.at_unit(u, v)
-}
-
-fn canvas_to_unit(shown: &Shown, p: (f32, f32)) -> (f32, f32) {
-    let (u, v) = shown.geom.to_unit(p.0, p.1);
-    (
-        if shown.transform.flip_h { 1.0 - u } else { u },
-        if shown.transform.flip_v { 1.0 - v } else { v },
-    )
+/// Where the canvas sits inside the overlay: (left, top, on-screen width).
+fn canvas_frame(area: &gtk::DrawingArea, canvas: &gtk::Widget) -> Option<(f64, f64, f64)> {
+    let b = canvas.compute_bounds(area)?;
+    (b.width() > 1.0).then(|| (f64::from(b.x()), f64::from(b.y()), f64::from(b.width())))
 }
 
 fn warp_floats(w: &cutroom_timeline::Warp) -> ([f32; 8], [f32; 32]) {
@@ -120,7 +159,7 @@ fn warp_floats(w: &cutroom_timeline::Warp) -> ([f32; 8], [f32; 32]) {
     )
 }
 
-/// Where the handles are, as points of the picture's unit square.
+/// Where the bending handles are, as points of the picture's (bent) unit square.
 fn distort_points(shown: &Shown, mode: Distort) -> Vec<(f32, f32)> {
     let (pin, mesh) = warp_floats(&shown.transform.warp);
     match mode {
@@ -133,13 +172,25 @@ fn distort_points(shown: &Shown, mode: Distort) -> Vec<(f32, f32)> {
                 return Vec::new();
             };
             let side = cutroom_compose::warp::SIDE;
+            let n = (side - 1) as f32;
             (0..side * side)
                 .map(|k| {
                     let (i, j) = ((k % side) as f32, (k / side) as f32);
-                    let n = (side - 1) as f32;
                     bend.forward(i / n, j / n).unwrap_or((i / n, j / n))
                 })
                 .collect()
+        }
+    }
+}
+
+/// Is handle `idx` of `mode` one of the picture's four corners?
+fn is_corner(mode: Distort, idx: usize) -> bool {
+    match mode {
+        Distort::Off => false,
+        Distort::Pin => true,
+        Distort::Mesh => {
+            let side = cutroom_compose::warp::SIDE;
+            matches!(idx, 0 | 3) || idx == side * (side - 1) || idx == side * side - 1
         }
     }
 }
@@ -169,10 +220,39 @@ fn pulled(shown: &Shown, mode: Distort, idx: usize, unit: (f32, f32)) -> cutroom
     w.clamped()
 }
 
-/// Where the canvas sits inside the overlay: (left, top, on-screen width).
-fn canvas_frame(area: &gtk::DrawingArea, canvas: &gtk::Widget) -> Option<(f64, f64, f64)> {
-    let b = canvas.compute_bounds(area)?;
-    (b.width() > 1.0).then(|| (f64::from(b.x()), f64::from(b.y()), f64::from(b.width())))
+/// Is `p` inside the polygon?
+fn inside(poly: &[(f32, f32)], p: (f32, f32)) -> bool {
+    let mut hit = false;
+    let mut j = poly.len().wrapping_sub(1);
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[j]);
+        if (a.1 > p.1) != (b.1 > p.1) && p.0 < (b.0 - a.0) * (p.1 - a.1) / (b.1 - a.1) + a.0 {
+            hit = !hit;
+        }
+        j = i;
+    }
+    hit
+}
+
+/// Where the corners of the drawn picture are, and the rotate knob (a fixed
+/// distance above the top edge, in canvas pixels), all in canvas pixels.
+fn box_points(shown: &Shown, knob_offset: f32) -> Option<([(f32, f32); 4], (f32, f32), (f32, f32))> {
+    let m = shown.mapper();
+    let corners = [
+        m.point(0.0, 0.0)?,
+        m.point(1.0, 0.0)?,
+        m.point(1.0, 1.0)?,
+        m.point(0.0, 1.0)?,
+    ];
+    let top_mid = m.point(0.5, 0.0)?;
+    let centre = m.point(0.5, 0.5)?;
+    let (dx, dy) = (top_mid.0 - centre.0, top_mid.1 - centre.1);
+    let len = dx.hypot(dy).max(1e-3);
+    let knob = (
+        top_mid.0 + dx / len * knob_offset,
+        top_mid.1 + dy / len * knob_offset,
+    );
+    Some((corners, top_mid, knob))
 }
 
 pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
@@ -192,17 +272,54 @@ pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
             };
             let k = sw / f64::from(shown.canvas.0);
             let at = |p: (f32, f32)| (ox + f64::from(p.0) * k, oy + f64::from(p.1) * k);
-            let corners = shown.geom.corners().map(at);
             let accent = theme::ACCENT;
-            let mode = app.state.borrow().distort_mode;
-            if mode != Distort::Off {
+            let mode = mode_of(&app, shown.clip);
+            let mapper = shown.mapper();
+            cr.save().ok();
+            cr.set_line_width(1.5);
+            cr.set_source_rgb(accent.0, accent.1, accent.2);
+
+            // The mode, so a click on a corner is understood.
+            cr.set_font_size(12.0);
+            cr.move_to(ox + 8.0, oy + 18.0);
+            let _ = cr.show_text(&format!("{} - click a corner to switch", mode.label()));
+
+            // The outline as the picture is drawn (slant, perspective, bend).
+            let outline: Vec<(f64, f64)> = mapper.outline(16).into_iter().map(at).collect();
+            if let Some(first) = outline.first() {
+                cr.move_to(first.0, first.1);
+                for p in &outline[1..] {
+                    cr.line_to(p.0, p.1);
+                }
+                cr.close_path();
+                let _ = cr.stroke();
+            }
+
+            if mode == Distort::Off {
+                if let Some((corners, top_mid, knob)) = box_points(&shown, (KNOB_PX / k) as f32) {
+                    let (top_mid, knob) = (at(top_mid), at(knob));
+                    cr.move_to(top_mid.0, top_mid.1);
+                    cr.line_to(knob.0, knob.1);
+                    let _ = cr.stroke();
+                    cr.arc(knob.0, knob.1, 6.0, 0.0, std::f64::consts::TAU);
+                    cr.set_source_rgb(1.0, 1.0, 1.0);
+                    let _ = cr.fill_preserve();
+                    cr.set_source_rgb(accent.0, accent.1, accent.2);
+                    let _ = cr.stroke();
+                    for c in corners.map(at) {
+                        cr.rectangle(c.0 - 5.0, c.1 - 5.0, 10.0, 10.0);
+                        cr.set_source_rgb(1.0, 1.0, 1.0);
+                        let _ = cr.fill_preserve();
+                        cr.set_source_rgb(accent.0, accent.1, accent.2);
+                        let _ = cr.stroke();
+                    }
+                }
+            } else {
                 let pts: Vec<(f64, f64)> = distort_points(&shown, mode)
                     .into_iter()
-                    .map(|(u, v)| at(unit_to_canvas(&shown, u, v)))
+                    .filter_map(|(u, v)| mapper.plain(u, v))
+                    .map(at)
                     .collect();
-                cr.save().ok();
-                cr.set_line_width(1.5);
-                cr.set_source_rgb(accent.0, accent.1, accent.2);
                 let line = |cr: &gtk::cairo::Context, ids: &[usize]| {
                     for (n, id) in ids.iter().enumerate() {
                         if let Some(p) = pts.get(*id) {
@@ -228,114 +345,90 @@ pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
                         let _ = cr.stroke();
                     }
                 }
-                for p in &pts {
-                    cr.arc(p.0, p.1, 5.5, 0.0, std::f64::consts::TAU);
+                for (i, p) in pts.iter().enumerate() {
+                    if is_corner(mode, i) {
+                        cr.rectangle(p.0 - 5.0, p.1 - 5.0, 10.0, 10.0);
+                    } else {
+                        cr.arc(p.0, p.1, 5.0, 0.0, std::f64::consts::TAU);
+                    }
                     cr.set_source_rgb(1.0, 1.0, 1.0);
                     let _ = cr.fill_preserve();
                     cr.set_source_rgb(accent.0, accent.1, accent.2);
                     let _ = cr.stroke();
                 }
-                cr.restore().ok();
-                return;
-            }
-            cr.save().ok();
-            cr.set_line_width(1.5);
-            cr.set_source_rgb(accent.0, accent.1, accent.2);
-            cr.move_to(corners[0].0, corners[0].1);
-            for c in &corners[1..] {
-                cr.line_to(c.0, c.1);
-            }
-            cr.close_path();
-            let _ = cr.stroke();
-
-            // The knob and its stem, a fixed distance above the top edge on screen.
-            let offset = (KNOB_PX / k) as f32;
-            let top_mid = at(shown.geom.rotate_knob(0.0));
-            let knob = at(shown.geom.rotate_knob(offset));
-            cr.move_to(top_mid.0, top_mid.1);
-            cr.line_to(knob.0, knob.1);
-            let _ = cr.stroke();
-            cr.arc(knob.0, knob.1, 6.0, 0.0, std::f64::consts::TAU);
-            cr.set_source_rgb(1.0, 1.0, 1.0);
-            let _ = cr.fill_preserve();
-            cr.set_source_rgb(accent.0, accent.1, accent.2);
-            let _ = cr.stroke();
-
-            for c in corners {
-                cr.rectangle(c.0 - 5.0, c.1 - 5.0, 10.0, 10.0);
-                cr.set_source_rgb(1.0, 1.0, 1.0);
-                let _ = cr.fill_preserve();
-                cr.set_source_rgb(accent.0, accent.1, accent.2);
-                let _ = cr.stroke();
             }
             cr.restore().ok();
         });
     }
 
     // What is under the pointer, for the cursor and for starting a drag.
+    // `Handle` is the box's; in a bending mode the handle number is separate.
+    enum Under {
+        Box(Handle),
+        Point(usize),
+    }
     let hit_at = {
         let app = app.clone();
         let area = area.clone();
         let canvas_widget = canvas_widget.clone();
-        move |x: f64, y: f64| -> Option<(Shown, Handle, (f32, f32))> {
+        move |x: f64, y: f64| -> Option<(Shown, Under, (f32, f32))> {
             let shown = current(&app)?;
             let (ox, oy, sw) = canvas_frame(&area, &canvas_widget)?;
             let k = f64::from(shown.canvas.0) / sw;
             let pos = (((x - ox) * k) as f32, ((y - oy) * k) as f32);
-            let offset = (KNOB_PX * k) as f32;
             let reach = (REACH * k) as f32;
-            let handle = shown.geom.hit(pos, reach, offset)?;
-            Some((shown, handle, pos))
+            let near = |p: (f32, f32)| (p.0 - pos.0).hypot(p.1 - pos.1) <= reach;
+            let mode = mode_of(&app, shown.clip);
+            let mapper = shown.mapper();
+            if mode == Distort::Off {
+                let (corners, _, knob) = box_points(&shown, (KNOB_PX * k) as f32)?;
+                if near(knob) {
+                    return Some((shown, Under::Box(Handle::Rotate), pos));
+                }
+                if let Some(i) = corners.iter().position(|c| near(*c)) {
+                    return Some((shown, Under::Box(Handle::Corner(i)), pos));
+                }
+            } else {
+                let mut best: Option<(usize, f32)> = None;
+                for (i, (u, v)) in distort_points(&shown, mode).into_iter().enumerate() {
+                    let Some(c) = mapper.plain(u, v) else {
+                        continue;
+                    };
+                    let d = (c.0 - pos.0).hypot(c.1 - pos.1);
+                    if d <= reach && best.map_or(true, |b| d < b.1) {
+                        best = Some((i, d));
+                    }
+                }
+                if let Some((i, _)) = best {
+                    return Some((shown, Under::Point(i), pos));
+                }
+            }
+            let outline = mapper.outline(16);
+            let on_picture = if outline.len() >= 3 {
+                inside(&outline, pos)
+            } else {
+                shown.geom.hit(pos, 0.0, 0.0) == Some(Handle::Body)
+            };
+            on_picture.then_some((shown, Under::Box(Handle::Body), pos))
         }
     };
     let hit_at = Rc::new(hit_at);
 
-    // A bending handle under the pointer, while a bending mode is on.
-    let distort_hit = {
-        let app = app.clone();
-        let area = area.clone();
-        let canvas_widget = canvas_widget.clone();
-        move |x: f64, y: f64| -> Option<(Shown, usize, (f32, f32))> {
-            let mode = app.state.borrow().distort_mode;
-            if mode == Distort::Off {
-                return None;
-            }
-            let shown = current(&app)?;
-            let (ox, oy, sw) = canvas_frame(&area, &canvas_widget)?;
-            let k = f64::from(shown.canvas.0) / sw;
-            let pos = (((x - ox) * k) as f32, ((y - oy) * k) as f32);
-            let reach = (REACH * k) as f32;
-            let mut best: Option<(usize, f32)> = None;
-            for (i, (u, v)) in distort_points(&shown, mode).into_iter().enumerate() {
-                let c = unit_to_canvas(&shown, u, v);
-                let d = (c.0 - pos.0).hypot(c.1 - pos.1);
-                if d <= reach && best.map_or(true, |b| d < b.1) {
-                    best = Some((i, d));
-                }
-            }
-            best.map(|(i, _)| (shown, i, pos))
-        }
-    };
-    let distort_hit = Rc::new(distort_hit);
-
     let motion = gtk::EventControllerMotion::new();
     {
-        let (area, hit_at, distort_hit) = (area.clone(), hit_at.clone(), distort_hit.clone());
+        let (area, hit_at) = (area.clone(), hit_at.clone());
         motion.connect_motion(move |_, x, y| {
-            if distort_hit(x, y).is_some() {
-                area.set_cursor_from_name(Some("pointer"));
-                return;
-            }
             let name = match hit_at(x, y).map(|h| h.1) {
-                Some(Handle::Body) => "move",
-                Some(Handle::Corner(i)) => {
+                Some(Under::Box(Handle::Body)) => "move",
+                Some(Under::Box(Handle::Corner(i))) => {
                     if i % 2 == 0 {
                         "nwse-resize"
                     } else {
                         "nesw-resize"
                     }
                 }
-                Some(Handle::Rotate) => "crosshair",
+                Some(Under::Box(Handle::Rotate)) => "crosshair",
+                Some(Under::Point(_)) => "pointer",
                 None => "default",
             };
             area.set_cursor_from_name(Some(name));
@@ -349,49 +442,78 @@ pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
     let last: Rc<Cell<Option<Transform>>> = Rc::new(Cell::new(None));
     // A bending handle being dragged: the picture as it was, and which handle.
     let dgrab: Rc<Cell<Option<(Shown, usize)>>> = Rc::new(Cell::new(None));
+    // Was the pointer pressed on a corner, and has it moved since? A press and
+    // release on a corner without moving switches the mode.
+    let corner_click: Rc<Cell<Option<ClipId>>> = Rc::new(Cell::new(None));
+    let moved = Rc::new(Cell::new(false));
     let drag = gtk::GestureDrag::builder().button(1).build();
     {
         let (grab, last, hit_at) = (grab.clone(), last.clone(), hit_at.clone());
-        let (dgrab, distort_hit) = (dgrab.clone(), distort_hit.clone());
+        let (dgrab, corner_click, moved) = (dgrab.clone(), corner_click.clone(), moved.clone());
+        let app = app.clone();
         drag.connect_drag_begin(move |_, x, y| {
             last.set(None);
             dgrab.set(None);
-            if let Some((shown, idx, pos)) = distort_hit(x, y) {
-                dgrab.set(Some((shown, idx)));
-                grab.set(Some((
-                    shown.clip,
-                    Grab::begin(Handle::Body, pos, shown.transform, shown.geom),
-                    shown.canvas,
-                    (x, y),
-                )));
+            corner_click.set(None);
+            moved.set(false);
+            grab.set(None);
+            let Some((shown, under, pos)) = hit_at(x, y) else {
                 return;
+            };
+            let mode = mode_of(&app, shown.clip);
+            match under {
+                Under::Point(idx) => {
+                    dgrab.set(Some((shown, idx)));
+                    if is_corner(mode, idx) {
+                        corner_click.set(Some(shown.clip));
+                    }
+                    grab.set(Some((
+                        shown.clip,
+                        Grab::begin(Handle::Body, pos, shown.transform, shown.geom),
+                        shown.canvas,
+                        (x, y),
+                    )));
+                }
+                Under::Box(handle) => {
+                    if matches!(handle, Handle::Corner(_)) {
+                        corner_click.set(Some(shown.clip));
+                    }
+                    grab.set(Some((
+                        shown.clip,
+                        Grab::begin(handle, pos, shown.transform, shown.geom),
+                        shown.canvas,
+                        (x, y),
+                    )));
+                }
             }
-            grab.set(hit_at(x, y).map(|(shown, handle, pos)| {
-                (
-                    shown.clip,
-                    Grab::begin(handle, pos, shown.transform, shown.geom),
-                    shown.canvas,
-                    (x, y),
-                )
-            }));
         });
     }
     {
         let (app, area, grab, last) = (app.clone(), area.clone(), grab.clone(), last.clone());
         let canvas_widget = canvas_widget.clone();
-        let dgrab = dgrab.clone();
+        let (dgrab, corner_click, moved) = (dgrab.clone(), corner_click.clone(), moved.clone());
         drag.connect_drag_update(move |gesture, dx, dy| {
             let Some((clip, g, canvas, (sx, sy))) = grab.get() else {
                 return;
             };
+            // A corner pressed and barely moved is a click, not a drag.
+            if corner_click.get().is_some() && !moved.get() {
+                if dx.hypot(dy) < 4.0 {
+                    return;
+                }
+                moved.set(true);
+                corner_click.set(None);
+            }
             let Some((ox, oy, sw)) = canvas_frame(&area, &canvas_widget) else {
                 return;
             };
             let k = f64::from(canvas.0) / sw;
             let pos = (((sx + dx - ox) * k) as f32, ((sy + dy - oy) * k) as f32);
             if let Some((shown, idx)) = dgrab.get() {
-                let mode = app.state.borrow().distort_mode;
-                let unit = canvas_to_unit(&shown, pos);
+                let mode = mode_of(&app, clip);
+                let Some(unit) = shown.mapper().unplain(pos.0, pos.1) else {
+                    return;
+                };
                 let mut t = shown.transform;
                 t.warp = pulled(&shown, mode, idx, unit);
                 last.set(Some(t));
@@ -412,9 +534,22 @@ pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
     }
     {
         let (app, area, grab, last) = (app.clone(), area.clone(), grab.clone(), last.clone());
-        let dgrab = dgrab.clone();
+        let (dgrab, corner_click) = (dgrab.clone(), corner_click.clone());
         drag.connect_drag_end(move |_, _, _| {
             dgrab.set(None);
+            if let Some(clip) = corner_click.take() {
+                // A click on a corner: the next kind of handles for this clip.
+                grab.set(None);
+                last.set(None);
+                {
+                    let mut st = app.state.borrow_mut();
+                    let next = st.distort_modes.get(&clip).copied().unwrap_or_default().next();
+                    st.distort_modes.insert(clip, next);
+                }
+                app.refresh();
+                area.queue_draw();
+                return;
+            }
             let (Some((clip, ..)), Some(t)) = (grab.take(), last.take()) else {
                 return;
             };
@@ -425,6 +560,7 @@ pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
                 if let Some(session) = st.session.as_mut() {
                     // Shared with the other selected clips of the same type,
                     // or with every caption while "Apply to all captions" is on.
+                    // (The bend is never shared: it is each clip's own.)
                     let targets = session.group_targets(clip, all);
                     session.edit_transform_for(clip, t, &targets);
                 }

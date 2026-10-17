@@ -111,6 +111,10 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
     grid.set_column_spacing(8);
     grid.set_row_spacing(6);
     let next_row = Cell::new(0i32);
+    let morph_grid = gtk::Grid::new();
+    morph_grid.set_column_spacing(8);
+    morph_grid.set_row_spacing(6);
+    let morph_rows = Cell::new(0i32);
     let current = Rc::new(Cell::new(initial));
     let building = Rc::new(Cell::new(true));
     let dragging = Rc::new(Cell::new(false));
@@ -181,7 +185,9 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
         move |props: &[Prop]| key_button(&app, clip, props)
     };
     let sliders = to_sliders(&initial);
-    let add_slider = |label: &str,
+    let add_slider = |grid: &gtk::Grid,
+                      next_row: &Cell<i32>,
+                      label: &str,
                       range: (f64, f64),
                       value: f64,
                       unit: &'static str,
@@ -290,6 +296,8 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
         }
     };
     add_slider(
+        &grid,
+        &next_row,
         "Position X",
         X_RANGE,
         sliders.x,
@@ -298,6 +306,8 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
         |s, v| s.x = v,
     );
     add_slider(
+        &grid,
+        &next_row,
         "Position Y",
         Y_RANGE,
         sliders.y,
@@ -306,6 +316,8 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
         |s, v| s.y = v,
     );
     add_slider(
+        &grid,
+        &next_row,
         "Scale",
         SCALE_RANGE,
         sliders.scale,
@@ -314,6 +326,8 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
         |s, v| s.scale = v,
     );
     add_slider(
+        &grid,
+        &next_row,
         "Rotation",
         ROTATION_RANGE,
         sliders.rotation,
@@ -322,6 +336,8 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
         |s, v| s.rotation = v,
     );
     add_slider(
+        &grid,
+        &next_row,
         "Opacity",
         OPACITY_RANGE,
         sliders.opacity,
@@ -329,8 +345,60 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
         Some(Prop::Opacity),
         |s, v| s.opacity = v,
     );
-    // Slant and perspective.
+    // Morph: slant, perspective and bending.
+    // A small reset button that puts some picture settings back to their
+    // defaults (and drops their keyframes).
+    let reset_props_button = {
+        let app = app.clone();
+        move |props: Vec<Prop>, tip: &str| {
+            let b = crate::icons::button(crate::icons::RESET, tip);
+            let app = app.clone();
+            b.connect_clicked(move |_| {
+                let (app, props) = (app.clone(), props.clone());
+                glib::idle_add_local_once(move || {
+                    {
+                        let mut st = app.state.borrow_mut();
+                        st.transform_preview = None;
+                        if let Some(session) = st.session.as_mut() {
+                            session.reset_props(clip, &props);
+                        }
+                    }
+                    app.sync_preview(false);
+                    app.refresh();
+                });
+            });
+            b
+        }
+    };
+    let group_heading = |grid: &gtk::Grid, rows: &Cell<i32>, title: &str, extra: &[gtk::Widget]| {
+        let r = rows.get();
+        rows.set(r + 1);
+        let label = gtk::Label::new(Some(title));
+        label.set_xalign(0.0);
+        label.add_css_class("cc-field-label");
+        label.add_css_class("heading");
+        grid.attach(&label, 0, r, 1, 1);
+        let holder = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        holder.set_halign(gtk::Align::End);
+        holder.set_hexpand(true);
+        for w in extra {
+            holder.append(w);
+        }
+        grid.attach(&holder, 1, r, 3, 1);
+    };
+    group_heading(
+        &morph_grid,
+        &morph_rows,
+        "Skew",
+        &[reset_props_button(
+            vec![Prop::SkewX, Prop::SkewY],
+            "Reset skew",
+        )
+        .upcast()],
+    );
     add_slider(
+        &morph_grid,
+        &morph_rows,
         "Skew X",
         SKEW_RANGE,
         sliders.skew_x,
@@ -339,6 +407,8 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
         |s, v| s.skew_x = v,
     );
     add_slider(
+        &morph_grid,
+        &morph_rows,
         "Skew Y",
         SKEW_RANGE,
         sliders.skew_y,
@@ -346,7 +416,19 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
         Some(Prop::SkewY),
         |s, v| s.skew_y = v,
     );
+    group_heading(
+        &morph_grid,
+        &morph_rows,
+        "Perspective",
+        &[reset_props_button(
+            vec![Prop::PerspX, Prop::PerspY],
+            "Reset perspective",
+        )
+        .upcast()],
+    );
     add_slider(
+        &morph_grid,
+        &morph_rows,
         "Perspective X",
         PERSP_RANGE,
         sliders.persp_x,
@@ -355,6 +437,8 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
         |s, v| s.persp_x = v,
     );
     add_slider(
+        &morph_grid,
+        &morph_rows,
         "Perspective Y",
         PERSP_RANGE,
         sliders.persp_y,
@@ -395,18 +479,20 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
     column.append(&flips);
     column.append(&grid);
 
-    // Bending: corner pin and mesh warp, dragged with handles on the preview.
+    // Distort: corner pin and mesh warp, dragged with handles on the preview.
+    // Each clip has its own handles and its own bend.
     let bend = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let bend_label = gtk::Label::new(Some("Distort"));
     bend_label.set_xalign(0.0);
     bend_label.add_css_class("cc-field-label");
+    bend_label.add_css_class("heading");
     bend.append(&bend_label);
     let modes = gtk::DropDown::from_strings(&["Off", "Corner pin", "Mesh warp"]);
     modes.set_hexpand(true);
     modes.set_tooltip_text(Some(
-        "Bend the picture by dragging handles on the preview: four corners (corner pin) or a 4 x 4 grid (mesh warp)",
+        "Bend the picture by dragging handles on the preview: four corners (corner pin) or a 4 x 4 grid (mesh warp). Clicking a corner of the box on the preview switches too.",
     ));
-    modes.set_selected(match app.state.borrow().distort_mode {
+    modes.set_selected(match crate::transform_overlay::mode_of(app, clip) {
         crate::transform_overlay::Distort::Off => 0,
         crate::transform_overlay::Distort::Pin => 1,
         crate::transform_overlay::Distort::Mesh => 2,
@@ -414,30 +500,46 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
     {
         let app = app.clone();
         modes.connect_selected_notify(move |d| {
-            app.state.borrow_mut().distort_mode = match d.selected() {
-                1 => crate::transform_overlay::Distort::Pin,
-                2 => crate::transform_overlay::Distort::Mesh,
-                _ => crate::transform_overlay::Distort::Off,
-            };
+            app.state.borrow_mut().distort_modes.insert(
+                clip,
+                match d.selected() {
+                    1 => crate::transform_overlay::Distort::Pin,
+                    2 => crate::transform_overlay::Distort::Mesh,
+                    _ => crate::transform_overlay::Distort::Off,
+                },
+            );
             app.ui().editor.queue_overlay();
         });
     }
     bend.append(&modes);
-    let unbend = crate::icons::button(crate::icons::RESET, "Remove the bend (corner pin and mesh warp)");
-    unbend.set_sensitive(!initial.warp.is_identity());
-    {
-        let (current, changed) = (current.clone(), changed.clone());
-        unbend.connect_clicked(move |_| {
-            let mut t = current.get();
-            t.warp = cutroom_timeline::Warp::default();
-            changed(t);
-        });
-    }
+    let unbend = reset_props_button(Prop::WARP.to_vec(), "Remove the bend (corner pin and mesh warp)");
+    unbend.set_sensitive(!initial.warp.is_identity() || has_warp_keys(app, clip));
     bend.append(&unbend);
-    column.append(&bend);
-    column.append(&grid);
+    // One diamond for the whole bend: corner pin and mesh are keyed together.
+    bend.append(&diamond(&Prop::WARP));
+    let bend_row = morph_rows.get();
+    morph_rows.set(bend_row + 1);
+    morph_grid.attach(&bend, 0, bend_row, 4, 1);
 
-    let reset = crate::icons::button(crate::icons::RESET, "Reset position, size, rotation, opacity, skew and perspective (and remove their keyframes)");
+    let morph = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    morph.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    let morph_header = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let morph_title = gtk::Label::new(Some("Morph"));
+    morph_title.add_css_class("cc-section-title");
+    morph_title.set_xalign(0.0);
+    morph_title.set_hexpand(true);
+    morph_header.append(&morph_title);
+    let mut all_morph = vec![Prop::SkewX, Prop::SkewY, Prop::PerspX, Prop::PerspY];
+    all_morph.extend(Prop::WARP);
+    morph_header.append(&reset_props_button(
+        all_morph.clone(),
+        "Reset skew, perspective and distort",
+    ));
+    morph_header.append(&diamond(&all_morph));
+    morph.append(&morph_header);
+    morph.append(&morph_grid);
+
+    let reset = crate::icons::button(crate::icons::RESET, "Reset position, size, rotation and opacity, and the morph settings (and remove their keyframes)");
     {
         let app = app.clone();
         reset.connect_clicked(move |_| {
@@ -464,10 +566,20 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
     title.set_hexpand(true);
     header.append(&title);
     header.append(&reset);
-    header.append(&diamond(&Prop::TRANSFORM));
+    header.append(&diamond(&[Prop::X, Prop::Y, Prop::Scale, Prop::Rotation, Prop::Opacity]));
     column.prepend(&header);
+    column.append(&morph);
     building.set(false);
     column
+}
+
+fn has_warp_keys(app: &Rc<App>, clip: ClipId) -> bool {
+    app.state.borrow().session.as_ref().is_some_and(|s| {
+        s.doc
+            .timeline
+            .find_clip(clip)
+            .is_some_and(|(_, c)| c.keyframes.iter().any(|k| matches!(k.prop, Prop::Warp(_))))
+    })
 }
 
 #[cfg(test)]

@@ -56,8 +56,8 @@ pub struct State {
     pub selected_media: Option<MediaId>,
     /// A transform being adjusted with a slider, shown before it is committed.
     pub transform_preview: Option<(cutroom_timeline::ClipId, cutroom_timeline::Transform)>,
-    /// Which bending handles the preview shows over the selected clip.
-    pub distort_mode: crate::transform_overlay::Distort,
+    /// Which handles the preview shows over each clip (box, corner pin or mesh).
+    pub distort_modes: std::collections::HashMap<cutroom_timeline::ClipId, crate::transform_overlay::Distort>,
     /// "Apply to all captions" in the Auto-Captions section: while on, changes
     /// made to one generated caption go to all of them.
     pub apply_all_captions: bool,
@@ -164,7 +164,7 @@ impl App {
                 dragging_media: None,
                 selected_media: None,
                 transform_preview: None,
-                distort_mode: crate::transform_overlay::Distort::Off,
+                distort_modes: Default::default(),
                 apply_all_captions: false,
                 library_popover: None,
                 clip_popover: None,

@@ -9,6 +9,8 @@ use crate::model::Transform;
 use crate::time::Ticks;
 use serde::{Deserialize, Serialize};
 
+pub const WARP_LEN: usize = 8 + crate::model::MESH_SIDE * crate::model::MESH_SIDE * 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Prop {
     X,
@@ -24,6 +26,9 @@ pub enum Prop {
     TextSize,
     /// Text clips: the space between letters.
     TextSpacing,
+    /// One number of the clip's bend (corner pin and mesh warp): 0..8 are the
+    /// pin's, 8..40 the mesh's. They are always keyed together, as one element.
+    Warp(u8),
 }
 
 impl Prop {
@@ -52,6 +57,45 @@ impl Prop {
         Prop::PerspX,
         Prop::PerspY,
     ];
+    /// All the numbers of the bend (corner pin and mesh warp), keyed as one.
+    pub const WARP: [Prop; WARP_LEN] = {
+        let mut all = [Prop::X; WARP_LEN];
+        let mut i = 0;
+        while i < WARP_LEN {
+            all[i] = Prop::Warp(i as u8);
+            i += 1;
+        }
+        all
+    };
+
+    /// Every setting that can have keyframes.
+    pub fn each() -> impl Iterator<Item = Prop> {
+        Prop::ALL.into_iter().chain(Prop::WARP)
+    }
+
+    /// Settings of the clip's picture (everything but the text's own).
+    pub fn is_picture(self) -> bool {
+        !self.is_text()
+    }
+
+    /// A stable order for sorting keyframes.
+    pub fn order(self) -> u16 {
+        match self {
+            Prop::X => 0,
+            Prop::Y => 1,
+            Prop::Scale => 2,
+            Prop::Rotation => 3,
+            Prop::Opacity => 4,
+            Prop::SkewX => 5,
+            Prop::SkewY => 6,
+            Prop::PerspX => 7,
+            Prop::PerspY => 8,
+            Prop::TextSize => 9,
+            Prop::TextSpacing => 10,
+            Prop::Warp(i) => 100 + u16::from(i),
+        }
+    }
+
     /// The settings of a text clip's "Text" section.
     pub const TEXT: [Prop; 2] = [Prop::TextSize, Prop::TextSpacing];
 
@@ -84,6 +128,14 @@ impl Prop {
             Prop::PerspX => t.persp_x,
             Prop::PerspY => t.persp_y,
             Prop::TextSize | Prop::TextSpacing => 0,
+            Prop::Warp(i) => {
+                let i = usize::from(i);
+                if i < 8 {
+                    t.warp.pin[i]
+                } else {
+                    t.warp.mesh.get(i - 8).copied().unwrap_or(0)
+                }
+            }
             Prop::X => t.x,
             Prop::Y => t.y,
             Prop::Scale => t.scale,
@@ -104,6 +156,14 @@ impl Prop {
             Prop::PerspX => t.persp_x = value,
             Prop::PerspY => t.persp_y = value,
             Prop::TextSize | Prop::TextSpacing => {}
+            Prop::Warp(i) => {
+                let i = usize::from(i);
+                if i < 8 {
+                    t.warp.pin[i] = value;
+                } else if let Some(m) = t.warp.mesh.get_mut(i - 8) {
+                    *m = value;
+                }
+            }
         }
     }
 }
@@ -158,14 +218,14 @@ pub fn upsert(keys: &mut Vec<Keyframe>, prop: Prop, at: Ticks, value: i32, toler
             value,
         }),
     }
-    keys.sort_by_key(|k| (k.prop as u8, k.time));
+    keys.sort_by_key(|k| (k.prop.order(), k.time));
 }
 
 /// The keyframes of the two halves of a clip cut at `at` (from its start):
 /// each half gets a keyframe at the cut so the motion carries on unbroken.
 pub fn split(keys: &[Keyframe], at: Ticks) -> (Vec<Keyframe>, Vec<Keyframe>) {
     let (mut left, mut right) = (Vec::new(), Vec::new());
-    for prop in Prop::ALL {
+    for prop in Prop::each() {
         let Some(value) = value_at(keys, prop, at) else {
             continue;
         };
@@ -190,8 +250,8 @@ pub fn split(keys: &[Keyframe], at: Ticks) -> (Vec<Keyframe>, Vec<Keyframe>) {
             value,
         });
     }
-    left.sort_by_key(|k| (k.prop as u8, k.time));
-    right.sort_by_key(|k| (k.prop as u8, k.time));
+    left.sort_by_key(|k| (k.prop.order(), k.time));
+    right.sort_by_key(|k| (k.prop.order(), k.time));
     (left, right)
 }
 
@@ -265,6 +325,21 @@ mod tests {
         assert_eq!(value_at(&right, Prop::X, s(1.5)), Some(250));
         // Settings without keyframes stay without.
         assert_eq!(value_at(&left, Prop::Y, s(0.5)), None);
+    }
+
+    #[test]
+    fn the_bend_is_forty_numbers_keyed_together() {
+        assert_eq!(Prop::WARP.len(), 40);
+        let mut t = Transform::default();
+        Prop::Warp(2).set(&mut t, 300);
+        Prop::Warp(39).set(&mut t, -50);
+        assert_eq!((t.warp.pin[2], t.warp.mesh[31]), (300, -50));
+        assert_eq!((Prop::Warp(2).get(&t), Prop::Warp(39).get(&t)), (300, -50));
+        let keys = [k(0.0, Prop::Warp(8), 0), k(2.0, Prop::Warp(8), 100)];
+        assert_eq!(value_at(&keys, Prop::Warp(8), s(1.0)), Some(50));
+        let (left, right) = split(&keys, s(1.0));
+        assert_eq!(value_at(&left, Prop::Warp(8), s(1.0)), Some(50));
+        assert_eq!(value_at(&right, Prop::Warp(8), s(0.0)), Some(50));
     }
 
     #[test]

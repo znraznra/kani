@@ -211,7 +211,7 @@ impl Clip {
         }
         let rel = at - self.start;
         let mut t = self.transform;
-        for prop in crate::keyframes::Prop::ALL {
+        for prop in crate::keyframes::Prop::each() {
             if let Some(v) = crate::keyframes::value_at(&self.keyframes, prop, rel) {
                 prop.set(&mut t, v);
             }
