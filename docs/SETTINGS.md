@@ -88,7 +88,7 @@ Moved into the Settings window (and removed from where they were):
 - Home screen: "Change..." / "Use default" for the projects folder. The home screen still shows the folder, with a
   "Change in Settings..." button that opens the Draft section.
 - Media panel, Import options: "Also add dropped files to the timeline" and "Use proxies in the preview". Import
-  mode (copy or reference) stays there until Project settings arrives.
+  mode (copy or reference) now lives in Project settings.
 
 Added: Ctrl+, shortcut; autosave on/off separate from its interval (old files saying 0 minutes still mean off);
 interval any value 1 to 120 minutes; Compositor acceleration and Export folder as settings in one place.
