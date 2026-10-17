@@ -152,6 +152,24 @@ fn canvas_frame(area: &gtk::DrawingArea, canvas: &gtk::Widget) -> Option<(f64, f
     (b.width() > 1.0).then(|| (f64::from(b.x()), f64::from(b.y()), f64::from(b.width())))
 }
 
+/// The project's canvas size in pixels.
+fn canvas_size(app: &App) -> Option<(u32, u32)> {
+    let st = app.state.borrow();
+    let s = st.session.as_ref()?;
+    Some((s.doc.settings.width, s.doc.settings.height))
+}
+
+/// Where the canvas is (left, top, screen pixels per canvas pixel) and its size.
+fn canvas_geometry(
+    app: &App,
+    area: &gtk::DrawingArea,
+    canvas: &gtk::Widget,
+) -> Option<((f64, f64, f64), (u32, u32))> {
+    let (ox, oy, sw) = canvas_frame(area, canvas)?;
+    let size = canvas_size(app)?;
+    Some(((ox, oy, sw / f64::from(size.0.max(1))), size))
+}
+
 fn warp_floats(w: &cutroom_timeline::Warp) -> ([f32; 8], [f32; 32]) {
     (
         w.pin.map(|v| v as f32 / 1000.0),
@@ -263,7 +281,12 @@ pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
     {
         let app = app.clone();
         let canvas_widget = canvas_widget.clone();
-        area.set_draw_func(move |a, cr, _, _| {
+        area.set_draw_func(move |a, cr, w, h| {
+            if let (Some(frame), Some(canvas)) =
+                (canvas_frame(a, &canvas_widget), canvas_size(&app))
+            {
+                crate::preview_tools::draw(&app, cr, (f64::from(w), f64::from(h)), frame, canvas);
+            }
             let Some(shown) = current(&app) else {
                 return;
             };
@@ -417,7 +440,24 @@ pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
     let motion = gtk::EventControllerMotion::new();
     {
         let (area, hit_at) = (area.clone(), hit_at.clone());
+        let (app, canvas_widget) = (app.clone(), canvas_widget.clone());
         motion.connect_motion(move |_, x, y| {
+            if let Some((frame, _)) = canvas_geometry(&app, &area, &canvas_widget) {
+                let st = app.state.borrow();
+                if st.settings.show_guides {
+                    if let Some(g) = st.session.as_ref().and_then(|s| {
+                        crate::preview_tools::guide_at(&s.doc.guides, frame, x, y)
+                            .map(|i| s.doc.guides[i])
+                    }) {
+                        area.set_cursor_from_name(Some(if g.vertical {
+                            "col-resize"
+                        } else {
+                            "row-resize"
+                        }));
+                        return;
+                    }
+                }
+            }
             let name = match hit_at(x, y).map(|h| h.1) {
                 Some(Under::Box(Handle::Body)) => "move",
                 Some(Under::Box(Handle::Corner(i))) => {
@@ -446,17 +486,62 @@ pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
     // release on a corner without moving switches the mode.
     let corner_click: Rc<Cell<Option<ClipId>>> = Rc::new(Cell::new(None));
     let moved = Rc::new(Cell::new(false));
+    // A guide being made or moved: its index, whether it is vertical, where the
+    // press began, and whether letting go now would drop it (back on a ruler or
+    // off the picture).
+    type GuideHeld = (usize, bool, (f64, f64), bool);
+    let guide_drag: Rc<Cell<Option<GuideHeld>>> = Rc::new(Cell::new(None));
     let drag = gtk::GestureDrag::builder().button(1).build();
     {
         let (grab, last, hit_at) = (grab.clone(), last.clone(), hit_at.clone());
         let (dgrab, corner_click, moved) = (dgrab.clone(), corner_click.clone(), moved.clone());
         let app = app.clone();
+        let (guide_drag, area, canvas_widget) =
+            (guide_drag.clone(), area.clone(), canvas_widget.clone());
         drag.connect_drag_begin(move |_, x, y| {
             last.set(None);
             dgrab.set(None);
             corner_click.set(None);
             moved.set(false);
             grab.set(None);
+            guide_drag.set(None);
+            // Take hold of a guide, or pull a new one out of a ruler.
+            if let Some(((ox, oy, k), _)) = canvas_geometry(&app, &area, &canvas_widget) {
+                use crate::preview_tools::{guide_at, RULER};
+                let (rulers, guides_on, existing) = {
+                    let st = app.state.borrow();
+                    (
+                        st.settings.show_rulers,
+                        st.settings.show_guides,
+                        st.session
+                            .as_ref()
+                            .map(|s| s.doc.guides.clone())
+                            .unwrap_or_default(),
+                    )
+                };
+                if guides_on {
+                    if let Some(i) = guide_at(&existing, (ox, oy, k), x, y) {
+                        guide_drag.set(Some((i, existing[i].vertical, (x, y), false)));
+                        return;
+                    }
+                }
+                if rulers && (y < RULER) != (x < RULER) {
+                    let vertical = x < RULER;
+                    let pos = if vertical { (x - ox) / k } else { (y - oy) / k };
+                    let index = {
+                        let mut st = app.state.borrow_mut();
+                        st.settings.show_guides = true;
+                        st.session
+                            .as_mut()
+                            .map(|s| s.add_guide(vertical, pos.round() as i32))
+                    };
+                    if let Some(index) = index {
+                        guide_drag.set(Some((index, vertical, (x, y), false)));
+                        area.queue_draw();
+                        return;
+                    }
+                }
+            }
             let Some((shown, under, pos)) = hit_at(x, y) else {
                 return;
             };
@@ -492,7 +577,30 @@ pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
         let (app, area, grab, last) = (app.clone(), area.clone(), grab.clone(), last.clone());
         let canvas_widget = canvas_widget.clone();
         let (dgrab, corner_click, moved) = (dgrab.clone(), corner_click.clone(), moved.clone());
+        let guide_drag = guide_drag.clone();
         drag.connect_drag_update(move |gesture, dx, dy| {
+            if let Some((index, vertical, (gx, gy), _)) = guide_drag.get() {
+                let Some(((ox, oy, k), size)) = canvas_geometry(&app, &area, &canvas_widget)
+                else {
+                    return;
+                };
+                let (px, py) = (gx + dx, gy + dy);
+                let pos = if vertical { (px - ox) / k } else { (py - oy) / k };
+                let limit = if vertical { size.0 } else { size.1 };
+                let on_ruler = app.state.borrow().settings.show_rulers
+                    && if vertical {
+                        px < crate::preview_tools::RULER
+                    } else {
+                        py < crate::preview_tools::RULER
+                    };
+                let off = on_ruler || pos < 0.0 || pos > f64::from(limit);
+                guide_drag.set(Some((index, vertical, (gx, gy), off)));
+                if let Some(s) = app.state.borrow_mut().session.as_mut() {
+                    s.set_guide(index, Some(pos.round() as i32));
+                }
+                area.queue_draw();
+                return;
+            }
             let Some((clip, g, canvas, (sx, sy))) = grab.get() else {
                 return;
             };
@@ -535,7 +643,19 @@ pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
     {
         let (app, area, grab, last) = (app.clone(), area.clone(), grab.clone(), last.clone());
         let (dgrab, corner_click) = (dgrab.clone(), corner_click.clone());
+        let guide_drag = guide_drag.clone();
         drag.connect_drag_end(move |_, _, _| {
+            if let Some((index, _, _, off)) = guide_drag.take() {
+                // Dropped back on a ruler or off the picture: the guide is removed.
+                if off {
+                    if let Some(s) = app.state.borrow_mut().session.as_mut() {
+                        s.set_guide(index, None);
+                    }
+                }
+                app.refresh();
+                area.queue_draw();
+                return;
+            }
             dgrab.set(None);
             if let Some(clip) = corner_click.take() {
                 // A click on a corner: the next kind of handles for this clip.

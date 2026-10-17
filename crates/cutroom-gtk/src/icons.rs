@@ -97,6 +97,7 @@ pub const MIC: &str = "microphone";
 pub const ZOOM_IN: &str = "zoom-in";
 pub const ZOOM_OUT: &str = "zoom-out";
 pub const SNAP: &str = "magnet";
+pub const SCRUB_SOUND: &str = "volume";
 pub const LIST: &str = "list";
 pub const GRID: &str = "layout-grid";
 pub const RESET: &str = "rotate";

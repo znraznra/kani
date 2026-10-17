@@ -201,6 +201,14 @@ const CSS: &str = r#"
     padding: 3px 10px;
     border-radius: 4px;
 }
+/* A menu with one item is as tall as that item. (GTK's overlay scrollbar asks
+   for 46 px, which left a gap under the only item of the Settings menu.) */
+popover.menu scrollbar.vertical,
+popover.menu scrollbar.vertical range,
+popover.menu scrollbar.vertical slider,
+popover.menu scrollbar.vertical trough {
+    min-height: 0;
+}
 .cutroom-compact-menu modelbutton {
     min-height: 24px;
     padding-top: 2px;

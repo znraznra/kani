@@ -101,6 +101,24 @@ pub struct Settings {
     pub export_fill: bool,
     /// Export: caption files to save next to the video ("srt", "vtt", "ass").
     pub export_caption_files: Vec<String>,
+    /// Make a proxy for big videos as soon as they are read.
+    pub auto_proxies: bool,
+    /// Proxy size and quality: "small", "balanced" or "sharp".
+    pub proxy_quality: String,
+    /// Let the graphics chip decode video when it can (else the processor does).
+    pub hw_decode: bool,
+    /// Re-wrap files in containers Kani cannot read directly (no re-encoding).
+    pub remux_on_import: bool,
+    /// How sharp the preview is: "low", "standard", "high" or "full".
+    pub preview_resolution: String,
+    /// Put the preview picture together on the graphics chip.
+    pub preview_on_gpu: bool,
+    /// Play a short piece of sound while the playhead is dragged.
+    pub scrub_audio: bool,
+    /// Preview view aids.
+    pub show_rulers: bool,
+    pub show_grid: bool,
+    pub show_guides: bool,
 }
 
 impl Default for Settings {
@@ -136,9 +154,34 @@ impl Default for Settings {
             export_custom_kbps: 0,
             export_fill: false,
             export_caption_files: Vec::new(),
+            auto_proxies: false,
+            proxy_quality: "balanced".into(),
+            hw_decode: true,
+            remux_on_import: false,
+            preview_resolution: "standard".into(),
+            preview_on_gpu: false,
+            scrub_audio: true,
+            show_rulers: false,
+            show_grid: false,
+            show_guides: true,
         }
     }
 }
+
+/// Proxy choices: (id, label, longest side in pixels, video kbps).
+pub const PROXY_QUALITIES: [(&str, &str, u32, u32); 3] = [
+    ("small", "Small and fast (640 px)", 640, 1000),
+    ("balanced", "Balanced (960 px)", 960, 2000),
+    ("sharp", "Sharp (1280 px)", 1280, 4000),
+];
+
+/// Preview choices: (id, label, longest side in pixels).
+pub const PREVIEW_RESOLUTIONS: [(&str, &str, u32); 4] = [
+    ("low", "Low (480 px)", 480),
+    ("standard", "Standard (960 px)", 960),
+    ("high", "High (1440 px)", 1440),
+    ("full", "Full (1920 px)", 1920),
+];
 
 impl Settings {
     /// The folder projects live in: the user's choice, else `default`.
@@ -155,6 +198,24 @@ impl Settings {
         } else {
             0
         }
+    }
+
+    /// Longest side and bit rate (kbps) of new proxies.
+    pub fn proxy_spec(&self) -> (u32, u32) {
+        let q = PROXY_QUALITIES
+            .iter()
+            .find(|q| q.0 == self.proxy_quality)
+            .unwrap_or(&PROXY_QUALITIES[1]);
+        (q.2, q.3)
+    }
+
+    /// Longest side of the preview picture.
+    pub fn preview_edge(&self) -> u32 {
+        PREVIEW_RESOLUTIONS
+            .iter()
+            .find(|q| q.0 == self.preview_resolution)
+            .unwrap_or(&PREVIEW_RESOLUTIONS[1])
+            .2
     }
 
     /// Should export put pictures together on the graphics card? "on" and "off"
@@ -209,6 +270,21 @@ impl Settings {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn playback_choices_map_to_numbers_and_unknown_words_fall_back() {
+        let mut s = Settings::default();
+        assert_eq!(s.proxy_spec(), (960, 2000));
+        assert_eq!(s.preview_edge(), 960);
+        s.proxy_quality = "small".into();
+        s.preview_resolution = "full".into();
+        assert_eq!(s.proxy_spec(), (640, 1000));
+        assert_eq!(s.preview_edge(), 1920);
+        s.proxy_quality = "nonsense".into();
+        s.preview_resolution = "nonsense".into();
+        assert_eq!((s.proxy_spec().0, s.preview_edge()), (960, 960));
+        assert!(s.hw_decode && s.scrub_audio && !s.auto_proxies && !s.remux_on_import);
+    }
 
     #[test]
     fn defaults_follow_the_system_theme() {

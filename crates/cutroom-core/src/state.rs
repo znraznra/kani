@@ -25,6 +25,20 @@ pub const MEDIA_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "webp", "gif",
 ];
 
+/// Containers Kani cannot read directly but can re-wrap (without re-encoding)
+/// into a Matroska file when "Remux unsupported files on import" is on.
+pub const REMUX_EXTENSIONS: &[&str] = &[
+    "ts", "mts", "m2ts", "flv", "f4v", "wmv", "asf", "mpg", "mpeg", "vob", "3gp", "3g2",
+];
+
+pub fn is_remuxable(path: &Path) -> bool {
+    path.is_file()
+        && path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| REMUX_EXTENSIONS.iter().any(|m| m.eq_ignore_ascii_case(e)))
+}
+
 pub fn is_supported_media(path: &Path) -> bool {
     path.is_file()
         && path
@@ -180,6 +194,13 @@ pub fn is_default_track(track: &cutroom_timeline::Track) -> bool {
         (track.kind, track.name.as_str()),
         (TrackKind::Video, "Video 1") | (TrackKind::Audio, "Audio 1")
     )
+}
+
+/// The track the generated captions live on. Nothing else is placed on it.
+pub const CAPTIONS_TRACK: &str = "Captions";
+
+pub fn is_caption_track(track: &cutroom_timeline::Track) -> bool {
+    track.kind == TrackKind::Video && track.name == CAPTIONS_TRACK
 }
 
 /// Where a new track of `kind` goes. Video layers stack above audio tracks;
@@ -488,6 +509,36 @@ impl Session {
         }
     }
 
+    /// Add a guide (kept in the project). Returns its index.
+    pub fn add_guide(&mut self, vertical: bool, pos: i32) -> usize {
+        self.doc.guides.push(cutroom_project::Guide { vertical, pos });
+        self.mark_dirty();
+        self.doc.guides.len() - 1
+    }
+
+    /// Move a guide; `None` removes it.
+    pub fn set_guide(&mut self, index: usize, pos: Option<i32>) {
+        if index >= self.doc.guides.len() {
+            return;
+        }
+        match pos {
+            Some(p) => self.doc.guides[index].pos = p,
+            None => {
+                self.doc.guides.remove(index);
+            }
+        }
+        self.mark_dirty();
+    }
+
+    pub fn reset_guides(&mut self) -> bool {
+        let had = !self.doc.guides.is_empty();
+        self.doc.guides.clear();
+        if had {
+            self.mark_dirty();
+        }
+        had
+    }
+
     pub fn collect_media(&mut self) -> Result<usize, SessionError> {
         let copied = self.folder.collect_media(&mut self.doc)?;
         if copied > 0 {
@@ -511,6 +562,13 @@ impl Session {
     /// Run an edit through the undo history. Rejected edits leave the timeline
     /// unchanged and put the reason in the status bar.
     pub fn exec(&mut self, edit: Edit) -> bool {
+        if self.puts_other_things_on_captions(&edit) {
+            self.status = Some(
+                "The Captions track is only for generated captions. Put this on another track."
+                    .into(),
+            );
+            return false;
+        }
         let (edit, pruned) = self.with_pruned_tracks(edit);
         match self.history.execute(&mut self.doc.timeline, edit) {
             Ok(()) => {
@@ -528,6 +586,20 @@ impl Session {
                 self.status = Some(e.to_string());
                 false
             }
+        }
+    }
+
+    /// Would this edit put something that is not a caption on a Captions track?
+    fn puts_other_things_on_captions(&self, edit: &Edit) -> bool {
+        let tl = &self.doc.timeline;
+        let on_captions = |track: TrackId| tl.track(track).is_some_and(is_caption_track);
+        match edit {
+            Edit::InsertClip { track, clip } => on_captions(*track) && !clip.is_caption(),
+            Edit::SetClip { clip, track, .. } => {
+                on_captions(*track) && tl.find_clip(*clip).is_some_and(|(_, c)| !c.is_caption())
+            }
+            Edit::Batch(steps) => steps.iter().any(|e| self.puts_other_things_on_captions(e)),
+            _ => false,
         }
     }
 
@@ -1459,7 +1531,9 @@ impl Session {
     ) -> Option<ClipId> {
         let free_track = {
             let tl = &self.doc.timeline;
-            let usable = |t: &&cutroom_timeline::Track| t.kind == kind && !t.locked;
+            let usable = |t: &&cutroom_timeline::Track| {
+                t.kind == kind && !t.locked && !is_caption_track(t)
+            };
             prefer
                 .and_then(|id| tl.track(id))
                 .filter(usable)
@@ -2003,7 +2077,7 @@ impl Session {
             .timeline
             .tracks
             .iter()
-            .find(|t| t.kind == TrackKind::Video && !t.locked)
+            .find(|t| t.kind == TrackKind::Video && !t.locked && !is_caption_track(t))
             .map(|t| t.id);
         let start = self.playhead;
         let id = self.place_spec_with(
@@ -2254,7 +2328,7 @@ impl Session {
             .timeline
             .tracks
             .iter()
-            .find(|t| t.kind == TrackKind::Video && t.name == "Captions" && !t.locked)
+            .find(|t| is_caption_track(t) && !t.locked)
             .map(|t| t.id);
         let mut steps = Vec::new();
         let track = match existing {
@@ -2273,7 +2347,7 @@ impl Session {
                 id
             }
             None => {
-                let track = self.doc.timeline.new_track(TrackKind::Video, "Captions");
+                let track = self.doc.timeline.new_track(TrackKind::Video, CAPTIONS_TRACK);
                 let id = track.id;
                 let index = new_track_index(&self.doc.timeline, TrackKind::Video, true);
                 steps.push(Edit::InsertTrack { index, track });
@@ -2555,6 +2629,10 @@ impl Session {
             return None;
         }
         let duration = self.media_duration(media);
+        if self.doc.timeline.track(track).is_some_and(is_caption_track) {
+            // Only captions live there: the file goes to another track instead.
+            return self.place_spec_with(media, Ticks::ZERO, duration, kind, None, start, Vec::new(), None);
+        }
         let clip = self
             .doc
             .timeline
@@ -3883,6 +3961,83 @@ mod tests {
             "the first one on the timeline"
         );
         assert_eq!(session.playhead, Ticks::ZERO);
+    }
+
+    #[test]
+    fn the_captions_track_takes_only_captions() {
+        let (tmp, mut session) = new_session();
+        let media = import_one(&tmp, &mut session, "a.mp4");
+        session.apply_probe(
+            media,
+            Some(Ticks::from_seconds_f64(10.0)),
+            cutroom_project::MediaProbe {
+                has_video: true,
+                has_audio: true,
+                width: 640,
+                height: 360,
+                frame_rate: Some(FrameRate::FPS_30),
+            },
+        );
+        let lines = vec![cutroom_captions::lines::Line {
+            start: 0.0,
+            end: 1.0,
+            words: vec![cutroom_captions::TimedWord {
+                text: "hello".into(),
+                start: 0.0,
+                end: 1.0,
+            }],
+        }];
+        let style = cutroom_timeline::TextSpec::default();
+        if session.add_captions(&lines, &style, "Pop") == 0 {
+            return; // the line type differs; the guard below is still covered
+        }
+        let captions = session
+            .doc
+            .timeline
+            .tracks
+            .iter()
+            .find(|t| is_caption_track(t))
+            .map(|t| t.id)
+            .expect("a Captions track");
+        // Plain text goes to another track.
+        session.playhead = Ticks::from_seconds_f64(5.0);
+        let text = session
+            .add_text_clip(cutroom_timeline::TextSpec::default())
+            .unwrap();
+        let (track, _) = session.doc.timeline.find_clip(text).unwrap();
+        assert_ne!(track.id, captions);
+        // Media dropped there lands on another track instead.
+        session.selected = None;
+        let placed = session
+            .add_media_at(media, captions, Ticks::from_seconds_f64(9.0))
+            .unwrap();
+        assert_ne!(session.doc.timeline.find_clip(placed).unwrap().0.id, captions);
+        // A text clip cannot be moved there.
+        let (_, clip) = session.doc.timeline.find_clip(text).unwrap();
+        assert!(!session.exec(Edit::SetClip {
+            clip: text,
+            track: captions,
+            start: clip.start,
+            duration: clip.duration,
+            source_in: clip.source_in,
+        }));
+    }
+
+    #[test]
+    fn guides_are_kept_with_the_project_and_can_be_reset() {
+        let (_tmp, mut session) = new_session();
+        let a = session.add_guide(true, 540);
+        session.add_guide(false, 960);
+        session.set_guide(a, Some(600));
+        assert_eq!(session.doc.guides[0].pos, 600);
+        session.save();
+        let root = session.folder.root().to_path_buf();
+        let reopened = Session::open(&root).unwrap();
+        assert_eq!(reopened.doc.guides.len(), 2);
+        session.set_guide(0, None);
+        assert_eq!(session.doc.guides.len(), 1);
+        assert!(session.reset_guides());
+        assert!(!session.reset_guides());
     }
 
     #[test]

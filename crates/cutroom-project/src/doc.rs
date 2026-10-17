@@ -142,6 +142,15 @@ pub struct MediaItem {
     pub name: Option<String>,
 }
 
+/// A guide line over the preview, in canvas pixels from the top left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Guide {
+    /// A vertical line (at `pos` pixels from the left) or a horizontal one
+    /// (`pos` pixels from the top).
+    pub vertical: bool,
+    pub pos: i32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectDoc {
     pub name: String,
@@ -151,6 +160,9 @@ pub struct ProjectDoc {
     #[serde(default)]
     pub media: Vec<MediaItem>,
     pub timeline: Timeline,
+    /// Guides dragged out of the preview's rulers.
+    #[serde(default)]
+    pub guides: Vec<Guide>,
     #[serde(default)]
     next_media_id: u64,
 }
@@ -163,6 +175,7 @@ impl ProjectDoc {
             storage: StorageSettings::default(),
             media: Vec::new(),
             timeline: Timeline::new(),
+            guides: Vec::new(),
             next_media_id: 0,
         }
     }

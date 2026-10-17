@@ -39,7 +39,7 @@ Working = does something now. Disabled = shown, waiting for the phase named.
 | Step forward (frames), Adjust values by (units) | Disabled, Phase 11 |
 | Image duration | Disabled, Phase 11 |
 | Target loudness | Disabled, Phase 11 |
-| Play sound while dragging the playhead | Disabled, Phase 3 |
+| Play sound while dragging the playhead | Working (also the speaker button on the timeline toolbar, next to Snap): a short piece of sound plays at each move of the playhead |
 | Layers can be reordered in new projects | Disabled, Phase 11 |
 | Snap to clips and the playhead | Disabled, Phase 11 |
 | Time code format | Disabled, Phase 11 |
@@ -48,16 +48,17 @@ Working = does something now. Disabled = shown, waiting for the phase named.
 | Row | State |
 |-----|-------|
 | Use proxies in the preview | Working (moved from the media panel's Import options) |
-| Create proxies automatically, Proxy quality | Disabled, Phase 3 |
-| Decode with the graphics chip | Disabled, Phase 3 (hardware-decode checks) |
-| Remux unsupported files on import | Disabled, Phase 3 (Kani has no remux step yet) |
-| Preview resolution | Disabled, Phase 3 |
+| Create proxies automatically | Working: a video bigger than the proxy size gets a proxy as soon as it has been read |
+| Proxy quality (Small 640 px / Balanced 960 px / Sharp 1280 px) | Working, for proxies made from now on |
+| Decode with the graphics chip | Working: off lowers the rank of VA-API / NVIDIA / Direct3D / QSV / V4L2 video decoders so the processor decodes. It applies to preview and export, to files opened after the change. Not yet checked on real machines. |
+| Remux unsupported files on import | Working: .ts .mts .m2ts .flv .f4v .wmv .asf .mpg .mpeg .vob .3gp .3g2 files are re-wrapped into .mkv in the project's media folder (no re-encoding) and imported from there |
+| Preview resolution (Low 480 / Standard 960 / High 1440 / Full 1920 px) | Working: longest side of decoded and drawn preview pictures; export is unaffected |
 
 ### Performance
 | Row | State |
 |-----|-------|
 | Compositor acceleration (Automatic / Graphics chip / Processor) | Working for export. It is the same stored setting as the Export window's Acceleration row, which stays there as the quick per-export view. |
-| Preview compositing on the graphics chip | Disabled, Phase 4 (GPU backend) |
+| Preview compositing on the graphics chip | Working (off by default): the preview picture is put together on the graphics chip on a thread of its own; if the chip cannot be used it falls back to the processor and says so in the status bar. Corner pin and mesh warp are always done by the processor. |
 | Processor threads, Memory limit, Cache folder, Clear the cache | Disabled, Phase 11 |
 
 ### Export

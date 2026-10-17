@@ -43,8 +43,8 @@ pub const SECTIONS: &[Section] = &[
         entries: &[
             c("Kani", "The editor itself", LICENSE_NAME, ""),
             c(
-                "Kani app icon",
-                "Drawn in code for this project",
+                "Kani logo and app icon",
+                "The logo, hand-drawn by znraznra",
                 LICENSE_NAME,
                 "",
             ),

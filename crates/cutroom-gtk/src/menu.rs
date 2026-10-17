@@ -281,3 +281,89 @@ mod tests {
         assert!(name_of(Action::TogglePlay).is_none());
     }
 }
+
+#[cfg(test)]
+mod shot {
+    use super::*;
+
+    /// Not a check: draws the Settings and Help menus for a human to compare.
+    /// `KANI_MENU_SHOT=/path.png xvfb-run -a cargo test -p cutroom-gtk menu_shot -- --ignored`
+    #[test]
+    #[ignore]
+    fn menu_shot() {
+        let Some(out) = std::env::var_os("KANI_MENU_SHOT") else {
+            return;
+        };
+        gtk::init().unwrap();
+        crate::theme::load_css();
+        let window = gtk::Window::new();
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 40);
+        let settings = gio::Menu::new();
+        let it = gio::MenuItem::new(Some("Settings..."), Some("win.nothing"));
+        it.set_attribute_value("accel", Some(&"<Control>comma".to_variant()));
+        settings.append_item(&it);
+        let help = gio::Menu::new();
+        help.append(Some("Keyboard shortcuts"), Some("win.nothing"));
+        help.append(Some("About Kani..."), Some("win.nothing"));
+        let plain = gio::Menu::new();
+        plain.append(Some("Settings..."), Some("win.nothing"));
+        let c = gtk::MenuButton::new();
+        c.set_label("NoAccel");
+        c.set_menu_model(Some(&plain));
+        let sectioned = gio::Menu::new();
+        let sec = gio::Menu::new();
+        sec.append(Some("Settings..."), Some("win.nothing"));
+        sectioned.append_section(None, &sec);
+        let d = gtk::MenuButton::new();
+        d.set_label("Section");
+        d.set_menu_model(Some(&sectioned));
+        row.append(&c);
+        row.append(&d);
+        let a = gtk::MenuButton::new();
+        a.set_label("Settings");
+        a.set_menu_model(Some(&settings));
+        let b = gtk::MenuButton::new();
+        b.set_label("Help");
+        b.set_menu_model(Some(&help));
+        row.append(&a);
+        row.append(&b);
+        window.set_child(Some(&row));
+        window.set_default_size(500, 300);
+        window.present();
+        let ctx = gtk::glib::MainContext::default();
+        let wait = |ms: u64| {
+            let end = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+            while std::time::Instant::now() < end {
+                while ctx.iteration(false) {}
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        wait(500);
+        a.popup();
+        c.popup();
+        d.popup();
+        wait(800);
+        fn dump(w: &gtk::Widget, depth: usize) {
+            eprintln!(
+                "{}{} .{} h={} min={:?}",
+                "  ".repeat(depth),
+                w.type_().name(),
+                w.css_classes().join("."),
+                w.height(),
+                w.measure(gtk::Orientation::Vertical, -1).0,
+            );
+            let mut child = w.first_child();
+            while let Some(c) = child {
+                dump(&c, depth + 1);
+                child = c.next_sibling();
+            }
+        }
+        if let Some(p) = c.popover() {
+            dump(p.upcast_ref(), 0);
+        }
+        let _ = std::process::Command::new("import")
+            .args(["-window", "root"])
+            .arg(&out)
+            .status();
+    }
+}

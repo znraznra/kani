@@ -162,8 +162,9 @@ couldn't confirm for CapCut). The single table lives in `crates/cutroom-core/src
 | Ctrl+I, Ctrl+S, Ctrl+N, Ctrl+O, Ctrl+Q | Import, save, new, open, quit | Convention |
 | Ctrl+E | Export the video | CapCut |
 | Ctrl+Shift+X | Pick a range on the timeline to export | Convention |
+| F11 | Full screen preview | Convention |
 
-Ctrl+E opens Export; Ctrl+Shift+X picks a range on the timeline first (see Export). Not enabled yet: select all, full-screen preview.
+Ctrl+E opens Export; Ctrl+Shift+X picks a range on the timeline first (see Export). F11 shows the preview full screen (Esc, F11 or a double click close it; Space plays). Not enabled yet: select all.
 
 ## Export
 
@@ -228,7 +229,7 @@ chosen one fails during the export, the next one is tried. Needs GStreamer's `x2
 ## Known limits at this stage
 
 * The panels are fixed resizable panes (no docking/tear-off tabs).
-* The preview is drawn by a CPU compositor at up to 960 px on the long side; very heavy stacks of layers may play below full speed until the GPU backend exists. In the preview every video layer is decoded even if a layer above hides it (export skips those).
+* The preview is drawn by a CPU compositor at up to 960 px on the long side (Settings > Playback > Preview resolution changes that, and Settings > Performance can put it together on the graphics chip instead); very heavy stacks of layers may play below full speed until the GPU backend exists. In the preview every video layer is decoded even if a layer above hides it (export skips those).
 * Playback follows the UI timer, so it can drift slightly from the audio clock on long plays.
 * Windows/macOS builds are untried; native Wayland, X11 and Windows drag and drop are GTK's own and unverified on real desktops.
 * Clip kind for a new import is read when probing finishes (a moment after import).
@@ -264,6 +265,14 @@ Speech recognition is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) thr
 needs `cmake`, a C++ compiler and `libclang`. To build without it: `cargo build -p cutroom-gtk --no-default-features`.
 Tiny and Base are fast but often wrong, especially with noise or non-English speech; Medium and Large v3 Turbo are far more accurate and slower on a CPU. Word times are fitted to where the sound actually is, and phrases the model hears in silence are dropped.
 
+## The Player
+
+The three-line button at the top right of the Player: **Show rulers** (picture pixels along the top and left), **Show grid**
+(ten square cells across), **Show guides**, and **Reset guides**. Drag out of a ruler to make a guide, drag a guide to move it,
+drag it back onto the ruler or off the picture to remove it; guides are saved with the project. The fit button
+resets the zoom so the picture fits the Player; the arrows button (or F11) shows it full screen. Guides and the grid are
+visual aids for now: the transform box does not snap to them yet.
+
 ## Settings
 
 One window for every preference: **Settings > Settings...** (Ctrl+,). Sections (a list down the left): General, Draft, Edit, Playback,
@@ -277,11 +286,11 @@ defaults. Everything else is listed and disabled until its phase. See [docs/SETT
 |------:|-------------|
 | 1 | Timeline, project folder, platform contracts |
 | 2 | App shell: home screen, editing, autosave (done, now on GTK4) |
-| 3 | Media core: probing, thumbnails, preview, mixed sound, stills, waveforms, filmstrips, proxies, scrub throttling, decoder reporting (done); still to do: check hardware decoding on real machines and footage, proxy auto-creation, proxy encoder choice per machine |
+| 3 | Media core: probing, thumbnails, preview, mixed sound, stills, waveforms, filmstrips, proxies, scrub throttling, decoder reporting (done); **automatic proxies, proxy quality, hardware-decode switch, preview resolution, remux on import and scrub sound (0.5.29)**; still to do: check hardware decoding on real machines and footage, proxy encoder choice per machine |
 | 4 | Compositor: **layers, transforms, opacity, on-canvas transform box, crossfades and keyframes (done, CPU)**; deferred: GPU backend, blend modes, skipping decode of fully covered layers |
 | 5 | Export: **MP4 (H.264 + AAC) with the same pictures and sound as the preview, optional graphics-card compositing (Automatic / Always / Never in the Export window; Automatic uses the card only when a check found a real graphics chip clearly faster, and falls back to the processor for anything it cannot draw), a redesigned Export window (video and/or separate sound file, NTSC-to-PAL sizes by aspect ratio, bit rate presets, H.264 / H.265 / VP9 / AV1, MP4 / MOV / MKV / WebM, frame rate, AAC / MP3 / Opus / FLAC / WAV, mono or stereo, .srt / .vtt / .ass caption files, encoder and graphics-card choices), progress and cancel, and the best encoder that works on the machine (NVENC, Quick Sync, VA-API, AMF, VideoToolbox, else x264) with automatic fallback**; the sound file is made in parallel with the video; export of a time range or of selected clips (also picked with handles on the timeline, Ctrl+Shift+X); presets for named sites; still to do: the new H.265 / VP9 / AV1 hardware encoders checked on real machines, Windows (EGL, NVENC) |
-| 6 | Text engine and templates: **text clips (font, size, colour, outline, shadow, box, spacing), nine built-in styles, skew, perspective, corner pin and 4x4 mesh warp, all grouped as Morph with per-entry resets and keyframes (done)**; still to do: GPU path for warped clips, user-saved text styles |
-| 7 | Captions with local Whisper, styled word highlighting: **generate captions from the sound of selected clips (or the whole timeline), five caption looks, the spoken word or the line so far lit up as it is said, editable word by word, .srt / .vtt export (done)**; still to do: real-world accuracy checks on your machine, speaker labels, translation, GPU-accelerated recognition |
+| 6 | Text engine and templates: **text clips (font, size, colour, outline, shadow, box, spacing), nine built-in styles, skew, perspective, corner pin and 4x4 mesh warp, all grouped as Morph with per-entry resets and keyframes (done)**; still to do: GPU path for warped clips, user-saved text styles, snapping the transform box to guides and the grid |
+| 7 | Captions with local Whisper, styled word highlighting: **generate captions from the sound of selected clips (or the whole timeline), five caption looks, the spoken word or the line so far lit up as it is said, editable word by word, .srt / .vtt export (done)**; the Captions track holds only generated captions (text and media are placed on other tracks); still to do: **import caption files (.srt / .vtt / .ass) onto the Captions track**, real-world accuracy checks on your machine, speaker labels, translation, GPU-accelerated recognition |
 | 8 | Asset libraries and the pack format, with license tracking |
 | 9 | `.cube` LUTs and basic grading |
 | 10 | Stickers (SVG, Lottie) |
@@ -289,7 +298,7 @@ defaults. Everything else is listed and disabled until its phase. See [docs/SETT
 
 ## Version numbers
 
-`major.phase.iteration`, for example `0.5.28`:
+`major.phase.iteration`, for example `0.5.29`:
 
 - **major**: the approved official release (0 until one is approved)
 - **phase**: the development phase being worked on (4 = compositor and editing UI, 5 = export, 6 = text, 7 = captions)

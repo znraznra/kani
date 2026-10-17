@@ -335,6 +335,7 @@ pub fn make_proxy(
     dest: &Path,
     width: u32,
     height: u32,
+    kbps: u32,
     progress: &dyn Fn(f64),
 ) -> Result<(), String> {
     let temp = dest.with_extension("part");
@@ -412,7 +413,7 @@ pub fn make_proxy(
                     element.set_property("cpu-used", 8i32);
                     element.set_property("threads", 4i32);
                     element.set_property("keyframe-max-dist", 15i32);
-                    element.set_property("target-bitrate", 2_000_000i32);
+                    element.set_property("target-bitrate", (kbps.max(100) * 1000) as i32);
                 }
                 elements.push(element);
             }
@@ -475,6 +476,134 @@ pub fn make_proxy(
                 }
             }
             if started.elapsed() > Duration::from_secs(60 * 60 * 3) {
+                return Err("took too long".into());
+            }
+        }
+    })();
+    let _ = pipeline.set_state(gst::State::Null);
+    match outcome {
+        Ok(()) => std::fs::rename(&temp, dest).map_err(|e| e.to_string()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&temp);
+            Err(e)
+        }
+    }
+}
+
+// ----- remux ----------------------------------------------------------------
+
+/// Can this machine re-wrap files?
+pub fn remux_supported() -> bool {
+    ["filesrc", "parsebin", "matroskamux", "filesink", "queue"]
+        .iter()
+        .all(|name| gst::ElementFactory::find(name).is_some())
+}
+
+/// Copy the streams of `src` into a Matroska file at `dest` without
+/// re-encoding them (written to a temporary name and renamed when complete).
+/// `progress` gets 0.0 to 1.0 about every 200 ms.
+pub fn remux(src: &Path, dest: &Path, progress: &dyn Fn(f64)) -> Result<(), String> {
+    let temp = dest.with_extension("part");
+    if let Some(dir) = dest.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let pipeline = gst::Pipeline::new();
+    let make = |name: &str| {
+        gst::ElementFactory::make(name)
+            .build()
+            .map_err(|e| format!("{name}: {e}"))
+    };
+    let source = gst::ElementFactory::make("filesrc")
+        .property("location", src.to_string_lossy().to_string())
+        .build()
+        .map_err(|e| e.to_string())?;
+    let parse = make("parsebin")?;
+    let mux = make("matroskamux")?;
+    let file = gst::ElementFactory::make("filesink")
+        .property("location", temp.to_string_lossy().to_string())
+        .build()
+        .map_err(|e| e.to_string())?;
+    pipeline
+        .add_many([&source, &parse, &mux, &file])
+        .map_err(|e| e.to_string())?;
+    source.link(&parse).map_err(|e| e.to_string())?;
+    mux.link(&file).map_err(|e| e.to_string())?;
+
+    // Sound and pictures are copied; anything else (subtitles, data) is dropped.
+    {
+        let pipeline = pipeline.downgrade();
+        let mux = mux.clone();
+        parse.connect_pad_added(move |_, pad| {
+            let Some(pipeline) = pipeline.upgrade() else {
+                return;
+            };
+            let name = pad
+                .current_caps()
+                .or_else(|| Some(pad.query_caps(None)))
+                .and_then(|c| c.structure(0).map(|s| s.name().to_string()))
+                .unwrap_or_default();
+            let template = if name.starts_with("video/") {
+                "video_%u"
+            } else if name.starts_with("audio/") {
+                "audio_%u"
+            } else {
+                if let Ok(drain) = gst::ElementFactory::make("fakesink").build() {
+                    if pipeline.add(&drain).is_ok() {
+                        let _ = drain.sync_state_with_parent();
+                        if let Some(sink) = drain.static_pad("sink") {
+                            let _ = pad.link(&sink);
+                        }
+                    }
+                }
+                return;
+            };
+            let Ok(queue) = gst::ElementFactory::make("queue").build() else {
+                return;
+            };
+            if pipeline.add(&queue).is_err() {
+                return;
+            }
+            let _ = queue.sync_state_with_parent();
+            let (Some(mux_pad), Some(sink), Some(src_pad)) = (
+                mux.request_pad_simple(template),
+                queue.static_pad("sink"),
+                queue.static_pad("src"),
+            ) else {
+                return;
+            };
+            if pad.link(&sink).is_ok() {
+                let _ = src_pad.link(&mux_pad);
+            }
+        });
+    }
+
+    let outcome = (|| -> Result<(), String> {
+        pipeline
+            .set_state(gst::State::Playing)
+            .map_err(|e| format!("could not start: {e}"))?;
+        let bus = pipeline.bus().ok_or("no message bus")?;
+        let started = Instant::now();
+        loop {
+            if let Some(message) = bus.timed_pop_filtered(
+                gst::ClockTime::from_mseconds(200),
+                &[gst::MessageType::Eos, gst::MessageType::Error],
+            ) {
+                return match message.view() {
+                    gst::MessageView::Eos(_) => Ok(()),
+                    gst::MessageView::Error(e) => {
+                        Err(format!("{} ({})", e.error(), e.debug().unwrap_or_default()))
+                    }
+                    _ => Ok(()),
+                };
+            }
+            let position = pipeline.query_position::<gst::ClockTime>();
+            let duration = pipeline.query_duration::<gst::ClockTime>();
+            if let (Some(p), Some(d)) = (position, duration) {
+                if d.nseconds() > 0 {
+                    progress((p.nseconds() as f64 / d.nseconds() as f64).clamp(0.0, 1.0));
+                }
+            }
+            if started.elapsed() > Duration::from_secs(60 * 60) {
                 return Err("took too long".into());
             }
         }
@@ -651,7 +780,7 @@ mod tests {
         );
         make_video(&video, 3);
         let last = std::cell::Cell::new(0.0);
-        make_proxy(&video, &proxy, 160, 120, &|p| last.set(p)).unwrap();
+        make_proxy(&video, &proxy, 160, 120, 500, &|p| last.set(p)).unwrap();
         assert!(proxy.is_file());
         assert!(
             !proxy.with_extension("part").exists(),
@@ -662,6 +791,25 @@ mod tests {
         assert_eq!((result.probe.width, result.probe.height), (160, 120));
         let seconds = result.duration.unwrap().as_seconds_f64();
         assert!((seconds - 3.0).abs() < 0.3, "length {seconds}");
+    }
+
+    #[test]
+    fn remuxing_keeps_the_streams_and_length_without_re_encoding() {
+        if !init() || !remux_supported() {
+            return;
+        }
+        let tmp = tempdir().unwrap();
+        let (video, out) = (tmp.path().join("v.webm"), tmp.path().join("out").join("v.mkv"));
+        make_video(&video, 2);
+        remux(&video, &out, &|_| {}).unwrap();
+        assert!(out.is_file());
+        assert!(!out.with_extension("part").exists());
+        let (a, b) = (probe_file(&video).unwrap(), probe_file(&out).unwrap());
+        assert!(b.probe.has_video && b.probe.has_audio);
+        assert_eq!((a.probe.width, a.probe.height), (b.probe.width, b.probe.height));
+        let seconds = b.duration.unwrap().as_seconds_f64();
+        assert!((seconds - 2.0).abs() < 0.3, "length {seconds}");
+        assert!(remux(&tmp.path().join("nope.ts"), &tmp.path().join("n.mkv"), &|_| {}).is_err());
     }
 
     #[test]
@@ -683,7 +831,7 @@ mod tests {
             .timed_pop_filtered(gst::ClockTime::from_seconds(20), &[gst::MessageType::Eos]);
         status.set_state(gst::State::Null).unwrap();
         let proxy = tmp.path().join("silent-proxy.webm");
-        make_proxy(&silent, &proxy, 80, 60, &|_| {}).unwrap();
+        make_proxy(&silent, &proxy, 80, 60, 500, &|_| {}).unwrap();
         let result = probe_file(&proxy).unwrap();
         assert!(result.probe.has_video && !result.probe.has_audio);
     }
@@ -695,7 +843,7 @@ mod tests {
         }
         let tmp = tempdir().unwrap();
         let dest = tmp.path().join("out.webm");
-        assert!(make_proxy(&tmp.path().join("nope.mp4"), &dest, 80, 60, &|_| {}).is_err());
+        assert!(make_proxy(&tmp.path().join("nope.mp4"), &dest, 80, 60, 500, &|_| {}).is_err());
         assert!(!dest.exists() && !dest.with_extension("part").exists());
     }
 }

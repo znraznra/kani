@@ -187,6 +187,7 @@ impl App {
             proxy_jobs: RefCell::new(Default::default()),
         });
 
+        app.apply_playback_settings();
         let ui = build_ui(&app);
         let _ = app.ui.set(ui);
         install_controllers(&app);
@@ -214,6 +215,18 @@ impl App {
             st.save_settings();
         }
         self.refresh();
+    }
+
+    /// Make the playback choices real: which decoders may be used, how sharp
+    /// the preview is, where it is put together, and scrub sound.
+    pub fn apply_playback_settings(self: &Rc<Self>) {
+        let (hw, edge, gpu, scrub) = {
+            let st = self.state.borrow();
+            let s = &st.settings;
+            (s.hw_decode, s.preview_edge(), s.preview_on_gpu, s.scrub_audio)
+        };
+        crate::hwdecode::apply(hw);
+        self.preview.borrow_mut().configure(edge, scrub, gpu);
     }
 
     pub fn change_projects_dir(self: &Rc<Self>, dir: Option<PathBuf>) {
@@ -542,6 +555,21 @@ impl App {
     /// Import files or folders. `place_at` puts the first imported item on
     /// that track and time (used when dropping onto the timeline).
     pub fn import_paths(self: &Rc<Self>, input: Vec<PathBuf>, place_at: Option<(TrackId, Ticks)>) {
+        // Files in containers Kani cannot read are re-wrapped first (when asked).
+        let input = if self.state.borrow().settings.remux_on_import {
+            let (wrap, rest): (Vec<_>, Vec<_>) = input
+                .into_iter()
+                .partition(|p| cutroom_core::state::is_remuxable(p));
+            if !wrap.is_empty() {
+                self.remux_files(wrap);
+                if rest.is_empty() {
+                    return;
+                }
+            }
+            rest
+        } else {
+            input
+        };
         let (files, skipped) = expand_media_inputs(input);
         let add_to_timeline = self.state.borrow().settings.add_dropped_to_timeline;
         let message;
@@ -607,6 +635,62 @@ impl App {
             self.spawn_probe(id, path);
         }
         self.refresh();
+    }
+
+    /// Re-wrap files into Matroska inside the project's media folder (no
+    /// re-encoding), then import the result.
+    fn remux_files(self: &Rc<Self>, files: Vec<PathBuf>) {
+        if !crate::analysis::remux_supported() {
+            self.set_status(
+                "Remuxing needs the GStreamer Matroska plugins, which are missing here.",
+            );
+            self.refresh();
+            return;
+        }
+        let dir = match self.state.borrow().session.as_ref() {
+            Some(s) => s.folder.media_dir(),
+            None => {
+                self.set_status("Open a project first, then add the files again.");
+                self.refresh();
+                return;
+            }
+        };
+        let app = self.clone();
+        glib::spawn_future_local(async move {
+            let total = files.len();
+            for (n, src) in files.into_iter().enumerate() {
+                let name = src
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                app.set_status(format!("Remuxing {name} ({} of {total})...", n + 1));
+                app.refresh();
+                let stem = src
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "video".into());
+                let mut dest = dir.join(format!("{stem}.mkv"));
+                let mut count = 2;
+                while dest.exists() {
+                    dest = dir.join(format!("{stem} ({count}).mkv"));
+                    count += 1;
+                }
+                let (from, to) = (src.clone(), dest.clone());
+                let result =
+                    gio::spawn_blocking(move || crate::analysis::remux(&from, &to, &|_| {})).await;
+                match result {
+                    Ok(Ok(())) => app.import_paths(vec![dest], None),
+                    Ok(Err(e)) => {
+                        app.set_status(format!("Could not remux {name}: {e}"));
+                        app.refresh();
+                    }
+                    Err(_) => {
+                        app.set_status(format!("Could not remux {name}"));
+                        app.refresh();
+                    }
+                }
+            }
+        });
     }
 
     /// Files dropped onto the timeline: placed where they were dropped.
@@ -923,7 +1007,8 @@ impl App {
             self.refresh();
             return;
         };
-        let (w, h) = crate::analysis::proxy_size(width, height, 960);
+        let (edge, kbps) = self.state.borrow().settings.proxy_spec();
+        let (w, h) = crate::analysis::proxy_size(width, height, edge);
         self.proxy_jobs.borrow_mut().insert(id);
         let percent = Arc::new(AtomicU32::new(0));
         {
@@ -945,7 +1030,7 @@ impl App {
         glib::spawn_future_local(async move {
             let counter = percent.clone();
             let result = gio::spawn_blocking(move || {
-                crate::analysis::make_proxy(&src, &dest, w, h, &|p| {
+                crate::analysis::make_proxy(&src, &dest, w, h, kbps, &|p| {
                     counter.store((p * 100.0) as u32, Ordering::Relaxed)
                 })
             })
@@ -1022,7 +1107,29 @@ impl App {
             }
             app.refresh();
             crate::strips::request(&app, id);
+            app.maybe_make_proxy(id);
         });
+    }
+
+    /// With "Create proxies automatically" on, a big video gets its proxy as
+    /// soon as it has been read (small ones would gain nothing).
+    fn maybe_make_proxy(self: &Rc<Self>, id: MediaId) {
+        let wanted = {
+            let st = self.state.borrow();
+            let (edge, _) = st.settings.proxy_spec();
+            st.settings.auto_proxies
+                && st.session.as_ref().is_some_and(|s| {
+                    s.existing_proxy(id).is_none()
+                        && s.doc
+                            .media_item(id)
+                            .ok()
+                            .and_then(|m| m.probe.as_ref())
+                            .is_some_and(|p| p.has_video && p.width.max(p.height) > edge)
+                })
+        };
+        if wanted {
+            self.create_proxy(id);
+        }
     }
 
     fn probe_unprobed_media(self: &Rc<Self>) {
@@ -1061,6 +1168,11 @@ impl App {
         filter.set_name(Some("Media files"));
         for ext in cutroom_core::state::MEDIA_EXTENSIONS {
             filter.add_suffix(ext);
+        }
+        if self.state.borrow().settings.remux_on_import {
+            for ext in cutroom_core::state::REMUX_EXTENSIONS {
+                filter.add_suffix(ext);
+            }
         }
         let dialog = gtk::FileDialog::builder()
             .title("Import media")
@@ -1136,6 +1248,7 @@ impl App {
             Action::ShowAbout => dialogs::about(self),
             Action::ShowShortcuts => dialogs::shortcuts(self),
             Action::ShowSettings => crate::settings_ui::open(self, None),
+            Action::PreviewFullscreen => crate::editor::toggle_fullscreen(self),
             // While a range is being picked (Shift+Ctrl+X), Export means that range.
             Action::Export => {
                 if crate::range_select::active(self) {

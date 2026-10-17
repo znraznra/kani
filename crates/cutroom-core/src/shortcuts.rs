@@ -49,6 +49,7 @@ pub enum Action {
     ShowAbout,
     ShowShortcuts,
     ShowSettings,
+    PreviewFullscreen,
     Export,
     ExportRange,
 }
@@ -83,11 +84,6 @@ pub const PLANNED: &[Planned] = &[
         keys: "Ctrl+A",
         what: "Select all clips",
         needs: "multi-selection",
-    },
-    Planned {
-        keys: "Full-screen preview",
-        what: "Full-screen preview (confirm the key in CapCut's panel)",
-        needs: "the compositor (Phase 4)",
     },
 ];
 
@@ -350,6 +346,7 @@ pub const BINDINGS: &[Binding] = &[
     b("s", true, false, Save, "Save", Convention, true),
     b("e", true, false, Export, "Export the video", CapCut, false),
     b("comma", true, false, ShowSettings, "Settings", Convention, true),
+    b("F11", false, false, PreviewFullscreen, "Full screen preview", Convention, false),
     b(
         "x",
         true,

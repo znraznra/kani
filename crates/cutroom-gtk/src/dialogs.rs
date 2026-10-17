@@ -537,7 +537,7 @@ pub fn hardware_codec_lines() -> Vec<String> {
     lines
 }
 
-/// `Version 0.5.28 (built 2026-10-13, commit abc1234)`.
+/// `Version 0.5.29 (built 2026-10-13, commit abc1234)`.
 pub fn version_line() -> String {
     let commit = env!("CUTROOM_GIT_HASH");
     let mut line = format!(
@@ -812,12 +812,14 @@ pub fn about(app: &Rc<App>) {
 // ----- shortcuts ---------------------------------------------------------------------
 
 pub fn shortcuts(app: &Rc<App>) {
-    let window = dialog_window(app, "Keyboard shortcuts", 560);
+    let window = dialog_window(app, "Keyboard shortcuts", 620);
     window.set_resizable(true);
+    // Two columns: what it does (wraps, so the window never scrolls sideways)
+    // and the keys. Where the shortcut comes from sits under the action.
     let grid = gtk::Grid::new();
-    grid.set_row_spacing(4);
-    grid.set_column_spacing(18);
-    for (col, title) in ["Keys", "Action", "Source"].iter().enumerate() {
+    grid.set_row_spacing(6);
+    grid.set_column_spacing(24);
+    for (col, title) in ["Action", "Keys"].iter().enumerate() {
         let l = gtk::Label::new(Some(title));
         l.set_xalign(0.0);
         l.add_css_class("heading");
@@ -825,27 +827,38 @@ pub fn shortcuts(app: &Rc<App>) {
     }
     for (i, binding) in BINDINGS.iter().enumerate() {
         let row = i as i32 + 1;
-        let keys = gtk::Label::new(Some(&shortcuts::display(binding)));
-        keys.set_xalign(0.0);
-        let action = gtk::Label::new(Some(binding.label));
-        action.set_xalign(0.0);
+        let action = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let what = gtk::Label::new(Some(binding.label));
+        what.set_xalign(0.0);
+        what.set_wrap(true);
+        what.set_max_width_chars(44);
+        what.set_hexpand(true);
+        action.append(&what);
         let origin = gtk::Label::new(Some(match binding.origin {
             Origin::CapCut => "CapCut",
             Origin::Convention => "Convention",
         }));
         origin.set_xalign(0.0);
         origin.add_css_class("dim-label");
-        grid.attach(&keys, 0, row, 1, 1);
-        grid.attach(&action, 1, row, 1, 1);
-        grid.attach(&origin, 2, row, 1, 1);
+        origin.add_css_class("caption");
+        action.append(&origin);
+        let keys = gtk::Label::new(Some(&shortcuts::display(binding)));
+        keys.set_xalign(0.0);
+        keys.set_valign(gtk::Align::Start);
+        keys.set_wrap(true);
+        keys.set_max_width_chars(22);
+        grid.attach(&action, 0, row, 1, 1);
+        grid.attach(&keys, 1, row, 1, 1);
     }
     let body = content_box();
     let note = caption("Defaults follow CapCut's desktop shortcuts where we could confirm them. \"Convention\" means a common editor shortcut we haven't verified against CapCut.");
     note.set_wrap(true);
+    note.set_max_width_chars(60);
     body.append(&note);
     body.append(&grid);
     let planned_title = gtk::Label::new(Some("Not enabled yet"));
     planned_title.set_xalign(0.0);
+    planned_title.set_margin_top(8);
     planned_title.add_css_class("heading");
     body.append(&planned_title);
     for planned in PLANNED {
@@ -855,9 +868,11 @@ pub fn shortcuts(app: &Rc<App>) {
         )));
         l.set_xalign(0.0);
         l.set_wrap(true);
+        l.set_max_width_chars(60);
         body.append(&l);
     }
     let scroll = gtk::ScrolledWindow::new();
+    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     scroll.set_child(Some(&body));
     scroll.set_min_content_height(480);
     window.set_child(Some(&scroll));

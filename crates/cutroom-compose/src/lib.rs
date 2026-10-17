@@ -283,6 +283,16 @@ impl Canvas {
         }
     }
 
+    /// A canvas made of finished pixels (straight RGBA, top row first).
+    pub fn from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Option<Canvas> {
+        (rgba.len() == width as usize * height as usize * 4).then_some(Canvas {
+            width,
+            height,
+            rgba,
+            store: false,
+        })
+    }
+
     /// A fully clear canvas that records layers drawn on it as colour + alpha.
     fn clear(width: u32, height: u32) -> Canvas {
         Canvas {

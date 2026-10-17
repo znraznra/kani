@@ -9,7 +9,7 @@
 //! described in their tab instead of being copied here.
 
 use crate::app::App;
-use cutroom_core::settings::{Settings, ThemeChoice};
+use cutroom_core::settings::{Settings, ThemeChoice, PREVIEW_RESOLUTIONS, PROXY_QUALITIES};
 use gtk4 as gtk;
 use gtk4::prelude::*;
 use std::cell::RefCell;
@@ -358,7 +358,16 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
     planned_row(&edit, &mut planned, "edit", "Adjust values by", Planned::Number(10.0, 1.0, 100.0, "units"), "Phase 11");
     planned_row(&edit, &mut planned, "edit", "Image duration", Planned::Number(5.0, 1.0, 600.0, "s"), "Phase 11");
     planned_row(&edit, &mut planned, "edit", "Target loudness", Planned::Choice(&["Default (-23 LUFS)"], 0), "Phase 11");
-    planned_row(&edit, &mut planned, "edit", "Play sound while dragging the playhead", Planned::Switch(true), "Phase 3");
+    let scrub = switch(draft.borrow().scrub_audio);
+    {
+        let draft = draft.clone();
+        scrub.connect_active_notify(move |s| draft.borrow_mut().scrub_audio = s.is_active());
+    }
+    edit.append(&row(
+        "Play sound while dragging the playhead",
+        &scrub,
+        Some("Also on the timeline toolbar (the speaker button next to Snap)."),
+    ));
     planned_row(&edit, &mut planned, "edit", "Layers can be reordered in new projects", Planned::Switch(false), "Phase 11");
     planned_row(&edit, &mut planned, "edit", "Snap to clips and the playhead", Planned::Switch(true), "Phase 11");
     planned_row(&edit, &mut planned, "edit", "Time code", Planned::Choice(&["HH:MM:SS+frame"], 0), "Phase 11");
@@ -379,11 +388,74 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
         Some("Proxies are small copies made with Create Proxy in a media item's right-click menu. The preview plays them; export always uses the originals."),
     ));
     separator(&playback);
-    planned_row(&playback, &mut planned, "playback", "Create proxies automatically", Planned::Switch(false), "Phase 3");
-    planned_row(&playback, &mut planned, "playback", "Proxy quality", Planned::Choice(&["Small and fast"], 0), "Phase 3");
-    planned_row(&playback, &mut planned, "playback", "Decode with the graphics chip", Planned::Switch(true), "Phase 3");
-    planned_row(&playback, &mut planned, "playback", "Remux unsupported files on import", Planned::Switch(false), "Phase 3");
-    planned_row(&playback, &mut planned, "playback", "Preview resolution", Planned::Choice(&["Original"], 0), "Phase 3");
+    let auto_proxies = switch(draft.borrow().auto_proxies);
+    {
+        let draft = draft.clone();
+        auto_proxies.connect_active_notify(move |s| draft.borrow_mut().auto_proxies = s.is_active());
+    }
+    playback.append(&row(
+        "Create proxies automatically",
+        &auto_proxies,
+        Some("Videos bigger than the proxy size get a proxy as soon as they are read."),
+    ));
+    let proxy_quality = drop_down(
+        &PROXY_QUALITIES.map(|q| q.1),
+        PROXY_QUALITIES
+            .iter()
+            .position(|q| q.0 == draft.borrow().proxy_quality)
+            .unwrap_or(1) as u32,
+    );
+    {
+        let draft = draft.clone();
+        proxy_quality.connect_selected_notify(move |d| {
+            draft.borrow_mut().proxy_quality =
+                PROXY_QUALITIES[(d.selected() as usize).min(2)].0.to_string();
+        });
+    }
+    playback.append(&row(
+        "Proxy quality",
+        &proxy_quality,
+        Some("Applies to proxies made from now on."),
+    ));
+    let hw_decode = switch(draft.borrow().hw_decode);
+    {
+        let draft = draft.clone();
+        hw_decode.connect_active_notify(move |s| draft.borrow_mut().hw_decode = s.is_active());
+    }
+    playback.append(&row(
+        "Decode with the graphics chip",
+        &hw_decode,
+        Some("Uses the graphics chip's video decoders when there are any (VA-API, NVIDIA, Direct3D). Off: the processor decodes. Applies to the preview and to export, from the next file opened."),
+    ));
+    let remux = switch(draft.borrow().remux_on_import);
+    {
+        let draft = draft.clone();
+        remux.connect_active_notify(move |s| draft.borrow_mut().remux_on_import = s.is_active());
+    }
+    playback.append(&row(
+        "Remux unsupported files on import",
+        &remux,
+        Some("Files in .ts, .mts, .m2ts, .flv, .wmv, .asf, .mpg, .vob and .3gp containers are re-wrapped into .mkv inside the project's media folder (no re-encoding, so no quality loss), then imported."),
+    ));
+    let preview_resolution = drop_down(
+        &PREVIEW_RESOLUTIONS.map(|q| q.1),
+        PREVIEW_RESOLUTIONS
+            .iter()
+            .position(|q| q.0 == draft.borrow().preview_resolution)
+            .unwrap_or(1) as u32,
+    );
+    {
+        let draft = draft.clone();
+        preview_resolution.connect_selected_notify(move |d| {
+            draft.borrow_mut().preview_resolution =
+                PREVIEW_RESOLUTIONS[(d.selected() as usize).min(3)].0.to_string();
+        });
+    }
+    playback.append(&row(
+        "Preview resolution",
+        &preview_resolution,
+        Some("The longest side of the preview picture. Lower is smoother on a slow computer; export is always at full size."),
+    ));
     stack.add_titled(&scroll(&playback), Some("playback"), "Playback");
 
     // ----- Performance ---------------------------------------------------
@@ -411,7 +483,16 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
         )),
     ));
     separator(&performance);
-    planned_row(&performance, &mut planned, "performance", "Preview compositing on the graphics chip", Planned::Switch(false), "Phase 4 (GPU backend)");
+    let preview_gpu = switch(draft.borrow().preview_on_gpu);
+    {
+        let draft = draft.clone();
+        preview_gpu.connect_active_notify(move |s| draft.borrow_mut().preview_on_gpu = s.is_active());
+    }
+    performance.append(&row(
+        "Preview compositing on the graphics chip",
+        &preview_gpu,
+        Some("Puts the preview picture together on the graphics chip. If the chip cannot be used, the preview falls back to the processor and says so in the status bar. Corner pin and mesh warp are always done by the processor."),
+    ));
     planned_row(&performance, &mut planned, "performance", "Processor threads", Planned::Choice(&["Automatic"], 0), "Phase 11");
     planned_row(&performance, &mut planned, "performance", "Memory limit", Planned::Choice(&["Automatic"], 0), "Phase 11");
     planned_row(&performance, &mut planned, "performance", "Cache folder", Planned::Text("Default"), "Phase 11");
@@ -653,13 +734,16 @@ fn scroll(page: &gtk::Box) -> gtk::ScrolledWindow {
 
 /// Make the staged choices the real ones.
 fn apply(app: &Rc<App>, new: &Settings) {
-    let (theme_changed, projects_changed, proxies_changed) = {
+    let (theme_changed, projects_changed, proxies_changed, playback_changed) = {
         let st = app.state.borrow();
         let old = &st.settings;
         (
             old.theme != new.theme,
             old.projects_dir != new.projects_dir,
             old.use_proxies != new.use_proxies,
+            old.hw_decode != new.hw_decode
+                || old.preview_resolution != new.preview_resolution
+                || old.preview_on_gpu != new.preview_on_gpu,
         )
     };
     {
@@ -671,6 +755,13 @@ fn apply(app: &Rc<App>, new: &Settings) {
         s.export_graphics_card = new.export_graphics_card.clone();
         s.export_folder = new.export_folder.clone();
         s.use_proxies = new.use_proxies;
+        s.auto_proxies = new.auto_proxies;
+        s.proxy_quality = new.proxy_quality.clone();
+        s.hw_decode = new.hw_decode;
+        s.remux_on_import = new.remux_on_import;
+        s.preview_resolution = new.preview_resolution.clone();
+        s.preview_on_gpu = new.preview_on_gpu;
+        s.scrub_audio = new.scrub_audio;
         st.save_settings();
     }
     if theme_changed {
@@ -679,7 +770,9 @@ fn apply(app: &Rc<App>, new: &Settings) {
     if projects_changed {
         app.change_projects_dir(new.projects_dir.clone());
     }
-    if proxies_changed {
+    app.apply_playback_settings();
+    app.ui().editor.sync_scrub_button(new.scrub_audio);
+    if proxies_changed || playback_changed {
         app.sync_preview(true);
     }
 }

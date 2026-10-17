@@ -1490,14 +1490,25 @@ mod tests {
             );
             // The wanted ones are there, in the right tabs.
             for (tab, label) in [
-                ("playback", "Remux unsupported files on import"),
-                ("playback", "Create proxies automatically"),
                 ("edit", "Step forward"),
+                ("performance", "Processor threads"),
             ] {
                 assert!(
                     d.planned.iter().any(|p| p.0 == tab && p.1 == label),
                     "{tab}/{label}"
                 );
+            }
+            // These work now, so they are not in the "not yet" list any more.
+            for label in [
+                "Remux unsupported files on import",
+                "Create proxies automatically",
+                "Proxy quality",
+                "Decode with the graphics chip",
+                "Preview resolution",
+                "Preview compositing on the graphics chip",
+                "Play sound while dragging the playhead",
+            ] {
+                assert!(!d.planned.iter().any(|p| p.1 == label), "{label} is live");
             }
             // Cancel drops what was staged.
             let before = app.state.borrow().settings.clone();
@@ -1547,6 +1558,69 @@ mod tests {
             d.theme.set_selected(0);
             d.save.emit_clicked();
             assert!(pump_until(|| su::active().is_none()));
+            // The playback and performance choices are applied on Save.
+            app.run_action(Action::ShowSettings);
+            let d = su::active().unwrap();
+            {
+                let mut s = d.draft.borrow_mut();
+                s.scrub_audio = false;
+                s.preview_resolution = "low".into();
+                s.proxy_quality = "small".into();
+                s.auto_proxies = true;
+                s.remux_on_import = true;
+                s.hw_decode = false;
+            }
+            d.save.emit_clicked();
+            assert!(pump_until(|| su::active().is_none()));
+            {
+                let st = app.state.borrow();
+                assert!(!st.settings.scrub_audio && st.settings.auto_proxies);
+                assert_eq!(st.settings.preview_edge(), 480);
+                assert_eq!(st.settings.proxy_spec().0, 640);
+            }
+            assert!(!app.ui().editor.scrub_active(), "the timeline button follows the setting");
+            // The timeline button changes the setting too.
+            app.ui().editor.set_scrub_active(true);
+            assert!(app.state.borrow().settings.scrub_audio);
+            app.run_action(Action::ShowSettings);
+            let d = su::active().unwrap();
+            {
+                let mut s = d.draft.borrow_mut();
+                s.preview_resolution = "standard".into();
+                s.proxy_quality = "balanced".into();
+                s.auto_proxies = false;
+                s.remux_on_import = false;
+                s.hw_decode = true;
+            }
+            d.save.emit_clicked();
+            assert!(pump_until(|| su::active().is_none()));
+
+            // Rulers, grid and guides can be switched on; guides can be reset.
+            {
+                let mut st = app.state.borrow_mut();
+                st.settings.show_rulers = true;
+                st.settings.show_grid = true;
+                st.settings.show_guides = true;
+                st.session.as_mut().unwrap().add_guide(true, 300);
+                st.session.as_mut().unwrap().add_guide(false, 400);
+            }
+            app.ui().editor.queue_overlay();
+            pump_until(|| false);
+            crate::preview_tools::reset_guides(&app);
+            assert!(app.state.borrow().session.as_ref().unwrap().doc.guides.is_empty());
+            {
+                let mut st = app.state.borrow_mut();
+                st.settings.show_rulers = false;
+                st.settings.show_grid = false;
+            }
+
+            // Full screen preview opens and closes.
+            assert!(!crate::preview_tools::fullscreen_open());
+            app.run_action(Action::PreviewFullscreen);
+            assert!(crate::preview_tools::fullscreen_open());
+            app.run_action(Action::PreviewFullscreen);
+            assert!(pump_until(|| !crate::preview_tools::fullscreen_open()));
+
             // The old places for these are gone: no Settings submenu items for them.
             if let Ok(dir) = std::env::var("KANI_SHOT_DIR") {
                 app.run_action(Action::ShowSettings);

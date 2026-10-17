@@ -92,6 +92,7 @@ pub struct EditorUi {
     undo_button: gtk::Button,
     redo_button: gtk::Button,
     snap: gtk::ToggleButton,
+    scrub: gtk::ToggleButton,
     navigator: gtk::DrawingArea,
     info: gtk::Box,
     edit_tab: gtk::ToggleButton,
@@ -312,7 +313,7 @@ pub fn build(app: &Rc<App>) -> EditorUi {
     player_title.set_hexpand(true);
     player_title.set_xalign(0.0);
     player_head.append(&player_title);
-    let player_menu = icons::placeholder(icons::MENU, "Player options");
+    let player_menu = crate::preview_tools::menu_button(app);
     player_menu.set_margin_end(6);
     player_head.append(&player_menu);
     preview.append(&player_head);
@@ -426,7 +427,6 @@ pub fn build(app: &Rc<App>) -> EditorUi {
             "Zoom the preview out (Ctrl+- or Ctrl+wheel over it)",
             0,
         ),
-        (icons::RESET, "Reset the preview zoom", 1),
         (
             icons::ZOOM_IN,
             "Zoom the preview in (Ctrl+= or Ctrl+wheel over it)",
@@ -437,22 +437,31 @@ pub fn build(app: &Rc<App>) -> EditorUi {
         let app = app.clone();
         b.connect_clicked(move |_| match action {
             0 => zoom_preview(&app, 1.0 / 1.25),
-            1 => reset_preview_zoom(&app),
             _ => zoom_preview(&app, 1.25),
         });
         view_buttons.append(&b);
     }
-    view_buttons.append(&icons::placeholder(icons::FIT, "Fit the picture"));
+    let fit = icons::button(
+        icons::FIT,
+        "Fit the picture in the player (resets the zoom)",
+    );
+    {
+        let app = app.clone();
+        fit.connect_clicked(move |_| reset_preview_zoom(&app));
+    }
+    view_buttons.append(&fit);
     let original = gtk::Button::with_label("Original");
     original.add_css_class("flat");
     original.add_css_class("cc-pill");
     original.set_valign(gtk::Align::Center);
     icons::disable(&original, "Preview ratio");
     view_buttons.append(&original);
-    view_buttons.append(&icons::placeholder(
-        icons::FULLSCREEN,
-        "Full screen preview",
-    ));
+    let full = icons::button(icons::FULLSCREEN, "Full screen preview (F11)");
+    {
+        let app = app.clone();
+        full.connect_clicked(move |_| app.run_action(Action::PreviewFullscreen));
+    }
+    view_buttons.append(&full);
     transport.set_end_widget(Some(&view_buttons));
     preview.append(&transport);
 
@@ -615,6 +624,26 @@ pub fn build(app: &Rc<App>) -> EditorUi {
         });
     }
     toolbar.append(&snap);
+    let scrub = icons::toggle(
+        icons::SCRUB_SOUND,
+        "Play sound while dragging the playhead",
+    );
+    scrub.set_active(app.state.borrow().settings.scrub_audio);
+    {
+        let app = app.clone();
+        scrub.connect_toggled(move |c| {
+            if app.ui().editor.syncing.get() {
+                return;
+            }
+            {
+                let mut st = app.state.borrow_mut();
+                st.settings.scrub_audio = c.is_active();
+                st.save_settings();
+            }
+            app.apply_playback_settings();
+        });
+    }
+    toolbar.append(&scrub);
     toolbar.append(&icon_action(
         icons::ZOOM_OUT,
         "Zoom out (Ctrl+minus)",
@@ -738,6 +767,7 @@ pub fn build(app: &Rc<App>) -> EditorUi {
         undo_button,
         redo_button,
         snap,
+        scrub,
         navigator,
         info,
         edit_tab,
@@ -811,6 +841,21 @@ impl EditorUi {
         self.preview_hover.get()
     }
 
+    #[cfg(test)]
+    pub fn scrub_active(&self) -> bool {
+        self.scrub.is_active()
+    }
+
+    #[cfg(test)]
+    pub fn set_scrub_active(&self, on: bool) {
+        self.scrub.set_active(on);
+    }
+
+    /// The toolbar's scrub-sound button shows the saved choice.
+    pub fn sync_scrub_button(&self, on: bool) {
+        self.scrub.set_active(on);
+    }
+
     /// Redraw the transform box (it follows live edits).
     pub fn queue_overlay(&self) {
         self.transform_overlay.queue_draw();
@@ -819,10 +864,18 @@ impl EditorUi {
     /// Show the compositor's latest picture.
     pub fn set_preview_texture(&self, texture: &gdk::Texture) {
         self.preview_picture.set_paintable(Some(texture));
+        crate::preview_tools::update_texture(texture);
+    }
+
+    /// The picture on show now (what the full screen preview starts with).
+    pub fn current_paintable(&self) -> Option<gdk::Paintable> {
+        self.preview_picture.paintable()
     }
 }
 
 /// Zoom the preview picture by `factor` (kept between 20% and 800%).
+pub use crate::preview_tools::toggle_fullscreen;
+
 pub fn zoom_preview(app: &Rc<App>, factor: f64) {
     set_preview_zoom(app, app.ui().editor.preview_zoom.get() * factor);
 }
@@ -904,6 +957,7 @@ pub fn refresh(app: &Rc<App>) {
         ui.tool_select.set_active(st.tool == Tool::Select);
         ui.tool_split.set_active(st.tool == Tool::Split);
         ui.snap.set_active(st.snap);
+        ui.scrub.set_active(st.settings.scrub_audio);
         ui.zoom.set_value(st.view.pixels_per_second.ln());
         ui.split_button.set_sensitive(session.selected.is_some());
         ui.delete_button.set_sensitive(session.selected.is_some());

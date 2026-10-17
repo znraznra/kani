@@ -239,9 +239,9 @@ const MAX_LAYER_PLAYERS: usize = 8;
 const PRERUN: Ticks = Ticks(cutroom_timeline::TICKS_PER_SECOND / 8);
 
 /// Longest side, in pixels, of the pictures decoded for the preview.
-const LAYER_MAX_EDGE: u32 = 960;
-/// Longest side of the canvas the compositor draws for the preview.
-const PREVIEW_EDGE: u32 = 960;
+const DEFAULT_EDGE: u32 = 960;
+/// How long a scrub sound lasts after each move of the playhead.
+const BLIP: Duration = Duration::from_millis(90);
 
 #[derive(Default)]
 struct Slot {
@@ -289,6 +289,8 @@ struct Player {
     preloaded_at: Option<Ticks>,
     /// Running silently ahead of its cut, so its sound device is already awake.
     early: bool,
+    /// Playing a short piece of sound for a scrub, until this moment.
+    blip: Option<Instant>,
 }
 
 impl Player {
@@ -299,12 +301,12 @@ impl Player {
     }
 
     /// A pipeline whose pictures go to the compositor as RGBA frames, at most
-    /// [`LAYER_MAX_EDGE`] pixels on the longer side.
-    fn new_layer() -> Option<Player> {
+    /// `edge` pixels on the longer side.
+    fn new_layer(edge: u32) -> Option<Player> {
         let description = format!(
             "videoconvert ! videoscale ! capsfilter caps=\"video/x-raw,format=RGBA,width=[1,{m}],height=[1,{m}],pixel-aspect-ratio=1/1\" \
              ! appsink name=layersink sync=true max-buffers=1 drop=true",
-            m = LAYER_MAX_EDGE
+            m = edge
         );
         let bin = gst::parse::bin_from_description(&description, true).ok()?;
         let appsink = bin
@@ -352,6 +354,7 @@ impl Player {
             loads: 0,
             preloaded_at: None,
             early: false,
+            blip: None,
         };
         player.apply_flags();
         Some(player)
@@ -519,7 +522,7 @@ impl Player {
 
     /// Follow `target`: load it if it is a different clip, otherwise keep the
     /// pipeline within reach of the playhead.
-    fn follow(&mut self, target: &Target, playing: bool, playhead_moved: bool) {
+    fn follow(&mut self, target: &Target, playing: bool, playhead_moved: bool, scrub_audio: bool) {
         if self.uri.as_deref() != Some(&target.uri) {
             self.load(target, playing);
             return;
@@ -531,6 +534,7 @@ impl Player {
         self.set_volume(target.volume);
         self.early = false;
         if playing {
+            self.blip = None;
             if !self.want_play {
                 // A pipeline prepared in advance already sits at the start.
                 let off = self
@@ -547,7 +551,7 @@ impl Player {
                 }
             }
         } else {
-            if self.want_play {
+            if self.want_play && self.blip.is_none() {
                 self.set_playing(false);
             }
             if playhead_moved {
@@ -556,6 +560,11 @@ impl Player {
                     .map_or(true, |p| (p - target.source_time).abs() > FRAME_SLACK);
                 if off {
                     self.scrub_to(target.source_time);
+                    if scrub_audio && self.audio_enabled && !target.muted {
+                        // A short piece of sound, so dragging the playhead can be heard.
+                        self.blip = Some(Instant::now() + BLIP);
+                        self.set_playing(true);
+                    }
                 }
             }
         }
@@ -563,6 +572,10 @@ impl Player {
 
     /// Handle the pipeline's messages. Returns an error text if it failed.
     fn poll(&mut self) -> Option<String> {
+        if self.blip.is_some_and(|end| Instant::now() >= end) {
+            self.blip = None;
+            self.set_playing(false);
+        }
         if let Some((at, to)) = self.settle {
             if Instant::now() >= at {
                 self.settle = None;
@@ -639,6 +652,13 @@ pub struct Preview {
     fake_audio: bool,
     /// The last playback problem, for the status bar.
     pub problem: Option<String>,
+    /// Longest side of the pictures decoded and drawn for the preview.
+    edge: u32,
+    /// Play a short piece of sound while the playhead is dragged.
+    scrub_audio: bool,
+    /// Put the picture together on the graphics chip (when it can).
+    gpu_wanted: bool,
+    gpu: Option<crate::preview_gpu::PreviewGpu>,
 }
 
 impl Preview {
@@ -653,7 +673,34 @@ impl Preview {
             last_render: None,
             fake_audio: false,
             problem: None,
+            edge: DEFAULT_EDGE,
+            scrub_audio: false,
+            gpu_wanted: false,
+            gpu: None,
         }
+    }
+
+    /// Apply the preview settings. A new picture size starts the pipelines
+    /// again (they are made for one size); the next sync fills them.
+    pub fn configure(&mut self, edge: u32, scrub_audio: bool, gpu: bool) {
+        let edge = edge.clamp(240, 4096);
+        if edge != self.edge {
+            self.edge = edge;
+            self.layers.clear();
+            self.texts.clear();
+            self.invalidate();
+        }
+        self.scrub_audio = scrub_audio;
+        if gpu != self.gpu_wanted {
+            self.gpu_wanted = gpu;
+            self.gpu = None;
+            self.invalidate();
+        }
+    }
+
+    /// Is the picture being put together on the graphics chip right now?
+    pub fn gpu_in_use(&self) -> bool {
+        self.gpu_wanted && self.gpu.is_some()
     }
 
     #[cfg(test)]
@@ -671,7 +718,7 @@ impl Preview {
 
     fn new_player(&self, layer: bool) -> Option<Player> {
         let player = if layer {
-            Player::new_layer()
+            Player::new_layer(self.edge)
         } else {
             Player::new_audio()
         }?;
@@ -733,6 +780,7 @@ impl Preview {
         playing: bool,
         playhead_moved: bool,
     ) {
+        let scrub_audio = self.scrub_audio;
         let targets = find_targets(tl, playhead, resolve);
         let ahead = if playing {
             targets_ahead(tl, playhead, resolve)
@@ -801,7 +849,7 @@ impl Preview {
             }
             for target in now {
                 if let Some(player) = self.player_for(layer, target) {
-                    player.follow(target, playing, playhead_moved);
+                    player.follow(target, playing, playhead_moved, scrub_audio);
                 }
             }
             for target in ahead_t
@@ -939,7 +987,7 @@ impl Preview {
         canvas: (u32, u32),
         override_transform: Option<(ClipId, Transform)>,
     ) -> Option<cutroom_compose::Canvas> {
-        let size = preview_size(canvas.0.max(2), canvas.1.max(2), PREVIEW_EDGE);
+        let size = preview_size(canvas.0.max(2), canvas.1.max(2), self.edge);
         let mut picked: Vec<(Arc<Frame>, Placement, (ClipId, u64, Transform))> = Vec::new();
         let mut waiting = false;
         let current: Vec<(
@@ -997,7 +1045,27 @@ impl Preview {
         if self.last_render.as_ref() == Some(&key) {
             return None;
         }
-        let canvas = compose(size.0, size.1, picked.iter().map(|(f, p, _)| (&**f, p)));
+        let on_card = if self.gpu_wanted {
+            let gpu = self.gpu.get_or_insert_with(crate::preview_gpu::PreviewGpu::start);
+            let layers = picked.iter().map(|(f, p, _)| (f.clone(), *p)).collect();
+            match gpu.compose(size, layers) {
+                Ok(Some(rgba)) => cutroom_compose::Canvas::from_rgba(size.0, size.1, rgba),
+                Ok(None) => None,
+                Err(why) => {
+                    eprintln!("kani: the preview could not use the graphics chip: {why}");
+                    self.problem = Some(format!(
+                        "The preview could not use the graphics chip ({why}); the processor does it now."
+                    ));
+                    self.gpu_wanted = false;
+                    self.gpu = None;
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let canvas = on_card
+            .unwrap_or_else(|| compose(size.0, size.1, picked.iter().map(|(f, p, _)| (&**f, p))));
         self.last_render = Some(key);
         Some(canvas)
     }
@@ -1580,6 +1648,93 @@ mod tests {
             "1080x1920 became 540x960"
         );
         preview.shutdown();
+    }
+
+    #[test]
+    fn the_preview_resolution_limits_the_pictures_and_restarts_the_pipelines() {
+        if !init() {
+            return;
+        }
+        let (_tmp, video, audio) = files();
+        let (tl, clip_a, _) = timeline();
+        let resolve = resolver(video, audio);
+        let mut preview = Preview::for_tests();
+        preview.configure(240, false, false);
+        preview.sync(&tl, &resolve, s(1.0), false, true);
+        assert!(wait_for(&mut preview, |p| p.has_frame(clip_a)));
+        let (frame, _) = preview.layers[0].latest_frame().unwrap();
+        assert_eq!(
+            (frame.width, frame.height),
+            (240, 180),
+            "a 320x240 picture is cut to a 240 px edge"
+        );
+        preview.configure(960, false, false);
+        assert!(preview.layers.is_empty(), "a new size starts the pipelines again");
+        preview.shutdown();
+    }
+
+    #[test]
+    fn the_graphics_chip_preview_draws_what_the_processor_draws_or_falls_back() {
+        if !init() {
+            return;
+        }
+        let tmp = tempdir().unwrap();
+        let png = tmp.path().join("p.png");
+        make_png(&png, 100, 100);
+        let mut tl = Timeline::new();
+        let v = add_track(&mut tl, TrackKind::Video, "V1", 0);
+        add_clip(&mut tl, v, 1, 0.0, 0.0, 2.0);
+        let resolve = move |_: MediaId| Some((png.clone(), MediaKind::Image));
+        let mut cpu = Preview::for_tests();
+        cpu.sync(&tl, &resolve, s(0.5), false, true);
+        let want = cpu.compose_now((100, 200), None).unwrap();
+        let mut card = Preview::for_tests();
+        card.configure(960, false, true);
+        card.sync(&tl, &resolve, s(0.5), false, true);
+        let got = card.compose_now((100, 200), None).expect("a picture");
+        assert_eq!((got.width, got.height), (want.width, want.height));
+        if card.gpu_in_use() {
+            // Same picture, within rounding.
+            let worst = got
+                .rgba
+                .iter()
+                .zip(&want.rgba)
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap();
+            assert!(worst <= 3, "the card's picture differs by {worst}");
+        } else {
+            assert!(card.problem.is_some(), "falling back says why");
+            assert_eq!(got.rgba, want.rgba, "the processor drew it");
+        }
+        cpu.shutdown();
+        card.shutdown();
+    }
+
+    #[test]
+    fn dragging_the_playhead_plays_a_short_sound_when_asked() {
+        if !init() {
+            return;
+        }
+        let (_tmp, video, audio) = files();
+        let (tl, _, _) = timeline();
+        let resolve = resolver(video, audio);
+        for (asked, expect) in [(true, true), (false, false)] {
+            let mut preview = Preview::for_tests();
+            preview.configure(960, asked, false);
+            preview.sync(&tl, &resolve, s(1.0), false, true);
+            assert!(wait_for(&mut preview, |p| p.total_loads() > 0 && p.layers.iter().all(|l| l.ready)));
+            preview.sync(&tl, &resolve, s(1.6), false, true);
+            let heard = preview.layers.iter().any(|l| l.blip.is_some());
+            assert_eq!(heard, expect, "scrub sound {asked}");
+            if asked {
+                assert!(
+                    wait_for(&mut preview, |p| p.layers.iter().all(|l| l.blip.is_none())),
+                    "the sound stops by itself"
+                );
+            }
+            preview.shutdown();
+        }
     }
 
     #[test]
