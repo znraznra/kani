@@ -70,8 +70,6 @@ pub struct EditorUi {
     media_list: gtk::Box,
     media_grid: gtk::FlowBox,
     import_mode: gtk::DropDown,
-    add_dropped: gtk::CheckButton,
-    use_proxies: gtk::CheckButton,
     list_toggle: gtk::ToggleButton,
     grid_toggle: gtk::ToggleButton,
     preview_picture: gtk::Picture,
@@ -293,38 +291,6 @@ pub fn build(app: &Rc<App>) -> EditorUi {
         });
     }
     options_box.append(&import_mode);
-    let add_dropped = gtk::CheckButton::with_label("Also add dropped files to the timeline");
-    {
-        let app = app.clone();
-        add_dropped.connect_toggled(move |c| {
-            if app.ui().editor.syncing.get() {
-                return;
-            }
-            let mut st = app.state.borrow_mut();
-            st.settings.add_dropped_to_timeline = c.is_active();
-            st.save_settings();
-        });
-    }
-    options_box.append(&add_dropped);
-    let use_proxies = gtk::CheckButton::with_label("Use proxies in the preview when available");
-    use_proxies.set_tooltip_text(Some(
-        "Proxies are small copies made with 'Create Proxy' in a media item's right-click menu. The preview plays them; the original is always used for export.",
-    ));
-    {
-        let app = app.clone();
-        use_proxies.connect_toggled(move |c| {
-            if app.ui().editor.syncing.get() {
-                return;
-            }
-            {
-                let mut st = app.state.borrow_mut();
-                st.settings.use_proxies = c.is_active();
-                st.save_settings();
-            }
-            app.sync_preview(true);
-        });
-    }
-    options_box.append(&use_proxies);
     options.set_child(Some(&options_box));
     media_content.append(&options);
     media_page.append(&media_content);
@@ -778,8 +744,6 @@ pub fn build(app: &Rc<App>) -> EditorUi {
         media_list,
         media_grid,
         import_mode,
-        add_dropped,
-        use_proxies,
         list_toggle,
         grid_toggle,
         preview_picture,
@@ -973,9 +937,6 @@ pub fn refresh(app: &Rc<App>) {
         ui.ripple_button.set_sensitive(session.selected.is_some());
         ui.undo_button.set_sensitive(session.history.can_undo());
         ui.redo_button.set_sensitive(session.history.can_redo());
-        ui.add_dropped
-            .set_active(st.settings.add_dropped_to_timeline);
-        ui.use_proxies.set_active(st.settings.use_proxies);
         ui.import_mode
             .set_selected(if session.import_mode == ImportMode::Copy {
                 1

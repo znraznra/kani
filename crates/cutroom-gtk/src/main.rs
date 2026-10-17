@@ -24,6 +24,7 @@ mod menu;
 mod navigator;
 mod preview;
 mod range_select;
+mod settings_ui;
 mod sample;
 mod strips;
 mod text_render;

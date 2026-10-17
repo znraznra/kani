@@ -216,12 +216,6 @@ impl App {
         self.refresh();
     }
 
-    pub fn set_autosave_minutes(self: &Rc<Self>, minutes: u32) {
-        let mut st = self.state.borrow_mut();
-        st.settings.autosave_minutes = minutes;
-        st.save_settings();
-    }
-
     pub fn change_projects_dir(self: &Rc<Self>, dir: Option<PathBuf>) {
         {
             let mut st = self.state.borrow_mut();
@@ -1141,7 +1135,15 @@ impl App {
             Action::CloseProject => self.close_project(),
             Action::ShowAbout => dialogs::about(self),
             Action::ShowShortcuts => dialogs::shortcuts(self),
-            Action::Export => crate::export_ui::open(self),
+            Action::ShowSettings => crate::settings_ui::open(self, None),
+            // While a range is being picked (Shift+Ctrl+X), Export means that range.
+            Action::Export => {
+                if crate::range_select::active(self) {
+                    crate::range_select::export(self)
+                } else {
+                    crate::export_ui::open(self)
+                }
+            }
             Action::ExportRange => crate::range_select::enter(self),
             Action::SelectTool => {
                 self.state.borrow_mut().tool = Tool::Select;
@@ -1260,7 +1262,8 @@ impl App {
             | Action::OpenProject
             | Action::Quit
             | Action::ShowAbout
-            | Action::ShowShortcuts => true,
+            | Action::ShowShortcuts
+            | Action::ShowSettings => true,
             Action::Undo => can_undo,
             Action::Redo => can_redo,
             Action::Split
@@ -1281,7 +1284,7 @@ impl App {
             let dt = now.duration_since(st.last_tick).as_secs_f64();
             st.last_tick = now;
             st.tick_count = st.tick_count.wrapping_add(1);
-            let interval = Duration::from_secs(u64::from(st.settings.autosave_minutes) * 60);
+            let interval = Duration::from_secs(u64::from(st.settings.autosave_every()) * 60);
             let every_second = st.tick_count % 30 == 0;
             let mut last = st.last_synced_playhead;
             let Some(s) = st.session.as_mut() else {
@@ -1445,7 +1448,11 @@ fn install_controllers(app: &Rc<App>) {
             // With no project open, only file-level shortcuts apply.
             let allowed_without_project = matches!(
                 action,
-                Action::NewProject | Action::OpenProject | Action::Quit | Action::ShowShortcuts
+                Action::NewProject
+                    | Action::OpenProject
+                    | Action::Quit
+                    | Action::ShowShortcuts
+                    | Action::ShowSettings
             );
             if app.state.borrow().session.is_none() && !allowed_without_project {
                 return glib::Propagation::Proceed;

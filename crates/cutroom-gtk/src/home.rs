@@ -25,7 +25,6 @@ pub struct HomeUi {
     thumbs_button: gtk::ToggleButton,
     list_button: gtk::ToggleButton,
     dir_label: gtk::Label,
-    use_default: gtk::Button,
     content: gtk::Stack,
     grid: gtk::FlowBox,
     list: gtk::Box,
@@ -92,14 +91,11 @@ pub fn build(app: &Rc<App>) -> HomeUi {
     dir_label.set_selectable(true);
     dir_label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
     dir_label.add_css_class("caption");
-    let change = gtk::Button::with_label("Change...");
+    let change = gtk::Button::with_label("Change in Settings...");
     change.add_css_class("flat");
-    let use_default = gtk::Button::with_label("Use default");
-    use_default.add_css_class("flat");
     dir_row.append(&stored);
     dir_row.append(&dir_label);
     dir_row.append(&change);
-    dir_row.append(&use_default);
     root.append(&dir_row);
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
@@ -154,7 +150,6 @@ pub fn build(app: &Rc<App>) -> HomeUi {
         thumbs_button,
         list_button,
         dir_label,
-        use_default,
         content,
         grid,
         list,
@@ -214,17 +209,7 @@ pub fn build(app: &Rc<App>) -> HomeUi {
     }
     {
         let app = app.clone();
-        change.connect_clicked(move |_| {
-            let app2 = app.clone();
-            app.choose_folder("Where should Kani keep your projects?", move |dir| {
-                app2.change_projects_dir(Some(dir))
-            });
-        });
-    }
-    {
-        let app = app.clone();
-        ui.use_default
-            .connect_clicked(move |_| app.change_projects_dir(None));
+        change.connect_clicked(move |_| crate::settings_ui::open(&app, Some("draft")));
     }
     ui
 }
@@ -246,8 +231,6 @@ pub fn refresh(app: &Rc<App>) {
         }
         ui.dir_label
             .set_text(&st.projects_dir().display().to_string());
-        ui.use_default
-            .set_visible(st.settings.projects_dir.is_some());
         ui.syncing.set(false);
     }
     refresh_content(app);

@@ -1,7 +1,6 @@
 //! The menu bar and its actions.
 
 use crate::app::App;
-use cutroom_core::settings::ThemeChoice;
 use cutroom_core::shortcuts::{Action, BINDINGS};
 use cutroom_timeline::TrackKind;
 use gtk4 as gtk;
@@ -12,8 +11,6 @@ use std::rc::Rc;
 pub struct MenuUi {
     pub bar: gtk::PopoverMenuBar,
     actions: Vec<(Action, gio::SimpleAction)>,
-    theme: gio::SimpleAction,
-    autosave: gio::SimpleAction,
 }
 
 /// GTK's name for the action, used in menu models.
@@ -49,6 +46,7 @@ fn name_of(action: Action) -> Option<&'static str> {
         Action::FitTimeline => "fit-timeline",
         Action::ShowAbout => "about",
         Action::ShowShortcuts => "show-shortcuts",
+        Action::ShowSettings => "show-settings",
         Action::Export => "export",
         Action::ExportRange => "export-range",
         _ => return None,
@@ -119,51 +117,13 @@ pub fn build(app: &Rc<App>) -> MenuUi {
         Action::FitTimeline,
         Action::ShowAbout,
         Action::ShowShortcuts,
+        Action::ShowSettings,
         Action::Export,
         Action::ExportRange,
     ] {
         register(action);
     }
 
-    let theme = gio::SimpleAction::new_stateful(
-        "theme",
-        Some(gtk::glib::VariantTy::STRING),
-        &"system".to_variant(),
-    );
-    {
-        let app = app.clone();
-        theme.connect_activate(move |_, param| {
-            let Some(text) = param.and_then(|p| p.get::<String>()) else {
-                return;
-            };
-            let choice = match text.as_str() {
-                "dark" => ThemeChoice::Dark,
-                "light" => ThemeChoice::Light,
-                _ => ThemeChoice::System,
-            };
-            app.set_theme(choice);
-        });
-    }
-    app.window.add_action(&theme);
-
-    let autosave = gio::SimpleAction::new_stateful(
-        "autosave",
-        Some(gtk::glib::VariantTy::STRING),
-        &"10".to_variant(),
-    );
-    {
-        let app = app.clone();
-        autosave.connect_activate(move |_, param| {
-            if let Some(minutes) = param
-                .and_then(|p| p.get::<String>())
-                .and_then(|s| s.parse::<u32>().ok())
-            {
-                app.set_autosave_minutes(minutes);
-                crate::menu::update(&app);
-            }
-        });
-    }
-    app.window.add_action(&autosave);
 
     let model = gio::Menu::new();
 
@@ -237,22 +197,7 @@ pub fn build(app: &Rc<App>) -> MenuUi {
     model.append_submenu(Some("View"), &view);
 
     let settings = gio::Menu::new();
-    let appearance = gio::Menu::new();
-    appearance.append(Some("Follow system"), Some("win.theme::system"));
-    appearance.append(Some("Dark"), Some("win.theme::dark"));
-    appearance.append(Some("Light"), Some("win.theme::light"));
-    settings.append_submenu(Some("Appearance"), &appearance);
-    let autosave_menu = gio::Menu::new();
-    for (minutes, label) in [
-        ("0", "Off"),
-        ("1", "Every minute"),
-        ("5", "Every 5 minutes"),
-        ("10", "Every 10 minutes"),
-        ("30", "Every 30 minutes"),
-    ] {
-        autosave_menu.append(Some(label), Some(&format!("win.autosave::{minutes}")));
-    }
-    settings.append_submenu(Some("Autosave"), &autosave_menu);
+    item(&settings, "Settings...", Action::ShowSettings);
     model.append_submenu(Some("Settings"), &settings);
 
     let help = gio::Menu::new();
@@ -264,8 +209,6 @@ pub fn build(app: &Rc<App>) -> MenuUi {
     MenuUi {
         bar,
         actions,
-        theme,
-        autosave,
     }
 }
 
@@ -275,16 +218,6 @@ pub fn update(app: &Rc<App>) {
     for (action, simple) in &ui.menu.actions {
         simple.set_enabled(app.is_action_enabled(*action));
     }
-    let st = app.state.borrow();
-    let theme = match st.settings.theme {
-        ThemeChoice::System => "system",
-        ThemeChoice::Dark => "dark",
-        ThemeChoice::Light => "light",
-    };
-    ui.menu.theme.set_state(&theme.to_variant());
-    ui.menu
-        .autosave
-        .set_state(&st.settings.autosave_minutes.to_string().to_variant());
 }
 
 #[cfg(test)]
@@ -335,6 +268,7 @@ mod tests {
             Action::FitTimeline,
             Action::ShowAbout,
             Action::ShowShortcuts,
+            Action::ShowSettings,
             Action::Export,
             Action::ExportRange,
         ];

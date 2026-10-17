@@ -264,6 +264,13 @@ Speech recognition is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) thr
 needs `cmake`, a C++ compiler and `libclang`. To build without it: `cargo build -p cutroom-gtk --no-default-features`.
 Tiny and Base are fast but often wrong, especially with noise or non-English speech; Medium and Large v3 Turbo are far more accurate and slower on a CPU. Word times are fitted to where the sound actually is, and phrases the model hears in silence are dropped.
 
+## Settings
+
+One window for every preference: **Settings > Settings...** (Ctrl+,). Tabs: General, Draft, Edit, Playback,
+Performance, Export, Captions, Libraries, Advanced. Working rows: appearance, projects folder, autosave (on/off
+and 1-120 minutes), add dropped files to the timeline, proxies, compositor acceleration, export folder, restore
+defaults. Everything else is listed and disabled until its phase. See [docs/SETTINGS.md](docs/SETTINGS.md).
+
 ## Roadmap
 
 | Phase | Deliverable |
@@ -282,7 +289,7 @@ Tiny and Base are fast but often wrong, especially with noise or non-English spe
 
 ## Version numbers
 
-`major.phase.iteration`, for example `0.5.25`:
+`major.phase.iteration`, for example `0.5.26`:
 
 - **major**: the approved official release (0 until one is approved)
 - **phase**: the development phase being worked on (4 = compositor and editing UI, 5 = export, 6 = text, 7 = captions)

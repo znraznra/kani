@@ -48,6 +48,7 @@ pub enum Action {
     FitTimeline,
     ShowAbout,
     ShowShortcuts,
+    ShowSettings,
     Export,
     ExportRange,
 }
@@ -348,6 +349,7 @@ pub const BINDINGS: &[Binding] = &[
     ),
     b("s", true, false, Save, "Save", Convention, true),
     b("e", true, false, Export, "Export the video", CapCut, false),
+    b("comma", true, false, ShowSettings, "Settings", Convention, true),
     b(
         "x",
         true,

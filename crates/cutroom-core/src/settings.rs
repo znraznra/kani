@@ -54,7 +54,9 @@ pub struct Settings {
     pub projects_dir: Option<PathBuf>,
     pub home_view: ViewMode,
     pub library_view: ViewMode,
-    /// Minutes between background autosaves; 0 turns autosave off.
+    /// Background autosave on or off.
+    pub autosave_enabled: bool,
+    /// Minutes between background autosaves (0 also means off).
     pub autosave_minutes: u32,
     /// Projects opened from outside the projects folder, newest first.
     pub recent_projects: Vec<PathBuf>,
@@ -110,6 +112,7 @@ impl Default for Settings {
             projects_dir: None,
             home_view: ViewMode::Thumbnails,
             library_view: ViewMode::List,
+            autosave_enabled: true,
             autosave_minutes: 10,
             recent_projects: Vec::new(),
             caption_language: String::new(),
@@ -143,6 +146,15 @@ impl Settings {
         self.projects_dir
             .clone()
             .unwrap_or_else(|| default.to_path_buf())
+    }
+
+    /// Minutes between autosaves, or 0 when autosave is off.
+    pub fn autosave_every(&self) -> u32 {
+        if self.autosave_enabled {
+            self.autosave_minutes
+        } else {
+            0
+        }
     }
 
     /// Should export put pictures together on the graphics card? "on" and "off"
@@ -204,6 +216,18 @@ mod tests {
         assert_eq!(settings.theme, ThemeChoice::System);
         assert!(!settings.add_dropped_to_timeline);
         assert!(settings.use_proxies, "proxies are used when they exist");
+    }
+
+    #[test]
+    fn autosave_can_be_switched_off_without_losing_the_interval() {
+        let mut s = Settings::default();
+        assert_eq!(s.autosave_every(), 10);
+        s.autosave_enabled = false;
+        assert_eq!(s.autosave_every(), 0);
+        assert_eq!(s.autosave_minutes, 10, "the interval is kept");
+        s.autosave_enabled = true;
+        s.autosave_minutes = 0;
+        assert_eq!(s.autosave_every(), 0, "an old file saying 0 still means off");
     }
 
     #[test]

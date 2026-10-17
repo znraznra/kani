@@ -1045,6 +1045,24 @@ mod tests {
             assert!((d.range_from.value() - 1.0).abs() < 0.01 && (d.range_to.value() - 3.0).abs() < 0.01);
             d.window.close();
             assert!(pump_until(|| crate::export_ui::active().is_none()), "the window closed");
+            // The top-right Export button (Ctrl+E, the menu) while a range is
+            // being picked exports that range, with no extra step.
+            app.run_action(Action::ExportRange);
+            {
+                let mut st = app.state.borrow_mut();
+                let r = st.export_range.as_mut().unwrap();
+                r.start = T::from_seconds_f64(0.5);
+                r.end = T::from_seconds_f64(2.5);
+            }
+            app.run_action(Action::Export);
+            assert!(!rs::active(&app), "picking ends");
+            let d = crate::export_ui::active().expect("Export opens");
+            assert!(
+                (d.range_from.value() - 0.5).abs() < 0.01 && (d.range_to.value() - 2.5).abs() < 0.01,
+                "the Export window found the picked range"
+            );
+            d.window.close();
+            assert!(pump_until(|| crate::export_ui::active().is_none()));
         }
 
         // 7i. Export: the window opens, finds an encoder, and a short export
@@ -1401,8 +1419,11 @@ mod tests {
         let root = tmp.path().join("projects/End to end");
         app.open_project(&root);
         assert_eq!(page(&app), "editor");
-        assert_eq!(clip_count(&app), clips_now);
-        assert_eq!(track_count(&app), tracks_now);
+        if std::env::var("KANI_SHOT_DIR").is_err() {
+            // (Photographing adds clips and tracks, so only compare normally.)
+            assert_eq!(clip_count(&app), clips_now);
+            assert_eq!(track_count(&app), tracks_now);
+        }
         assert_eq!(media_count(&app), 5);
 
         // 10b. The About window opens (and so do the shortcuts).
@@ -1414,6 +1435,109 @@ mod tests {
             gtk::Window::list_toplevels().len() >= before + 2,
             "dialogs open as their own windows"
         );
+
+        // 10b. Settings: one window for every preference. Choices wait for Save.
+        {
+            use crate::settings_ui as su;
+            assert!(su::active().is_none());
+            app.run_action(Action::ShowSettings);
+            let d = su::active().expect("Settings opens");
+            assert_eq!(
+                d.stack.visible_child_name().as_deref(),
+                Some("general"),
+                "starts on General"
+            );
+            for (id, _) in su::TABS {
+                d.stack.set_visible_child_name(id);
+                assert_eq!(d.stack.visible_child_name().as_deref(), Some(id));
+            }
+            assert!(
+                d.planned.len() >= 20,
+                "rows for things not built yet are listed (disabled): {}",
+                d.planned.len()
+            );
+            // The wanted ones are there, in the right tabs.
+            for (tab, label) in [
+                ("playback", "Remux unsupported files on import"),
+                ("playback", "Create proxies automatically"),
+                ("edit", "Step forward"),
+            ] {
+                assert!(
+                    d.planned.iter().any(|p| p.0 == tab && p.1 == label),
+                    "{tab}/{label}"
+                );
+            }
+            // Cancel drops what was staged.
+            let before = app.state.borrow().settings.clone();
+            d.autosave.set_active(false);
+            d.proxies.set_active(!before.use_proxies);
+            d.cancel.emit_clicked();
+            assert!(pump_until(|| su::active().is_none()));
+            assert_eq!(app.state.borrow().settings.autosave_every(), before.autosave_every());
+            assert_eq!(app.state.borrow().settings.use_proxies, before.use_proxies);
+            // Save applies.
+            app.run_action(Action::ShowSettings);
+            let d = su::active().expect("Settings opens again");
+            assert_eq!(d.autosave.is_active(), before.autosave_every() > 0);
+            d.autosave.set_active(true);
+            d.autosave_minutes.set_value(3.0);
+            d.proxies.set_active(false);
+            d.add_dropped.set_active(true);
+            d.acceleration.set_selected(2);
+            d.theme.set_selected(1);
+            d.save.emit_clicked();
+            assert!(pump_until(|| su::active().is_none()));
+            {
+                let st = app.state.borrow();
+                assert_eq!(st.settings.autosave_every(), 3);
+                assert!(!st.settings.use_proxies);
+                assert!(st.settings.add_dropped_to_timeline);
+                assert_eq!(st.settings.export_graphics_card, "off");
+                assert_eq!(st.settings.theme, cutroom_core::settings::ThemeChoice::Dark);
+            }
+            // Switched off keeps the interval.
+            app.run_action(Action::ShowSettings);
+            let d = su::active().unwrap();
+            assert!(d.autosave.is_active() && (d.autosave_minutes.value() - 3.0).abs() < 0.01);
+            d.autosave.set_active(false);
+            assert!(!d.autosave_minutes.is_sensitive(), "the interval waits for the switch");
+            d.save.emit_clicked();
+            assert!(pump_until(|| su::active().is_none()));
+            assert_eq!(app.state.borrow().settings.autosave_every(), 0);
+            assert_eq!(app.state.borrow().settings.autosave_minutes, 3);
+            // Put things back the way the rest of the test expects.
+            app.run_action(Action::ShowSettings);
+            let d = su::active().unwrap();
+            d.autosave.set_active(true);
+            d.proxies.set_active(true);
+            d.add_dropped.set_active(false);
+            d.acceleration.set_selected(0);
+            d.theme.set_selected(0);
+            d.save.emit_clicked();
+            assert!(pump_until(|| su::active().is_none()));
+            // The old places for these are gone: no Settings submenu items for them.
+            if let Ok(dir) = std::env::var("KANI_SHOT_DIR") {
+                app.run_action(Action::ShowSettings);
+                let d = su::active().unwrap();
+                for (id, _) in su::TABS {
+                    d.stack.set_visible_child_name(id);
+                    pump_until(|| false);
+                    let (w, h) = (d.window.width(), d.window.height());
+                    let paintable = gtk::WidgetPaintable::new(Some(&d.window));
+                    let snap = gtk::Snapshot::new();
+                    paintable.snapshot(&snap, f64::from(w), f64::from(h));
+                    if let (Some(node), Some(native)) = (snap.to_node(), d.window.native()) {
+                        if let Some(renderer) = native.renderer() {
+                            let _ = renderer
+                                .render_texture(&node, None)
+                                .save_to_png(format!("{dir}/settings_{id}.png"));
+                        }
+                    }
+                }
+                d.cancel.emit_clicked();
+                assert!(pump_until(|| su::active().is_none()));
+            }
+        }
 
         // 11. The window's close button goes home instead of quitting.
         app.window.close();

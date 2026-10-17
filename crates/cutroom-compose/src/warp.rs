@@ -230,6 +230,67 @@ fn mesh_back(mesh: &[P; SIDE * SIDE], p: P) -> Option<P> {
     None
 }
 
+/// The picture made smaller to `w` x `h` (each new pixel the average of the
+/// block of old ones it covers). Bending a picture that will be drawn small is
+/// much cheaper done after this.
+pub fn shrink(frame: &Frame, w: u32, h: u32) -> Frame {
+    let (w, h) = (w.max(1) as usize, h.max(1) as usize);
+    let (sw, sh) = (frame.width as usize, frame.height as usize);
+    if w >= sw || h >= sh {
+        return frame.clone();
+    }
+    let mut out = vec![0u8; w * h * 4];
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(8)
+        .min(h);
+    let per_chunk = h.div_ceil(threads.max(1));
+    let rows = |first: usize, chunk: &mut [u8]| {
+        for (r, row) in chunk.chunks_exact_mut(w * 4).enumerate() {
+            let y = first + r;
+            let (y0, y1) = (y * sh / h, ((y + 1) * sh / h).max(y * sh / h + 1).min(sh));
+            for (x, px) in row.chunks_exact_mut(4).enumerate() {
+                let (x0, x1) = (x * sw / w, ((x + 1) * sw / w).max(x * sw / w + 1).min(sw));
+                let mut sum = [0u32; 4];
+                // Weigh colour by alpha so a clear edge does not darken the picture.
+                let mut weight = 0u32;
+                for yy in y0..y1 {
+                    let base = (yy * sw + x0) * 4;
+                    for p in frame.rgba[base..base + (x1 - x0) * 4].chunks_exact(4) {
+                        let a = u32::from(p[3]);
+                        sum[0] += u32::from(p[0]) * a;
+                        sum[1] += u32::from(p[1]) * a;
+                        sum[2] += u32::from(p[2]) * a;
+                        sum[3] += a;
+                        weight += 1;
+                    }
+                }
+                if sum[3] > 0 {
+                    for c in 0..3 {
+                        px[c] = ((sum[c] + sum[3] / 2) / sum[3]) as u8;
+                    }
+                    px[3] = ((sum[3] + weight / 2) / weight.max(1)) as u8;
+                }
+            }
+        }
+    };
+    if threads <= 1 {
+        rows(0, &mut out);
+    } else {
+        std::thread::scope(|scope| {
+            for (i, chunk) in out.chunks_mut(per_chunk * w * 4).enumerate() {
+                let rows = &rows;
+                scope.spawn(move || rows(i * per_chunk, chunk));
+            }
+        });
+    }
+    Frame {
+        width: w as u32,
+        height: h as u32,
+        rgba: out,
+    }
+}
+
 /// The picture bent as asked, on a canvas of its own centred where the
 /// picture's centre is (so the rest of the placement works as if the bent
 /// picture were the picture). `None` when it cannot be bent (a corner pin
@@ -263,13 +324,66 @@ pub fn bend_frame(frame: &Frame, pin: &[f32; 8], mesh: &[f32; SIDE * SIDE * 2]) 
         .min(h);
     let per_chunk = h.div_ceil(threads.max(1));
     let bend = &bend;
+    // Where each pixel comes from is smooth, so it is worked out exactly only
+    // at every BLOCK-th pixel and blended in between (a sixteenth of the work).
+    const BLOCK: usize = 4;
+    let (gw, gh) = (w / BLOCK + 2, h / BLOCK + 2);
+    let source = |x_i: usize, y_i: usize| -> Option<P> {
+        let x = x_i as f32 + 0.5 - w as f32 / 2.0;
+        let y = y_i as f32 + 0.5 - h as f32 / 2.0;
+        bend.backward(x / sw + 0.5, y / sh + 0.5)
+    };
+    let mut grid: Vec<Option<P>> = vec![None; gw * gh];
+    {
+        let per_rows = gh.div_ceil(threads.max(1));
+        let source = &source;
+        std::thread::scope(|scope| {
+            for (i, chunk) in grid.chunks_mut(per_rows * gw).enumerate() {
+                scope.spawn(move || {
+                    for (r, row) in chunk.chunks_exact_mut(gw).enumerate() {
+                        let gy = i * per_rows + r;
+                        for (gx, cell) in row.iter_mut().enumerate() {
+                            *cell = source(gx * BLOCK, gy * BLOCK);
+                        }
+                    }
+                });
+            }
+        });
+    }
+    let grid = &grid;
+    let source = &source;
     let rows = |first: usize, chunk: &mut [u8]| {
         for (r, row) in chunk.chunks_exact_mut(w * 4).enumerate() {
-            let y = (first + r) as f32 + 0.5 - h as f32 / 2.0;
+            let y_i = first + r;
+            let (gy, fy) = (y_i / BLOCK, (y_i % BLOCK) as f32 / BLOCK as f32);
             for (x_i, px) in row.chunks_exact_mut(4).enumerate() {
-                let x = x_i as f32 + 0.5 - w as f32 / 2.0;
-                let Some((a, b)) = bend.backward(x / sw + 0.5, y / sh + 0.5) else {
-                    continue;
+                let (gx, fx) = (x_i / BLOCK, (x_i % BLOCK) as f32 / BLOCK as f32);
+                let corners = [
+                    grid[gy * gw + gx],
+                    grid[gy * gw + gx + 1],
+                    grid[(gy + 1) * gw + gx],
+                    grid[(gy + 1) * gw + gx + 1],
+                ];
+                let (a, b) = match corners {
+                    [Some(p00), Some(p10), Some(p01), Some(p11)] => {
+                        // Not across a seam where the picture stops: all four
+                        // corners must come from the picture and be near.
+                        let far = |p: P, q: P| (p.0 - q.0).abs() > 0.2 || (p.1 - q.1).abs() > 0.2;
+                        if far(p00, p11) || far(p10, p01) {
+                            match source(x_i, y_i) {
+                                Some(p) => p,
+                                None => continue,
+                            }
+                        } else {
+                            let top = (p00.0 + (p10.0 - p00.0) * fx, p00.1 + (p10.1 - p00.1) * fx);
+                            let bottom = (p01.0 + (p11.0 - p01.0) * fx, p01.1 + (p11.1 - p01.1) * fx);
+                            (top.0 + (bottom.0 - top.0) * fy, top.1 + (bottom.1 - top.1) * fy)
+                        }
+                    }
+                    _ => match source(x_i, y_i) {
+                        Some(p) => p,
+                        None => continue,
+                    },
                 };
                 let (sx, sy) = (a * sw, b * sh);
                 // Soft edge, as the plain drawing has.
@@ -397,5 +511,34 @@ mod tests {
         // Both right corners dragged across to the left edge: a flat sliver.
         let pin = [0.0, 0.0, -1.0, 0.0, -1.0, 0.0, 0.0, 0.0];
         assert!(Bend::new(&pin, &[0.0; 32]).is_none());
+    }
+
+    #[test]
+    fn shrinking_keeps_a_flat_colour_and_the_size() {
+        let f = Frame::solid(100, 60, [10, 200, 30, 255]);
+        let small = shrink(&f, 25, 15);
+        assert_eq!((small.width, small.height), (25, 15));
+        assert!(small.rgba.chunks_exact(4).all(|p| p == [10, 200, 30, 255]));
+        let same = shrink(&f, 200, 200);
+        assert_eq!((same.width, same.height), (100, 60), "never enlarged");
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_bend_time() {
+        for (w, h) in [(1920u32, 1080u32), (960, 540), (540, 960)] {
+            let f = Frame::solid(w, h, [200, 30, 30, 255]);
+            let mut mesh = [0.0f32; 32];
+            mesh[10] = 0.15;
+            let mut pin = [0.0f32; 8];
+            pin[2] = -0.2;
+            for (name, p, m) in [("mesh", [0.0f32; 8], mesh), ("pin", pin, [0.0f32; 32]), ("both", pin, mesh)] {
+                let t = std::time::Instant::now();
+                for _ in 0..5 {
+                    let _ = bend_frame(&f, &p, &m);
+                }
+                println!("{w}x{h} {name}: {:?} per bend", t.elapsed() / 5);
+            }
+        }
     }
 }

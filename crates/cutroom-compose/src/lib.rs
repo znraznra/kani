@@ -409,17 +409,32 @@ impl Canvas {
                 mesh: [0.0; 32],
                 ..*placement
             };
-            match warp::bend_frame(frame, &placement.pin, &placement.mesh) {
+            let fit = if placement.natural {
+                1.0
+            } else {
+                (cw / sw).min(ch / sh)
+            };
+            // A picture drawn smaller than it is gets smaller first: bending
+            // costs by the pixel, and the extra detail would be lost anyway.
+            let shown = placement.scale * fit;
+            let (small, shrunk);
+            let (source, shrink_by) = if shown < 0.7 && shown > 0.0 {
+                let (tw, th) = (
+                    (sw * shown).round().max(2.0) as u32,
+                    (sh * shown).round().max(2.0) as u32,
+                );
+                small = warp::shrink(frame, tw, th);
+                shrunk = tw as f32 / sw;
+                (&small, shrunk)
+            } else {
+                (frame, 1.0)
+            };
+            match warp::bend_frame(source, &placement.pin, &placement.mesh) {
                 Some(bent) => {
-                    let fit = if placement.natural {
-                        1.0
-                    } else {
-                        (cw / sw).min(ch / sh)
-                    };
                     self.draw(
                         &bent,
                         &Placement {
-                            scale: placement.scale * fit,
+                            scale: shown / shrink_by,
                             natural: true,
                             ..straight
                         },
