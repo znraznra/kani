@@ -164,6 +164,7 @@ impl NewProjectForm {
             height,
             frame_rate: self.frame_rate(),
             sample_rate: 48_000,
+            color_space: Default::default(),
         }
     }
 

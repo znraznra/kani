@@ -289,7 +289,7 @@ defaults. Everything else is listed and disabled until its phase. See [docs/SETT
 
 ## Version numbers
 
-`major.phase.iteration`, for example `0.5.27`:
+`major.phase.iteration`, for example `0.5.28`:
 
 - **major**: the approved official release (0 until one is approved)
 - **phase**: the development phase being worked on (4 = compositor and editing UI, 5 = export, 6 = text, 7 = captions)

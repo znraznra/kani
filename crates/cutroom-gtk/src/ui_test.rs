@@ -1436,6 +1436,38 @@ mod tests {
             "dialogs open as their own windows"
         );
 
+        // 10c. Project settings: staged, applied on Save.
+        {
+            use crate::project_settings_ui as ps;
+            let d = ps::open(&app).expect("Project settings opens");
+            d.name.set_text("Renamed in test");
+            d.width.set_value(1280.0);
+            d.height.set_value(720.0);
+            d.rate.set_selected(1);
+            d.color.set_selected(2);
+            d.copy.set_selected(0);
+            d.cancel.emit_clicked();
+            let (w, name) = {
+                let st = app.state.borrow();
+                let s = st.session.as_ref().unwrap();
+                (s.doc.settings.width, s.doc.name.clone())
+            };
+            assert_ne!(w, 1280, "Cancel changes nothing");
+            assert_ne!(name, "Renamed in test");
+            let d = ps::open(&app).unwrap();
+            d.name.set_text("Renamed in test");
+            d.width.set_value(1280.0);
+            d.height.set_value(720.0);
+            d.rate.set_selected(1);
+            d.color.set_selected(2);
+            d.save.emit_clicked();
+            let st = app.state.borrow();
+            let s = st.session.as_ref().unwrap();
+            assert_eq!((s.doc.settings.width, s.doc.settings.height), (1280, 720));
+            assert_eq!(s.doc.name, "Renamed in test");
+            assert_eq!(s.doc.settings.color_space, cutroom_project::ColorSpace::DisplayP3);
+        }
+
         // 10b. Settings: one window for every preference. Choices wait for Save.
         {
             use crate::settings_ui as su;

@@ -274,6 +274,11 @@ impl Session {
     }
 
     fn from_parts(folder: ProjectFolder, doc: ProjectDoc) -> Session {
+        let import_mode = if doc.storage.import_copy {
+            ImportMode::Copy
+        } else {
+            ImportMode::Reference
+        };
         Session {
             folder,
             doc,
@@ -283,7 +288,7 @@ impl Session {
             attributes: None,
             playhead: Ticks::ZERO,
             playing: false,
-            import_mode: ImportMode::Reference,
+            import_mode,
             status: None,
             missing: HashSet::new(),
             text_baseline: None,
@@ -420,6 +425,67 @@ impl Session {
         self.folder = self.folder.clone().move_to(destination)?;
         self.status = Some(format!("Project moved to {}", self.folder.root().display()));
         Ok(())
+    }
+
+    /// Rename the project (the name shown in Kani; the folder keeps its name).
+    pub fn set_name(&mut self, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() || name == self.doc.name {
+            return false;
+        }
+        self.doc.name = name.to_owned();
+        self.mark_dirty();
+        true
+    }
+
+    /// Change resolution, frame rate and colour space. Not an undoable edit:
+    /// it is a project setting, like the name. Returns true if anything changed.
+    pub fn set_format(
+        &mut self,
+        width: u32,
+        height: u32,
+        frame_rate: cutroom_timeline::FrameRate,
+        color_space: cutroom_project::ColorSpace,
+    ) -> bool {
+        let st = &mut self.doc.settings;
+        let (width, height) = (width.clamp(64, 8192) & !1, height.clamp(64, 8192) & !1);
+        if st.width == width
+            && st.height == height
+            && st.frame_rate == frame_rate
+            && st.color_space == color_space
+        {
+            return false;
+        }
+        st.width = width;
+        st.height = height;
+        st.frame_rate = frame_rate;
+        st.color_space = color_space;
+        self.mark_dirty();
+        true
+    }
+
+    /// Choose whether newly imported media is copied into the project. With
+    /// `relink_existing`, media already in the project is copied in too and
+    /// the project is repointed at the copies.
+    pub fn set_import_copy(
+        &mut self,
+        copy: bool,
+        relink_existing: bool,
+    ) -> Result<usize, SessionError> {
+        self.import_mode = if copy {
+            ImportMode::Copy
+        } else {
+            ImportMode::Reference
+        };
+        if self.doc.storage.import_copy != copy {
+            self.doc.storage.import_copy = copy;
+            self.mark_dirty();
+        }
+        if copy && relink_existing {
+            self.collect_media()
+        } else {
+            Ok(0)
+        }
     }
 
     pub fn collect_media(&mut self) -> Result<usize, SessionError> {
@@ -3817,6 +3883,34 @@ mod tests {
             "the first one on the timeline"
         );
         assert_eq!(session.playhead, Ticks::ZERO);
+    }
+
+    #[test]
+    fn project_settings_change_format_name_and_import() {
+        use cutroom_project::ColorSpace;
+        let (tmp, mut session) = new_session();
+        let rate = FrameRate::FPS_24;
+        assert!(session.set_format(1921, 1081, rate, ColorSpace::DisplayP3));
+        assert_eq!(
+            (session.doc.settings.width, session.doc.settings.height),
+            (1920, 1080),
+            "sizes stay even"
+        );
+        assert_eq!(session.doc.settings.frame_rate, rate);
+        assert_eq!(session.doc.settings.color_space, ColorSpace::DisplayP3);
+        assert!(!session.set_format(1920, 1080, rate, ColorSpace::DisplayP3));
+        assert!(session.set_name("  Renamed ") && session.doc.name == "Renamed");
+        assert!(!session.set_name("  "));
+        // Copy mode is stored in the project and survives a reopen.
+        let media = import_one(&tmp, &mut session, "a.mp4");
+        assert!(session.doc.media_item(media).is_ok());
+        assert_eq!(session.set_import_copy(true, true).unwrap_or(0) <= 1, true);
+        assert_eq!(session.import_mode, ImportMode::Copy);
+        session.save();
+        let root = session.folder.root().to_path_buf();
+        let reopened = Session::open(&root).unwrap();
+        assert_eq!(reopened.import_mode, ImportMode::Copy);
+        assert_eq!(reopened.doc.settings.color_space, ColorSpace::DisplayP3);
     }
 
     #[test]

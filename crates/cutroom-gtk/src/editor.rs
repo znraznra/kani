@@ -9,7 +9,6 @@ use cutroom_core::shortcuts::Action;
 use cutroom_core::state::{media_label, MediaKind, Session, StorageKind};
 use cutroom_core::timeline_logic::Tool;
 use cutroom_core::view::{self, MAX_PIXELS_PER_SECOND, MIN_PIXELS_PER_SECOND};
-use cutroom_project::ImportMode;
 use cutroom_timeline::{MediaId, TrackKind};
 use gtk4 as gtk;
 use gtk4::prelude::*;
@@ -69,7 +68,6 @@ pub struct EditorUi {
     media_views: gtk::Stack,
     media_list: gtk::Box,
     media_grid: gtk::FlowBox,
-    import_mode: gtk::DropDown,
     list_toggle: gtk::ToggleButton,
     grid_toggle: gtk::ToggleButton,
     preview_picture: gtk::Picture,
@@ -269,30 +267,6 @@ pub fn build(app: &Rc<App>) -> EditorUi {
     media_views.add_named(&empty, Some("empty"));
     media_content.append(&media_views);
 
-    // The rarely-changed import options live in a fold-out at the bottom.
-    let options = gtk::Expander::new(Some("Import options"));
-    let options_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
-    options_box.set_margin_top(4);
-    options_box.set_margin_bottom(6);
-    let import_mode = gtk::DropDown::from_strings(&["Link to original", "Copy into project"]);
-    {
-        let app = app.clone();
-        import_mode.connect_selected_notify(move |d| {
-            if app.ui().editor.syncing.get() {
-                return;
-            }
-            if let Some(s) = app.state.borrow_mut().session.as_mut() {
-                s.import_mode = if d.selected() == 1 {
-                    ImportMode::Copy
-                } else {
-                    ImportMode::Reference
-                };
-            }
-        });
-    }
-    options_box.append(&import_mode);
-    options.set_child(Some(&options_box));
-    media_content.append(&options);
     media_page.append(&media_content);
     library_stack.add_named(&media_page, Some("media"));
 
@@ -743,7 +717,6 @@ pub fn build(app: &Rc<App>) -> EditorUi {
         media_views,
         media_list,
         media_grid,
-        import_mode,
         list_toggle,
         grid_toggle,
         preview_picture,
@@ -937,12 +910,6 @@ pub fn refresh(app: &Rc<App>) {
         ui.ripple_button.set_sensitive(session.selected.is_some());
         ui.undo_button.set_sensitive(session.history.can_undo());
         ui.redo_button.set_sensitive(session.history.can_redo());
-        ui.import_mode
-            .set_selected(if session.import_mode == ImportMode::Copy {
-                1
-            } else {
-                0
-            });
         match st.settings.library_view {
             ViewMode::List => ui.list_toggle.set_active(true),
             ViewMode::Thumbnails => ui.grid_toggle.set_active(true),
@@ -1611,6 +1578,17 @@ fn refresh_inspector(app: &Rc<App>) {
     ui.info
         .append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     ui.info.append(&heading("Project"));
+    let project_settings = gtk::Button::with_label("Project settings");
+    project_settings.set_tooltip_text(Some(
+        "Name, location, imported material, resolution, frame rate and color space",
+    ));
+    {
+        let app = app.clone();
+        project_settings.connect_clicked(move |_| {
+            crate::project_settings_ui::open(&app);
+        });
+    }
+    ui.info.append(&project_settings);
     let settings = &session.doc.settings;
     ui.info.append(&grid(&[
         (
@@ -1618,6 +1596,7 @@ fn refresh_inspector(app: &Rc<App>) {
             format!("{} x {}", settings.width, settings.height),
         ),
         ("Frame rate", format!("{:.3} fps", rate.as_f64())),
+        ("Color space", settings.color_space.label().to_owned()),
         ("Audio", format!("{} Hz", settings.sample_rate)),
         ("Folder", session.folder.root().display().to_string()),
     ]));

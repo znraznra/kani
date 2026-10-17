@@ -22,7 +22,7 @@ mod migrate;
 mod names;
 
 pub use doc::{
-    MediaItem, MediaPath, MediaProbe, ProjectDoc, ProjectSettings, StorageSettings, SCHEMA_VERSION,
+    ColorSpace, MediaItem, MediaPath, MediaProbe, ProjectDoc, ProjectSettings, StorageSettings, SCHEMA_VERSION,
 };
 pub use error::ProjectError;
 pub use folder::{hash_file, ImportMode, ProjectFolder, PROJECT_FILE};

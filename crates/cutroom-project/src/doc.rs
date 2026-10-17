@@ -5,12 +5,49 @@ use serde::{Deserialize, Serialize};
 /// Bump when the on-disk format changes, and add a step in `migrate.rs`.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// Colour space the project is graded and delivered in. Until the colour
+/// pipeline lands (Phase 9) this is recorded in the project only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ColorSpace {
+    #[default]
+    Rec709,
+    Srgb,
+    DisplayP3,
+    Rec2020,
+    Rec2100Pq,
+    Rec2100Hlg,
+}
+
+impl ColorSpace {
+    pub const ALL: [ColorSpace; 6] = [
+        ColorSpace::Rec709,
+        ColorSpace::Srgb,
+        ColorSpace::DisplayP3,
+        ColorSpace::Rec2020,
+        ColorSpace::Rec2100Pq,
+        ColorSpace::Rec2100Hlg,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ColorSpace::Rec709 => "Rec. 709 (SDR video)",
+            ColorSpace::Srgb => "sRGB",
+            ColorSpace::DisplayP3 => "Display P3",
+            ColorSpace::Rec2020 => "Rec. 2020",
+            ColorSpace::Rec2100Pq => "Rec. 2100 PQ (HDR)",
+            ColorSpace::Rec2100Hlg => "Rec. 2100 HLG (HDR)",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectSettings {
     pub width: u32,
     pub height: u32,
     pub frame_rate: FrameRate,
     pub sample_rate: u32,
+    #[serde(default)]
+    pub color_space: ColorSpace,
 }
 
 impl ProjectSettings {
@@ -21,6 +58,7 @@ impl ProjectSettings {
             height: 1920,
             frame_rate,
             sample_rate: 48_000,
+            color_space: ColorSpace::default(),
         }
     }
 
@@ -31,6 +69,7 @@ impl ProjectSettings {
             height: 1080,
             frame_rate,
             sample_rate: 48_000,
+            color_space: ColorSpace::default(),
         }
     }
 
@@ -41,6 +80,7 @@ impl ProjectSettings {
             height: 1080,
             frame_rate,
             sample_rate: 48_000,
+            color_space: ColorSpace::default(),
         }
     }
 }
@@ -54,6 +94,9 @@ pub struct StorageSettings {
     pub proxy_dir: Option<String>,
     #[serde(default)]
     pub cache_dir: Option<String>,
+    /// Copy newly imported media into the project's media folder.
+    #[serde(default)]
+    pub import_copy: bool,
 }
 
 /// How a media file is located.

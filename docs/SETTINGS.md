@@ -28,7 +28,7 @@ Working = does something now. Disabled = shown, waiting for the phase named.
 | Projects folder (Change..., Use default) | Working (moved from the home screen, which now points here) |
 | Autosave on/off | Working (moved from the Settings menu; switching off keeps the interval) |
 | Autosave interval, 1 to 120 minutes | Working (the menu offered only 1, 5, 10, 30) |
-| Import material in new projects (keep in place / copy) | Disabled, Project settings |
+| Import material (keep in place / copy) | Working, per project: Info tab > Project settings (moved from the media panel) |
 | Frame rate, Resolution, Colour space for new projects | Disabled, Project settings |
 | Keep backup copies of projects | Disabled, Phase 11 |
 
@@ -96,3 +96,12 @@ interval any value 1 to 120 minutes; Compositor acceleration and Export folder a
 Kept in two views on purpose, over one stored value: Acceleration (Performance tab and the Export window).
 Kept where used: Export window choices, Auto-Captions language/model/look, the Library and Home thumbnail/list
 toggles (view switches, not preferences).
+
+## Project settings (0.5.28)
+
+Info tab > "Project settings" opens a window with two tabs, staged Save/Cancel:
+
+- Details: project name, project path (Move... relocates the whole folder, applied on Save), import material (keep in original place / copy into the project; optionally copy and relink the media already in the project), resolution (presets or custom, even numbers 64-8192), frame rate, color space (Rec. 709, sRGB, Display P3, Rec. 2020, Rec. 2100 PQ/HLG).
+- Performance: placeholders (Preview resolution, Render cache, Proxy files, Hardware decoding), disabled until defined.
+
+Color space is stored in the project only; colour-managed rendering is Phase 9. Format and name changes are not undoable. The media panel's "Import options" fold-out was removed as redundant.
