@@ -106,3 +106,12 @@ Info tab > "Project settings" opens a window with two tabs, staged Save/Cancel:
 - Performance: placeholders (Preview resolution, Render cache, Proxy files, Hardware decoding), disabled until defined.
 
 Color space is stored in the project only; colour-managed rendering is Phase 9. Format and name changes are not undoable. The media panel's "Import options" fold-out was removed as redundant.
+
+## 0.5.30 changes
+
+- The **Proxy files** and **Render cache** folders moved from the Info tab into **Project settings > Performance**
+  (Change... / Use project folder, applied on Save). The Info tab keeps Collect media and Check media.
+- Player menu: **Lock guides** (saved as a preference), above Reset guides.
+- Library items with a proxy show a small **Proxy** label (top-right of the thumbnail, or beside the name in the list).
+- Preview compositing on the graphics chip now draws corner pin and mesh warp on the chip too (a fine triangle grid), so
+  a warped layer no longer sends the whole picture back to the processor. Export's graphics-chip mode benefits the same way.

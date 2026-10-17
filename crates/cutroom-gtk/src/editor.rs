@@ -6,7 +6,7 @@ use crate::theme::{self, Palette};
 use crate::{thumbs, timeline};
 use cutroom_core::settings::ViewMode;
 use cutroom_core::shortcuts::Action;
-use cutroom_core::state::{media_label, MediaKind, Session, StorageKind};
+use cutroom_core::state::{media_label, MediaKind, Session};
 use cutroom_core::timeline_logic::Tool;
 use cutroom_core::view::{self, MAX_PIXELS_PER_SECOND, MIN_PIXELS_PER_SECOND};
 use cutroom_timeline::{MediaId, TrackKind};
@@ -1140,7 +1140,7 @@ pub fn refresh_library(app: &Rc<App>) {
 
     let (mode, items): (
         ViewMode,
-        Vec<(MediaId, String, MediaKind, bool, Option<std::path::PathBuf>)>,
+        Vec<(MediaId, String, MediaKind, bool, Option<std::path::PathBuf>, bool)>,
     ) = {
         let st = app.state.borrow();
         let Some(session) = st.session.as_ref() else {
@@ -1157,6 +1157,7 @@ pub fn refresh_library(app: &Rc<App>) {
                     session.media_kind_of(m.id),
                     session.missing.contains(&m.id),
                     session.media_path(m.id),
+                    session.existing_proxy(m.id).is_some(),
                 )
             })
             .collect();
@@ -1168,10 +1169,10 @@ pub fn refresh_library(app: &Rc<App>) {
     }
     let dark = app.state.borrow().dark;
     let selected = app.state.borrow().selected_media;
-    for (id, name, kind, missing, path) in items {
+    for (id, name, kind, missing, path, proxy) in items {
         let widget = match mode {
-            ViewMode::List => media_row(app, id, &name, kind, missing),
-            ViewMode::Thumbnails => media_card(app, id, &name, kind, missing, path, dark),
+            ViewMode::List => media_row(app, id, &name, kind, missing, proxy),
+            ViewMode::Thumbnails => media_card(app, id, &name, kind, missing, path, dark, proxy),
         };
         if selected == Some(id) {
             widget.add_css_class("cutroom-selected");
@@ -1289,6 +1290,7 @@ fn media_row(
     name: &str,
     kind: MediaKind,
     missing: bool,
+    proxy: bool,
 ) -> gtk::Widget {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     row.add_css_class("cutroom-row");
@@ -1300,6 +1302,9 @@ fn media_row(
         label.add_css_class("error");
     }
     row.append(&label);
+    if proxy {
+        row.append(&proxy_badge());
+    }
     let kind_label = gtk::Label::new(Some(kind.label()));
     kind_label.add_css_class("dim-label");
     kind_label.add_css_class("caption");
@@ -1330,8 +1335,11 @@ fn media_card(
     missing: bool,
     path: Option<std::path::PathBuf>,
     dark: bool,
+    proxy: bool,
 ) -> gtk::Widget {
     let card = gtk::Box::new(gtk::Orientation::Vertical, 3);
+    // The picture sits in an overlay so a "Proxy" label can go in its corner.
+    let thumb = gtk::Overlay::new();
     card.set_size_request(112, -1);
     card.set_halign(gtk::Align::Start);
     card.set_tooltip_text(Some(
@@ -1354,7 +1362,7 @@ fn media_card(
             picture.set_content_fit(gtk::ContentFit::Contain);
             picture.set_can_shrink(true);
             picture.set_size_request(108, 80);
-            card.append(&picture);
+            thumb.set_child(Some(&picture));
         }
         None => {
             let placeholder = gtk::DrawingArea::new();
@@ -1386,9 +1394,18 @@ fn media_card(
                 cr.move_to(w / 2.0 - 3.0 * label.chars().count() as f64, h / 2.0 + 18.0);
                 let _ = cr.show_text(&label);
             });
-            card.append(&placeholder);
+            thumb.set_child(Some(&placeholder));
         }
     }
+    if proxy {
+        let badge = proxy_badge();
+        badge.set_halign(gtk::Align::End);
+        badge.set_valign(gtk::Align::Start);
+        badge.set_margin_top(3);
+        badge.set_margin_end(3);
+        thumb.add_overlay(&badge);
+    }
+    card.append(&thumb);
     let label = gtk::Label::new(Some(name));
     label.add_css_class("caption");
     label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
@@ -1399,6 +1416,15 @@ fn media_card(
     card.append(&label);
     make_draggable(app, &card, id);
     card.upcast()
+}
+
+/// The small "Proxy" tag on a library item that has a proxy.
+fn proxy_badge() -> gtk::Label {
+    let badge = gtk::Label::new(Some("Proxy"));
+    badge.add_css_class("cc-proxy-badge");
+    badge.set_tooltip_text(Some("A proxy has been made for this file; the preview plays it"));
+    badge.set_widget_name("proxy-badge");
+    badge
 }
 
 /// The inspector's tab strips: Video / Audio / Speed / Animate / Adjust, then
@@ -1654,49 +1680,6 @@ fn refresh_inspector(app: &Rc<App>) {
         ("Audio", format!("{} Hz", settings.sample_rate)),
         ("Folder", session.folder.root().display().to_string()),
     ]));
-
-    for (label, which, dir) in [
-        (
-            "Proxy files",
-            StorageKind::Proxy,
-            session.folder.proxy_dir(&session.doc),
-        ),
-        (
-            "Render cache",
-            StorageKind::Cache,
-            session.folder.cache_dir(&session.doc),
-        ),
-    ] {
-        let caption = gtk::Label::new(Some(label));
-        caption.set_xalign(0.0);
-        caption.add_css_class("dim-label");
-        ui.info.append(&caption);
-        let path = gtk::Label::new(Some(&dir.display().to_string()));
-        path.set_xalign(0.0);
-        path.set_wrap(true);
-        path.add_css_class("caption");
-        path.set_selectable(true);
-        ui.info.append(&path);
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let change = gtk::Button::with_label("Change...");
-        let reset = gtk::Button::with_label("Use project folder");
-        {
-            let app = app.clone();
-            change.connect_clicked(move |_| {
-                let app2 = app.clone();
-                app.choose_folder("Choose a folder", move |dir| {
-                    app2.set_storage_dir(which, Some(dir))
-                });
-            });
-        }
-        {
-            let app = app.clone();
-            reset.connect_clicked(move |_| app.set_storage_dir(which, None));
-        }
-        row.append(&change);
-        row.append(&reset);
-        ui.info.append(&row);
-    }
 
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let collect = gtk::Button::with_label("Collect media");

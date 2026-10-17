@@ -117,7 +117,7 @@ pub enum Spot {
 }
 
 /// Where media dragged from the library would land.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DropTarget {
     pub track: TrackId,
     pub start: Ticks,
@@ -129,6 +129,9 @@ pub struct DropTarget {
     pub new_track: Option<NewTrackAt>,
     /// The kind of track the media ends up on (or would get as a new track).
     pub new_kind: TrackKind,
+    /// Held over a clip: dropping replaces that clip, if the file is long enough
+    /// (`Err` says why it cannot).
+    pub replace: Option<(ClipId, Result<(), String>)>,
 }
 
 // ----- geometry helpers (pure) --------------------------------------------
@@ -409,11 +412,19 @@ pub fn drop_target(
             wrong_kind: false,
             new_track: Some(at),
             new_kind: session.media_kind_of(media).track_kind(),
+            replace: None,
         }),
         Spot::Row(row) => {
             let track = &tl.tracks[row];
             // Video files may also go on audio tracks (sound only).
             let wrong_kind = !session.can_place_on(media, track.kind);
+            let replace = match hit_test(tl, view, canvas, pos) {
+                Hit::Clip { id, .. } if !wrong_kind && !track.locked => tl
+                    .find_clip(id)
+                    .filter(|(_, c)| c.text.is_none())
+                    .map(|_| (id, session.can_replace(id, media))),
+                _ => None,
+            };
             Some(DropTarget {
                 track: track.id,
                 start,
@@ -422,6 +433,7 @@ pub fn drop_target(
                 wrong_kind,
                 new_track: None,
                 new_kind: track.kind,
+                replace,
             })
         }
     }

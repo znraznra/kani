@@ -45,6 +45,56 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// Not a check: prints how tall each dialog wants to be, to chase
+    /// "Trying to measure GtkWindow ... but it needs at least" warnings.
+    /// `xvfb-run -a cargo test -p cutroom-gtk dialog_sizes -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn dialog_sizes() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path().join("config"));
+        if gtk::init().is_err() || !test_media::init() {
+            return;
+        }
+        let application = gtk::Application::builder()
+            .application_id("dev.kani.sizes")
+            .build();
+        application.register(gio::Cancellable::NONE).unwrap();
+        let app: Rc<App> = App::new(&application, Vec::new());
+        let mut form = NewProjectForm::new(tmp.path().join("projects"));
+        form.name = "Sizes".into();
+        app.create_project(&form).unwrap();
+        let report = |name: &str| {
+            pump_until(|| false);
+            for w in gtk::Window::list_toplevels() {
+                let Ok(w) = w.downcast::<gtk::Window>() else { continue };
+                if !w.is_visible() || w.title().is_some_and(|t| t.ends_with("Kani")) {
+                    continue;
+                }
+                let width = w.width();
+                let (min, nat, _, _) = w.measure(gtk::Orientation::Vertical, width);
+                eprintln!(
+                    "SIZE {name}: {:?} {}x{} min height {min} natural {nat} default {:?}",
+                    w.title(),
+                    width,
+                    w.height(),
+                    w.default_size()
+                );
+                w.close();
+            }
+            pump_until(|| false);
+        };
+        crate::dialogs::about(&app);
+        report("about");
+        crate::dialogs::shortcuts(&app);
+        report("shortcuts");
+        crate::settings_ui::open(&app, None);
+        report("settings");
+        crate::project_settings_ui::open(&app);
+        report("project settings");
+    }
+
     #[test]
     fn the_application_works_end_to_end() {
         if std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
@@ -1620,6 +1670,74 @@ mod tests {
             assert!(crate::preview_tools::fullscreen_open());
             app.run_action(Action::PreviewFullscreen);
             assert!(pump_until(|| !crate::preview_tools::fullscreen_open()));
+
+            // Ctrl+A selects every clip on the timeline.
+            app.run_action(Action::SelectAll);
+            {
+                let st = app.state.borrow();
+                let s = st.session.as_ref().unwrap();
+                let all: usize = s.doc.timeline.tracks.iter().map(|t| t.clips.len()).sum();
+                assert_eq!(s.selection().len(), all);
+            }
+
+            // The picture under a point of the Player is found (topmost first).
+            {
+                let (w, h, picture_clip) = {
+                    let st = app.state.borrow();
+                    let s = st.session.as_ref().unwrap();
+                    let at = s.playhead;
+                    let top = s
+                        .doc
+                        .timeline
+                        .tracks
+                        .iter()
+                        .filter(|t| t.kind == TrackKind::Video && !t.hidden)
+                        .flat_map(|t| t.clips.iter())
+                        .find(|c| !c.disabled && c.start <= at && at < c.end())
+                        .map(|c| c.id);
+                    (s.doc.settings.width as f32, s.doc.settings.height as f32, top)
+                };
+                if picture_clip.is_some() {
+                    let found = crate::transform_overlay::clip_under(&app, (w / 2.0, h / 2.0));
+                    assert!(found.is_some(), "something is drawn in the middle");
+                }
+                assert_eq!(crate::transform_overlay::clip_under(&app, (-50.0, -50.0)), None);
+            }
+
+            // Dropping a long enough file on a clip opens the Replace window;
+            // Replace swaps the file and keeps the clip's place and length.
+            {
+                let pair = {
+                    let st = app.state.borrow();
+                    let s = st.session.as_ref().unwrap();
+                    s.doc.timeline.tracks.iter().flat_map(|t| t.clips.iter()).find_map(|c| {
+                        if c.text.is_some() {
+                            return None;
+                        }
+                        s.doc
+                            .media
+                            .iter()
+                            .find(|m| {
+                                m.id != c.media
+                                    && s.media_kind_of(m.id) == MediaKind::Video
+                                    && s.can_replace(c.id, m.id).is_ok()
+                            })
+                            .map(|m| (c.id, m.id, c.start, c.duration))
+                    })
+                };
+                if let Some((clip, media, start, duration)) = pair {
+                    let (window, replace) =
+                        crate::replace_ui::open(&app, clip, media).expect("the Replace window opens");
+                    pump_until(|| false);
+                    replace.emit_clicked();
+                    assert!(pump_until(|| !window.is_visible()));
+                    let st = app.state.borrow();
+                    let (_, c) = st.session.as_ref().unwrap().doc.timeline.find_clip(clip).unwrap();
+                    assert_eq!((c.media, c.start, c.duration), (media, start, duration));
+                } else {
+                    eprintln!("no clip/file pair for the Replace check");
+                }
+            }
 
             // The old places for these are gone: no Settings submenu items for them.
             if let Ok(dir) = std::env::var("KANI_SHOT_DIR") {

@@ -26,6 +26,7 @@ mod preview;
 mod preview_gpu;
 mod preview_tools;
 mod range_select;
+mod replace_ui;
 mod hwdecode;
 mod project_settings_ui;
 mod settings_ui;

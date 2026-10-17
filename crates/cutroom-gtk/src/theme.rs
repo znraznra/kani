@@ -168,7 +168,19 @@ pub fn mark_window(window: &impl IsA<gtk::Widget>, dark: bool) {
 pub fn apply(choice: ThemeChoice) -> bool {
     let dark = is_dark(choice, system_prefers_dark());
     if let Some(settings) = gtk::Settings::default() {
-        settings.set_gtk_application_prefer_dark_theme(dark);
+        // GTK 4.20 replaced "prefer dark theme" with an interface colour
+        // scheme and warns when the old one is set; use whichever this GTK has.
+        let set_new = settings
+            .find_property("gtk-interface-color-scheme")
+            .and_then(|spec| {
+                let class = gtk::glib::EnumClass::with_type(spec.value_type())?;
+                class.to_value_by_nick(if dark { "dark" } else { "light" })
+            })
+            .map(|value| settings.set_property_from_value("gtk-interface-color-scheme", &value))
+            .is_some();
+        if !set_new {
+            settings.set_gtk_application_prefer_dark_theme(dark);
+        }
     }
     dark
 }
@@ -213,6 +225,26 @@ popover.menu scrollbar.vertical trough {
     min-height: 24px;
     padding-top: 2px;
     padding-bottom: 2px;
+}
+.cc-toast {
+    padding: 8px 16px;
+    border-radius: 18px;
+    background: rgba(20, 20, 24, 0.85);
+    color: #ffffff;
+}
+.preview-fullscreen { background: #000000; }
+.cc-fullscreen-bar {
+    padding: 8px 16px;
+    background: rgba(15, 16, 19, 0.85);
+    color: #ffffff;
+}
+.cc-proxy-badge {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 0 4px;
+    border-radius: 3px;
+    background: #26c6b0;
+    color: #0f1013;
 }
 .cutroom-selected {
     box-shadow: inset 0 0 0 2px #26c6b0;

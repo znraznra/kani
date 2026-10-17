@@ -537,7 +537,7 @@ pub fn hardware_codec_lines() -> Vec<String> {
     lines
 }
 
-/// `Version 0.5.29 (built 2026-10-13, commit abc1234)`.
+/// `Version 0.5.30 (built 2026-10-13, commit abc1234)`.
 pub fn version_line() -> String {
     let commit = env!("CUTROOM_GIT_HASH");
     let mut line = format!(
@@ -718,7 +718,7 @@ pub fn about(app: &Rc<App>) {
     label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     let scroll = gtk::ScrolledWindow::new();
     scroll.set_child(Some(&label));
-    scroll.set_min_content_height(300);
+    scroll.set_min_content_height(140);
     scroll.set_vexpand(true);
     system_page.append(&scroll);
     let copy = gtk::Button::with_label("Copy system information");
@@ -781,7 +781,7 @@ pub fn about(app: &Rc<App>) {
     }
     let credits_scroll = gtk::ScrolledWindow::new();
     credits_scroll.set_child(Some(&list));
-    credits_scroll.set_min_content_height(300);
+    credits_scroll.set_min_content_height(140);
     credits_scroll.set_vexpand(true);
     credits_page.append(&credits_scroll);
     let copy_credits = gtk::Button::with_label("Copy credits");
@@ -860,7 +860,9 @@ pub fn shortcuts(app: &Rc<App>) {
     planned_title.set_xalign(0.0);
     planned_title.set_margin_top(8);
     planned_title.add_css_class("heading");
-    body.append(&planned_title);
+    if !PLANNED.is_empty() {
+        body.append(&planned_title);
+    }
     for planned in PLANNED {
         let l = gtk::Label::new(Some(&format!(
             "{}: {} (needs {})",
@@ -874,7 +876,11 @@ pub fn shortcuts(app: &Rc<App>) {
     let scroll = gtk::ScrolledWindow::new();
     scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     scroll.set_child(Some(&body));
-    scroll.set_min_content_height(480);
+    // A small minimum so the window can be made short without GTK warnings;
+    // it opens taller.
+    scroll.set_min_content_height(200);
+    scroll.set_vexpand(true);
+    window.set_default_size(620, 600);
     window.set_child(Some(&scroll));
     window.present();
 }

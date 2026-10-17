@@ -659,6 +659,17 @@ pub struct Preview {
     /// Put the picture together on the graphics chip (when it can).
     gpu_wanted: bool,
     gpu: Option<crate::preview_gpu::PreviewGpu>,
+    /// Recently bent pictures (see [`Preview::bent`]).
+    bends: Vec<Bend>,
+}
+
+/// A bent copy of a picture, kept while it is still wanted.
+struct Bend {
+    source: Arc<Frame>,
+    placement: Placement,
+    size: (u32, u32),
+    bent: Arc<Frame>,
+    straight: Placement,
 }
 
 impl Preview {
@@ -677,6 +688,7 @@ impl Preview {
             scrub_audio: false,
             gpu_wanted: false,
             gpu: None,
+            bends: Vec::new(),
         }
     }
 
@@ -698,7 +710,48 @@ impl Preview {
         }
     }
 
+    /// `frame` placed by `placement` as a picture that needs no bending: the
+    /// same picture for plain layers, else a bent copy (reused while the
+    /// picture, the bend and the size stay the same).
+    fn bent(&mut self, frame: &Arc<Frame>, placement: &Placement, size: (u32, u32)) -> (Arc<Frame>, Placement) {
+        if !placement.has_distort() {
+            return (frame.clone(), *placement);
+        }
+        if let Some(hit) = self
+            .bends
+            .iter()
+            .find(|b| Arc::ptr_eq(&b.source, frame) && b.placement == *placement && b.size == size)
+        {
+            return (hit.bent.clone(), hit.straight);
+        }
+        match cutroom_compose::prebend(frame, placement, size.0, size.1) {
+            Some((bent, straight)) => {
+                let bent = Arc::new(bent);
+                self.bends.push(Bend {
+                    source: frame.clone(),
+                    placement: *placement,
+                    size,
+                    bent: bent.clone(),
+                    straight,
+                });
+                if self.bends.len() > 8 {
+                    self.bends.remove(0);
+                }
+                (bent, straight)
+            }
+            None => (
+                frame.clone(),
+                Placement {
+                    pin: [0.0; 8],
+                    mesh: [0.0; 32],
+                    ..*placement
+                },
+            ),
+        }
+    }
+
     /// Is the picture being put together on the graphics chip right now?
+    #[cfg(test)]
     pub fn gpu_in_use(&self) -> bool {
         self.gpu_wanted && self.gpu.is_some()
     }
@@ -1064,8 +1117,18 @@ impl Preview {
         } else {
             None
         };
-        let canvas = on_card
-            .unwrap_or_else(|| compose(size.0, size.1, picked.iter().map(|(f, p, _)| (&**f, p))));
+        let canvas = match on_card {
+            Some(c) => c,
+            None => {
+                // Bent layers come from a small cache, so a bent photo or text
+                // is not bent again for every picture of the video around it.
+                let layers: Vec<(Arc<Frame>, Placement)> = picked
+                    .iter()
+                    .map(|(f, p, _)| self.bent(f, p, size))
+                    .collect();
+                compose(size.0, size.1, layers.iter().map(|(f, p)| (&**f, p)))
+            }
+        };
         self.last_render = Some(key);
         Some(canvas)
     }

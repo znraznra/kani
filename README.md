@@ -163,8 +163,9 @@ couldn't confirm for CapCut). The single table lives in `crates/cutroom-core/src
 | Ctrl+E | Export the video | CapCut |
 | Ctrl+Shift+X | Pick a range on the timeline to export | Convention |
 | F11 | Full screen preview | Convention |
+| Ctrl+A | Select every clip on the timeline | Convention |
 
-Ctrl+E opens Export; Ctrl+Shift+X picks a range on the timeline first (see Export). F11 shows the preview full screen (Esc, F11 or a double click close it; Space plays). Not enabled yet: select all.
+Ctrl+E opens Export; Ctrl+Shift+X picks a range on the timeline first (see Export). F11 shows the preview full screen (Esc, F11 or a double click close it; Space plays). Every listed shortcut works.
 
 ## Export
 
@@ -265,12 +266,24 @@ Speech recognition is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) thr
 needs `cmake`, a C++ compiler and `libclang`. To build without it: `cargo build -p cutroom-gtk --no-default-features`.
 Tiny and Base are fast but often wrong, especially with noise or non-English speech; Medium and Large v3 Turbo are far more accurate and slower on a CPU. Word times are fitted to where the sound actually is, and phrases the model hears in silence are dropped.
 
+## Timeline
+
+A click anywhere on the timeline moves the playhead there (and a click on a clip also selects it). **Ctrl+A** selects
+every clip. **Replace a clip:** drag a file from the media library onto a clip. A file shorter than the clip is refused
+(the clip shows why while you hold it there); a photo replaces it at once; for a longer video or sound file a window
+opens with a preview and a strip of the file with a highlighted part as long as the clip: slide it to the part you
+want, press Play this part to watch it, then Replace. The clip keeps its place, length, look, keyframes and sound
+settings, and Undo puts the old file back.
+
 ## The Player
 
 The three-line button at the top right of the Player: **Show rulers** (picture pixels along the top and left), **Show grid**
 (ten square cells across), **Show guides**, and **Reset guides**. Drag out of a ruler to make a guide, drag a guide to move it,
-drag it back onto the ruler or off the picture to remove it; guides are saved with the project. The fit button
-resets the zoom so the picture fits the Player; the arrows button (or F11) shows it full screen. Guides and the grid are
+drag it back onto the ruler or off the picture to remove it; guides are saved with the project. **Lock guides** stops them
+being moved, made or removed. **Click a picture in the Player** to select that clip (the topmost one under the pointer) and
+drag to move it straight away; clicking where nothing is drawn clears the selection. The fit button
+resets the zoom so the picture fits the Player; the arrows button (or F11) shows it full screen, with a note on how to
+leave, and play / position slider / time / Exit controls along the bottom that hide while the pointer rests. Guides and the grid are
 visual aids for now: the transform box does not snap to them yet.
 
 ## Settings
@@ -289,7 +302,7 @@ defaults. Everything else is listed and disabled until its phase. See [docs/SETT
 | 3 | Media core: probing, thumbnails, preview, mixed sound, stills, waveforms, filmstrips, proxies, scrub throttling, decoder reporting (done); **automatic proxies, proxy quality, hardware-decode switch, preview resolution, remux on import and scrub sound (0.5.29)**; still to do: check hardware decoding on real machines and footage, proxy encoder choice per machine |
 | 4 | Compositor: **layers, transforms, opacity, on-canvas transform box, crossfades and keyframes (done, CPU)**; deferred: GPU backend, blend modes, skipping decode of fully covered layers |
 | 5 | Export: **MP4 (H.264 + AAC) with the same pictures and sound as the preview, optional graphics-card compositing (Automatic / Always / Never in the Export window; Automatic uses the card only when a check found a real graphics chip clearly faster, and falls back to the processor for anything it cannot draw), a redesigned Export window (video and/or separate sound file, NTSC-to-PAL sizes by aspect ratio, bit rate presets, H.264 / H.265 / VP9 / AV1, MP4 / MOV / MKV / WebM, frame rate, AAC / MP3 / Opus / FLAC / WAV, mono or stereo, .srt / .vtt / .ass caption files, encoder and graphics-card choices), progress and cancel, and the best encoder that works on the machine (NVENC, Quick Sync, VA-API, AMF, VideoToolbox, else x264) with automatic fallback**; the sound file is made in parallel with the video; export of a time range or of selected clips (also picked with handles on the timeline, Ctrl+Shift+X); presets for named sites; still to do: the new H.265 / VP9 / AV1 hardware encoders checked on real machines, Windows (EGL, NVENC) |
-| 6 | Text engine and templates: **text clips (font, size, colour, outline, shadow, box, spacing), nine built-in styles, skew, perspective, corner pin and 4x4 mesh warp, all grouped as Morph with per-entry resets and keyframes (done)**; still to do: GPU path for warped clips, user-saved text styles, snapping the transform box to guides and the grid |
+| 6 | Text engine and templates: **text clips (font, size, colour, outline, shadow, box, spacing), nine built-in styles, skew, perspective, corner pin and 4x4 mesh warp, all grouped as Morph with per-entry resets and keyframes (done)**; corner pin and mesh warp also drawn on the graphics chip (0.5.30); still to do: user-saved text styles, snapping the transform box to guides and the grid |
 | 7 | Captions with local Whisper, styled word highlighting: **generate captions from the sound of selected clips (or the whole timeline), five caption looks, the spoken word or the line so far lit up as it is said, editable word by word, .srt / .vtt export (done)**; the Captions track holds only generated captions (text and media are placed on other tracks); still to do: **import caption files (.srt / .vtt / .ass) onto the Captions track**, real-world accuracy checks on your machine, speaker labels, translation, GPU-accelerated recognition |
 | 8 | Asset libraries and the pack format, with license tracking |
 | 9 | `.cube` LUTs and basic grading |
@@ -298,7 +311,7 @@ defaults. Everything else is listed and disabled until its phase. See [docs/SETT
 
 ## Version numbers
 
-`major.phase.iteration`, for example `0.5.29`:
+`major.phase.iteration`, for example `0.5.30`:
 
 - **major**: the approved official release (0 until one is approved)
 - **phase**: the development phase being worked on (4 = compositor and editing UI, 5 = export, 6 = text, 7 = captions)

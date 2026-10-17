@@ -450,6 +450,26 @@ impl GpuCompositor {
 
     /// Draw one quad with the bound state (the caller has set up the target).
     fn draw_quad(&mut self, texture: glow::Texture, quad: &Quad, opacity: f32) {
+        self.draw_vertices(
+            texture,
+            &quad.vertices,
+            glow::TRIANGLE_STRIP,
+            quad.size,
+            quad.scale,
+            opacity,
+        );
+    }
+
+    /// Draw triangles (six floats a corner: clip x, y, z, w, then u, v).
+    fn draw_vertices(
+        &mut self,
+        texture: glow::Texture,
+        vertices: &[f32],
+        mode: u32,
+        size: (f32, f32),
+        shown: f32,
+        opacity: f32,
+    ) {
         let gl = &self.gl;
         unsafe {
             gl.use_program(Some(self.program));
@@ -458,26 +478,72 @@ impl GpuCompositor {
             gl.uniform_1_i32(gl.get_uniform_location(self.program, "picture").as_ref(), 0);
             gl.uniform_2_f32(
                 gl.get_uniform_location(self.program, "size").as_ref(),
-                quad.size.0,
-                quad.size.1,
+                size.0,
+                size.1,
             );
-            gl.uniform_1_f32(
-                gl.get_uniform_location(self.program, "shown").as_ref(),
-                quad.scale,
-            );
+            gl.uniform_1_f32(gl.get_uniform_location(self.program, "shown").as_ref(), shown);
             gl.uniform_1_f32(
                 gl.get_uniform_location(self.program, "opacity").as_ref(),
                 opacity,
             );
             gl.bind_vertex_array(Some(self.vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
-            gl.buffer_data_u8_slice(
-                glow::ARRAY_BUFFER,
-                bytes_of(&quad.vertices),
-                glow::STREAM_DRAW,
-            );
-            gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes_of(vertices), glow::STREAM_DRAW);
+            gl.draw_arrays(mode, 0, (vertices.len() / 6) as i32);
         }
+    }
+
+    /// A bent picture (corner pin, mesh warp) as a fine grid of triangles:
+    /// each grid point goes where [`Mapper`] says the picture's point lands,
+    /// which follows the same steps as the processor's drawing.
+    fn draw_warped(&mut self, frame: &Arc<Frame>, placement: &Placement) -> Result<(), String> {
+        const CELLS: usize = 24;
+        let (cw, ch) = (self.width as f32, self.height as f32);
+        let (sw, sh) = (frame.width as f32, frame.height as f32);
+        let mapper = cutroom_compose::mapping::Mapper::new(placement, (cw, ch), (sw, sh));
+        let n = CELLS + 1;
+        let mut points = Vec::with_capacity(n * n);
+        for j in 0..n {
+            for i in 0..n {
+                let (u, v) = (i as f32 / CELLS as f32, j as f32 / CELLS as f32);
+                let (px, py) = mapper.point(u, v).ok_or_else(|| {
+                    format!("{UNSUPPORTED}perspective too strong for the card path")
+                })?;
+                points.push((2.0 * px / cw - 1.0, 2.0 * py / ch - 1.0, u, v));
+            }
+        }
+        let mut vertices = Vec::with_capacity(CELLS * CELLS * 36);
+        for j in 0..CELLS {
+            for i in 0..CELLS {
+                let at = |a: usize, b: usize| points[b * n + a];
+                for (a, b) in [
+                    (i, j),
+                    (i + 1, j),
+                    (i, j + 1),
+                    (i + 1, j),
+                    (i + 1, j + 1),
+                    (i, j + 1),
+                ] {
+                    let (x, y, u, v) = at(a, b);
+                    vertices.extend_from_slice(&[x, y, 0.0, 1.0, u, v]);
+                }
+            }
+        }
+        let fit = if placement.natural {
+            1.0
+        } else {
+            (cw / sw).min(ch / sh)
+        };
+        let texture = self.texture_for(frame.clone(), frame.width, frame.height, &frame.rgba);
+        self.draw_vertices(
+            texture,
+            &vertices,
+            glow::TRIANGLES,
+            (sw, sh),
+            fit * placement.scale,
+            placement.opacity.min(1.0),
+        );
+        Ok(())
     }
 
     /// Draw `frame` like [`cutroom_compose::Canvas::draw`] would and return the
@@ -563,8 +629,11 @@ impl GpuCompositor {
     /// Lay `frame` over the picture like [`cutroom_compose::Canvas::draw`] would.
     pub fn draw(&mut self, frame: &Arc<Frame>, placement: &Placement) -> Result<(), String> {
         if placement.has_distort() {
-            // Corner pin and mesh warp bend the picture itself: the processor does those.
-            return Err(format!("{UNSUPPORTED}corner pin or mesh warp"));
+            // Corner pin and mesh warp: a grid of triangles bends the picture.
+            if frame.width == 0 || frame.height == 0 || placement.opacity <= 0.0 || placement.scale <= 0.0 {
+                return Ok(());
+            }
+            return self.draw_warped(frame, placement);
         }
         let Some(quad) = self.quad(frame, placement)? else {
             return Ok(());
@@ -862,6 +931,49 @@ mod tests {
             120 * 200
         );
         assert!(off < 120 * 200 / 50, "{off} pixels differ (worst {worst})");
+    }
+
+    #[test]
+    fn bent_pictures_on_the_card_match_the_processor() {
+        let Ok(mut card) = GpuCompositor::new(120, 200) else {
+            eprintln!("no OpenGL here: skipping");
+            return;
+        };
+        let frame = picture();
+        let mut mesh = [0.0f32; 32];
+        mesh[10] = 0.08; // a middle point pushed right
+        mesh[13] = -0.06; // another pulled up
+        let mut pin = [0.0f32; 8];
+        pin[2] = -0.1; // top right corner in
+        pin[5] = 0.05; // bottom right corner down
+        for (name, placement) in [
+            ("mesh", Placement { scale: 1.1, mesh, ..Placement::default() }),
+            ("pin", Placement { scale: 1.0, pin, ..Placement::default() }),
+            (
+                "pin, flipped and turned",
+                Placement {
+                    scale: 0.9,
+                    pin,
+                    mesh,
+                    flip_h: true,
+                    rotation: 12.0,
+                    ..Placement::default()
+                },
+            ),
+        ] {
+            let mut cpu = Canvas::new(120, 200);
+            cpu.draw(&frame, &placement);
+            card.begin_picture();
+            card.draw(&frame, &placement).unwrap();
+            let on_card = card.finish_picture().unwrap();
+            let off = on_card
+                .chunks_exact(4)
+                .zip(cpu.rgba.chunks_exact(4))
+                .filter(|(p, q)| (0..3).any(|c| p[c].abs_diff(q[c]) > 24))
+                .count();
+            eprintln!("{name}: {off} of {} pixels differ by more than 24", 120 * 200);
+            assert!(off < 120 * 200 / 25, "{name}: {off} pixels differ");
+        }
     }
 
     #[test]

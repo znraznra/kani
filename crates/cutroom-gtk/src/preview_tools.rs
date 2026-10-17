@@ -173,7 +173,7 @@ pub fn menu_button(app: &Rc<App>) -> gtk::MenuButton {
 
     type Get = fn(&cutroom_core::settings::Settings) -> bool;
     type Set = fn(&mut cutroom_core::settings::Settings, bool);
-    let rows: [(&str, &str, Get, Set); 3] = [
+    let rows: [(&str, &str, Get, Set); 4] = [
         (
             "Show rulers",
             "Rulers along the top and left, in picture pixels. Drag out of a ruler to make a guide.",
@@ -191,6 +191,12 @@ pub fn menu_button(app: &Rc<App>) -> gtk::MenuButton {
             "Guide lines dragged out of the rulers. They are kept in the project.",
             |s| s.show_guides,
             |s, v| s.show_guides = v,
+        ),
+        (
+            "Lock guides",
+            "Guides stay where they are: they cannot be moved, made or removed until unlocked.",
+            |s| s.lock_guides,
+            |s, v| s.lock_guides = v,
         ),
     ];
     for (label, tip, get, set) in rows {
@@ -228,6 +234,11 @@ pub fn menu_button(app: &Rc<App>) -> gtk::MenuButton {
 
 /// Remove every guide from the project.
 pub fn reset_guides(app: &Rc<App>) {
+    if app.state.borrow().settings.lock_guides {
+        app.set_status("Guides are locked: unlock them in the Player menu first");
+        app.refresh();
+        return;
+    }
     let removed = {
         let mut st = app.state.borrow_mut();
         st.session.as_mut().is_some_and(|s| s.reset_guides())
@@ -261,8 +272,10 @@ pub fn update_texture(texture: &gdk::Texture) {
     });
 }
 
-/// Open the preview full screen on black, or close it. Esc, F11 or a double
-/// click close it; Space plays and pauses.
+/// Open the preview full screen on black, or close it. A note at the top
+/// says how to leave; the controls along the bottom (play, the position
+/// slider, the time and an exit button) show while the pointer moves.
+/// Esc, F11 or a double click close it; Space plays and pauses.
 pub fn toggle_fullscreen(app: &Rc<App>) {
     if let Some((window, _)) = FULL.with(|f| f.borrow().clone()) {
         window.close();
@@ -277,12 +290,148 @@ pub fn toggle_fullscreen(app: &Rc<App>) {
     picture.set_hexpand(true);
     picture.set_vexpand(true);
     picture.set_paintable(app.ui().editor.current_paintable().as_ref());
+    let overlay = gtk::Overlay::new();
+    overlay.set_child(Some(&picture));
+
+    // The note at the top, for three seconds.
+    let toast = gtk::Label::new(Some("Entering full screen preview. Press Esc to exit"));
+    toast.add_css_class("cc-toast");
+    let toast_holder = gtk::Revealer::new();
+    toast_holder.set_transition_type(gtk::RevealerTransitionType::Crossfade);
+    toast_holder.set_child(Some(&toast));
+    toast_holder.set_halign(gtk::Align::Center);
+    toast_holder.set_valign(gtk::Align::Start);
+    toast_holder.set_margin_top(24);
+    toast_holder.set_can_target(false);
+    toast_holder.set_reveal_child(true);
+    overlay.add_overlay(&toast_holder);
+    {
+        let toast_holder = toast_holder.clone();
+        gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(3), move || {
+            toast_holder.set_reveal_child(false);
+        });
+    }
+
+    // The controls along the bottom.
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    bar.add_css_class("cc-fullscreen-bar");
+    let play = icons::button(icons::PLAY, "Play / pause (Space)");
+    play.set_widget_name(icons::PLAY);
+    let seek = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 0.001);
+    seek.set_draw_value(false);
+    seek.set_hexpand(true);
+    let time = gtk::Label::new(None);
+    time.add_css_class("timecode");
+    let exit = gtk::Button::with_label("Exit full screen");
+    exit.set_tooltip_text(Some("Esc"));
+    // Keys go to the window (Space plays), not to these controls.
+    play.set_focusable(false);
+    seek.set_focusable(false);
+    exit.set_focusable(false);
+    bar.append(&play);
+    bar.append(&seek);
+    bar.append(&time);
+    bar.append(&exit);
+    let controls = gtk::Revealer::new();
+    controls.set_transition_type(gtk::RevealerTransitionType::Crossfade);
+    controls.set_child(Some(&bar));
+    controls.set_valign(gtk::Align::End);
+    controls.set_reveal_child(true);
+    overlay.add_overlay(&controls);
+
     let window = gtk::Window::builder()
         .title("Kani - full screen preview")
         .transient_for(&app.window)
-        .child(&picture)
+        .child(&overlay)
         .build();
     window.add_css_class("preview-fullscreen");
+    {
+        let app = app.clone();
+        play.connect_clicked(move |_| app.run_action(Action::TogglePlay));
+    }
+    {
+        let window = window.clone();
+        exit.connect_clicked(move |_| window.close());
+    }
+    // Moving the slider moves the playhead (the update below must not).
+    let updating = Rc::new(std::cell::Cell::new(false));
+    {
+        let (app, updating) = (app.clone(), updating.clone());
+        seek.connect_value_changed(move |scale| {
+            if updating.get() {
+                return;
+            }
+            {
+                let mut st = app.state.borrow_mut();
+                let Some(s) = st.session.as_mut() else { return };
+                let end = s.timeline_end();
+                let t = cutroom_timeline::Ticks((end.0 as f64 * scale.value()).round() as i64);
+                s.set_playhead(t);
+            }
+            app.sync_preview(true);
+            crate::editor::on_tick(&app);
+        });
+    }
+    // Keep the slider, time and play button in step; hide the controls when
+    // the pointer rests.
+    let idle_since = Rc::new(std::cell::Cell::new(std::time::Instant::now()));
+    {
+        let (app, seek, time, play, controls, updating, idle_since) = (
+            app.clone(),
+            seek.clone(),
+            time.clone(),
+            play.clone(),
+            controls.clone(),
+            updating.clone(),
+            idle_since.clone(),
+        );
+        gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            if !fullscreen_open() {
+                return gtk::glib::ControlFlow::Break;
+            }
+            let facts = {
+                let st = app.state.borrow();
+                st.session.as_ref().map(|s| {
+                    (
+                        s.playhead,
+                        s.timeline_end(),
+                        s.playing,
+                        s.doc.settings.frame_rate,
+                    )
+                })
+            };
+            if let Some((at, end, playing, rate)) = facts {
+                updating.set(true);
+                seek.set_value(if end.0 > 0 {
+                    at.0 as f64 / end.0 as f64
+                } else {
+                    0.0
+                });
+                updating.set(false);
+                time.set_text(&format!(
+                    "{} / {}",
+                    cutroom_core::view::timecode(at, rate),
+                    cutroom_core::view::timecode(end, rate)
+                ));
+                icons::set_button_icon(
+                    &play,
+                    if playing { icons::PAUSE } else { icons::PLAY },
+                    16,
+                );
+            }
+            controls.set_reveal_child(idle_since.get().elapsed() < std::time::Duration::from_secs(3));
+            gtk::glib::ControlFlow::Continue
+        });
+    }
+    let motion = gtk::EventControllerMotion::new();
+    {
+        let (idle_since, controls) = (idle_since.clone(), controls.clone());
+        motion.connect_motion(move |_, _, _| {
+            idle_since.set(std::time::Instant::now());
+            controls.set_reveal_child(true);
+        });
+    }
+    window.add_controller(motion);
     let keys = gtk::EventControllerKey::new();
     {
         let (app, window) = (app.clone(), window.clone());
@@ -308,7 +457,7 @@ pub fn toggle_fullscreen(app: &Rc<App>) {
             }
         });
     }
-    window.add_controller(click);
+    picture.add_controller(click);
     window.connect_close_request(|_| {
         FULL.with(|f| *f.borrow_mut() = None);
         gtk::glib::Propagation::Proceed

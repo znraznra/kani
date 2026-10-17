@@ -414,43 +414,16 @@ impl Canvas {
         if placement.has_distort() {
             // A bent picture: bend it first, then place the result as if it were
             // the picture (same centre, same size per picture pixel).
-            let straight = Placement {
-                pin: [0.0; 8],
-                mesh: [0.0; 32],
-                ..*placement
-            };
-            let fit = if placement.natural {
-                1.0
-            } else {
-                (cw / sw).min(ch / sh)
-            };
-            // A picture drawn smaller than it is gets smaller first: bending
-            // costs by the pixel, and the extra detail would be lost anyway.
-            let shown = placement.scale * fit;
-            let (small, shrunk);
-            let (source, shrink_by) = if shown < 0.7 && shown > 0.0 {
-                let (tw, th) = (
-                    (sw * shown).round().max(2.0) as u32,
-                    (sh * shown).round().max(2.0) as u32,
-                );
-                small = warp::shrink(frame, tw, th);
-                shrunk = tw as f32 / sw;
-                (&small, shrunk)
-            } else {
-                (frame, 1.0)
-            };
-            match warp::bend_frame(source, &placement.pin, &placement.mesh) {
-                Some(bent) => {
-                    self.draw(
-                        &bent,
-                        &Placement {
-                            scale: shown / shrink_by,
-                            natural: true,
-                            ..straight
-                        },
-                    );
-                }
-                None => self.draw(frame, &straight),
+            match prebend(frame, placement, self.width, self.height) {
+                Some((bent, straight)) => self.draw(&bent, &straight),
+                None => self.draw(
+                    frame,
+                    &Placement {
+                        pin: [0.0; 8],
+                        mesh: [0.0; 32],
+                        ..*placement
+                    },
+                ),
             }
             return;
         }
@@ -870,6 +843,55 @@ pub fn render_layer(
         left: left as i32,
         top: top as i32,
     })
+}
+
+/// A bent layer (corner pin, mesh warp) as an already bent picture and the
+/// plain placement that draws it the same way on a `width` x `height` canvas.
+/// `None` when the bend cannot be made (draw the picture unbent).
+pub fn prebend(
+    frame: &Frame,
+    placement: &Placement,
+    width: u32,
+    height: u32,
+) -> Option<(Frame, Placement)> {
+    if !placement.has_distort() || frame.width == 0 || frame.height == 0 {
+        return None;
+    }
+    let (cw, ch) = (width as f32, height as f32);
+    let (sw, sh) = (frame.width as f32, frame.height as f32);
+    let straight = Placement {
+        pin: [0.0; 8],
+        mesh: [0.0; 32],
+        ..*placement
+    };
+    let fit = if placement.natural {
+        1.0
+    } else {
+        (cw / sw).min(ch / sh)
+    };
+    // A picture drawn smaller than it is gets smaller first: bending
+    // costs by the pixel, and the extra detail would be lost anyway.
+    let shown = placement.scale * fit;
+    let small;
+    let (source, shrink_by) = if shown < 0.7 && shown > 0.0 {
+        let (tw, th) = (
+            (sw * shown).round().max(2.0) as u32,
+            (sh * shown).round().max(2.0) as u32,
+        );
+        small = warp::shrink(frame, tw, th);
+        (&small, tw as f32 / sw)
+    } else {
+        (frame, 1.0)
+    };
+    let bent = warp::bend_frame(source, &placement.pin, &placement.mesh)?;
+    Some((
+        bent,
+        Placement {
+            scale: shown / shrink_by,
+            natural: true,
+            ..straight
+        },
+    ))
 }
 
 /// Stack layers, bottom first, onto a black canvas.

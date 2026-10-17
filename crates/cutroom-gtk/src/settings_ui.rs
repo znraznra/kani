@@ -727,7 +727,7 @@ fn scroll(page: &gtk::Box) -> gtk::ScrolledWindow {
     let s = gtk::ScrolledWindow::new();
     s.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     s.set_vexpand(true);
-    s.set_min_content_height(360);
+    s.set_min_content_height(200);
     s.set_child(Some(page));
     s
 }

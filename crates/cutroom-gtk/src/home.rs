@@ -43,10 +43,9 @@ pub fn build(app: &Rc<App>) -> HomeUi {
 
     // Title and main buttons.
     let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let title = gtk::Label::new(Some("Kani"));
-    title.add_css_class("cutroom-title");
+    // No title: the window already says Kani; the buttons sit on the right.
+    let title = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     title.set_hexpand(true);
-    title.set_xalign(0.0);
     let open_folder = gtk::Button::with_label("Open from folder...");
     {
         let app = app.clone();

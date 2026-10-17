@@ -943,6 +943,83 @@ impl Session {
             .unwrap_or_else(|| Ticks::from_seconds_f64(PLACEHOLDER_MEDIA_SECONDS))
     }
 
+    /// Can `media` replace `clip`? It must be long enough to fill the clip
+    /// (photos always are) and fit its track.
+    pub fn can_replace(&self, clip: ClipId, media: MediaId) -> Result<(), String> {
+        let Some((track, c)) = self.doc.timeline.find_clip(clip) else {
+            return Err("That clip is gone".into());
+        };
+        if c.text.is_some() {
+            return Err("Text clips can't be replaced with a file".into());
+        }
+        if track.locked {
+            return Err("The track is locked".into());
+        }
+        if !self.can_place_on(media, track.kind) {
+            return Err("That file can't go on this kind of track".into());
+        }
+        if self.media_kind_of(media) == MediaKind::Image {
+            return Ok(());
+        }
+        let Some(length) = self.known_media_duration(media) else {
+            return Err("The file is still being read; try again in a moment".into());
+        };
+        if length < c.duration {
+            return Err(format!(
+                "Too short to replace this clip: the file is {:.1} s, the clip is {:.1} s",
+                length.as_seconds_f64(),
+                c.duration.as_seconds_f64()
+            ));
+        }
+        Ok(())
+    }
+
+    /// Put `media` in place of what `clip` shows, starting `source_in` into the
+    /// file. The clip keeps its place, length, look, keyframes and sound
+    /// settings. One undo step.
+    pub fn replace_clip_media(&mut self, clip: ClipId, media: MediaId, source_in: Ticks) -> bool {
+        if let Err(why) = self.can_replace(clip, media) {
+            self.status = Some(why);
+            return false;
+        }
+        let Some((track, c)) = self.doc.timeline.find_clip(clip) else {
+            return false;
+        };
+        let track = track.id;
+        let mut new = c.clone();
+        new.media = media;
+        new.source_in = if self.media_kind_of(media) == MediaKind::Image {
+            Ticks::ZERO
+        } else {
+            let length = self.known_media_duration(media).unwrap_or(Ticks::ZERO);
+            source_in.clamp(Ticks::ZERO, (length - c.duration).max(Ticks::ZERO))
+        };
+        let done = self.exec(Edit::Batch(vec![
+            Edit::RemoveClip { clip },
+            Edit::InsertClip { track, clip: new },
+        ]));
+        if done {
+            self.selected = Some(clip);
+            self.status = Some("Replaced the clip".into());
+        }
+        done
+    }
+
+    /// Select every clip on the timeline (locked tracks too: selection does not edit).
+    pub fn select_all(&mut self) -> usize {
+        let all: Vec<ClipId> = self
+            .doc
+            .timeline
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter().map(|c| c.id))
+            .collect();
+        let n = all.len();
+        self.select_many(&all);
+        self.status = Some(format!("Selected {n} clip(s)"));
+        n
+    }
+
     /// The real duration, once Phase 3 has probed the file. `None` until then.
     pub fn known_media_duration(&self, id: MediaId) -> Option<Ticks> {
         self.doc.media_item(id).ok().and_then(|m| m.duration)
@@ -4021,6 +4098,56 @@ mod tests {
             duration: clip.duration,
             source_in: clip.source_in,
         }));
+    }
+
+    #[test]
+    fn a_clip_is_replaced_only_by_a_file_long_enough_and_keeps_its_place() {
+        let (tmp, mut session) = new_session();
+        let probe = |s: &mut Session, id, secs| {
+            s.apply_probe(
+                id,
+                Some(Ticks::from_seconds_f64(secs)),
+                cutroom_project::MediaProbe {
+                    has_video: true,
+                    has_audio: true,
+                    width: 640,
+                    height: 360,
+                    frame_rate: Some(FrameRate::FPS_30),
+                },
+            )
+        };
+        let a = import_one(&tmp, &mut session, "a.mp4");
+        let short = import_one(&tmp, &mut session, "short.mp4");
+        let long = import_one(&tmp, &mut session, "long.mp4");
+        probe(&mut session, a, 6.0);
+        probe(&mut session, short, 2.0);
+        probe(&mut session, long, 20.0);
+        let clip = session.add_media_to_timeline(a).unwrap();
+        let before = session.doc.timeline.find_clip(clip).unwrap().1.clone();
+        assert!(session.can_replace(clip, short).is_err());
+        assert!(!session.replace_clip_media(clip, short, Ticks::ZERO));
+        assert!(session.status.as_deref().unwrap().contains("Too short"));
+        assert!(session.replace_clip_media(clip, long, Ticks::from_seconds_f64(30.0)));
+        let after = session.doc.timeline.find_clip(clip).unwrap().1.clone();
+        assert_eq!(after.media, long);
+        assert_eq!((after.start, after.duration), (before.start, before.duration));
+        assert_eq!(
+            after.source_in,
+            Ticks::from_seconds_f64(14.0),
+            "the segment is kept inside the file"
+        );
+        session.undo();
+        assert_eq!(session.doc.timeline.find_clip(clip).unwrap().1.media, a);
+    }
+
+    #[test]
+    fn select_all_selects_every_clip() {
+        let (tmp, mut session) = new_session();
+        let a = import_one(&tmp, &mut session, "a.mp4");
+        session.add_media_to_timeline(a);
+        session.add_media_to_timeline(a);
+        assert_eq!(session.select_all(), 2);
+        assert_eq!(session.selection().len(), 2);
     }
 
     #[test]

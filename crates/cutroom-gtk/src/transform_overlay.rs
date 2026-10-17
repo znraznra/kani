@@ -9,7 +9,7 @@ use crate::theme;
 use cutroom_core::transform_box::{BoxGeom, Grab, Handle};
 use cutroom_timeline::{ClipId, Transform};
 use gtk4 as gtk;
-use gtk4::gdk;
+use gtk4::{gdk, glib};
 use gtk4::prelude::*;
 use cutroom_compose::mapping::Mapper;
 use cutroom_compose::Placement;
@@ -101,9 +101,47 @@ pub fn mode_of(app: &App, clip: ClipId) -> Distort {
 
 /// The box to show now, if the selected clip's picture is on screen.
 fn current(app: &App) -> Option<Shown> {
+    let id = app.state.borrow().session.as_ref()?.selected?;
+    shown_for(app, id)
+}
+
+/// The topmost clip whose picture is drawn at `pos` (canvas pixels) now.
+pub(crate) fn clip_under(app: &App, pos: (f32, f32)) -> Option<ClipId> {
+    let candidates: Vec<ClipId> = {
+        let st = app.state.borrow();
+        let session = st.session.as_ref()?;
+        let at = session.playhead;
+        // The first track is the top layer.
+        session
+            .doc
+            .timeline
+            .tracks
+            .iter()
+            .filter(|t| t.kind == cutroom_timeline::TrackKind::Video && !t.hidden)
+            .flat_map(|t| {
+                t.clips
+                    .iter()
+                    .filter(move |c| !c.disabled && c.start <= at && at < c.end())
+                    .map(|c| c.id)
+            })
+            .collect()
+    };
+    candidates.into_iter().find(|id| {
+        shown_for(app, *id).is_some_and(|shown| {
+            let outline = shown.mapper().outline(16);
+            if outline.len() >= 3 {
+                inside(&outline, pos)
+            } else {
+                shown.geom.hit(pos, 0.0, 0.0) == Some(Handle::Body)
+            }
+        })
+    })
+}
+
+/// Where clip `id`'s picture is on the canvas now, if it is on screen.
+fn shown_for(app: &App, id: ClipId) -> Option<Shown> {
     let st = app.state.borrow();
     let session = st.session.as_ref()?;
-    let id = session.selected?;
     if !session.can_transform(id) {
         return None;
     }
@@ -444,7 +482,7 @@ pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
         motion.connect_motion(move |_, x, y| {
             if let Some((frame, _)) = canvas_geometry(&app, &area, &canvas_widget) {
                 let st = app.state.borrow();
-                if st.settings.show_guides {
+                if st.settings.show_guides && !st.settings.lock_guides {
                     if let Some(g) = st.session.as_ref().and_then(|s| {
                         crate::preview_tools::guide_at(&s.doc.guides, frame, x, y)
                             .map(|i| s.doc.guides[i])
@@ -510,9 +548,10 @@ pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
                 use crate::preview_tools::{guide_at, RULER};
                 let (rulers, guides_on, existing) = {
                     let st = app.state.borrow();
+                    let locked = st.settings.lock_guides;
                     (
-                        st.settings.show_rulers,
-                        st.settings.show_guides,
+                        st.settings.show_rulers && !locked,
+                        st.settings.show_guides && !locked,
                         st.session
                             .as_ref()
                             .map(|s| s.doc.guides.clone())
@@ -543,6 +582,46 @@ pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
                 }
             }
             let Some((shown, under, pos)) = hit_at(x, y) else {
+                // Not on the selected clip's box: pick the clip drawn under the
+                // pointer (topmost first) and take hold of it, or let go of the
+                // selection when nothing is there.
+                let Some(((ox, oy, k), _)) = canvas_geometry(&app, &area, &canvas_widget) else {
+                    return;
+                };
+                let pos = (((x - ox) / k) as f32, ((y - oy) / k) as f32);
+                match clip_under(&app, pos) {
+                    Some(id) => {
+                        if let Some(s) = app.state.borrow_mut().session.as_mut() {
+                            s.select_only(id);
+                        }
+                        if let Some(shown) = shown_for(&app, id) {
+                            grab.set(Some((
+                                id,
+                                Grab::begin(Handle::Body, pos, shown.transform, shown.geom),
+                                shown.canvas,
+                                (x, y),
+                            )));
+                        }
+                    }
+                    None => {
+                        let had = app
+                            .state
+                            .borrow()
+                            .session
+                            .as_ref()
+                            .is_some_and(|s| !s.selection().is_empty());
+                        if had {
+                            if let Some(s) = app.state.borrow_mut().session.as_mut() {
+                                s.clear_selection();
+                            }
+                        } else {
+                            return;
+                        }
+                    }
+                }
+                let app = app.clone();
+                glib::idle_add_local_once(move || app.refresh());
+                area.queue_draw();
                 return;
             };
             let mode = mode_of(&app, shown.clip);

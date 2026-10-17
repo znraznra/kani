@@ -12,7 +12,7 @@ use cutroom_core::paths;
 use cutroom_core::settings::{Settings, ThemeChoice};
 use cutroom_core::shortcuts::{self, Action};
 use cutroom_core::state::{
-    collect_media_files, is_supported_media, ClipCopy, Session, StorageKind,
+    collect_media_files, is_supported_media, ClipCopy, Session,
 };
 use cutroom_core::timeline_logic::{Drag, DropTarget, Tool};
 use cutroom_core::view::TimelineView;
@@ -1249,6 +1249,12 @@ impl App {
             Action::ShowShortcuts => dialogs::shortcuts(self),
             Action::ShowSettings => crate::settings_ui::open(self, None),
             Action::PreviewFullscreen => crate::editor::toggle_fullscreen(self),
+            Action::SelectAll => {
+                if let Some(s) = self.state.borrow_mut().session.as_mut() {
+                    s.select_all();
+                }
+                self.refresh();
+            }
             // While a range is being picked (Shift+Ctrl+X), Export means that range.
             Action::Export => {
                 if crate::range_select::active(self) {
@@ -1350,13 +1356,6 @@ impl App {
             drop(st);
             self.preview.borrow_mut().pause();
         }
-    }
-
-    pub fn set_storage_dir(self: &Rc<Self>, which: StorageKind, dir: Option<PathBuf>) {
-        if let Some(s) = self.state.borrow_mut().session.as_mut() {
-            s.set_storage_dir(which, dir.as_deref());
-        }
-        self.refresh();
     }
 
     pub fn is_action_enabled(&self, action: Action) -> bool {

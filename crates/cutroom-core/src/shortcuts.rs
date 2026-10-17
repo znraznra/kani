@@ -50,6 +50,7 @@ pub enum Action {
     ShowShortcuts,
     ShowSettings,
     PreviewFullscreen,
+    SelectAll,
     Export,
     ExportRange,
 }
@@ -80,11 +81,6 @@ pub struct Planned {
 }
 
 pub const PLANNED: &[Planned] = &[
-    Planned {
-        keys: "Ctrl+A",
-        what: "Select all clips",
-        needs: "multi-selection",
-    },
 ];
 
 const fn b(
@@ -347,6 +343,7 @@ pub const BINDINGS: &[Binding] = &[
     b("e", true, false, Export, "Export the video", CapCut, false),
     b("comma", true, false, ShowSettings, "Settings", Convention, true),
     b("F11", false, false, PreviewFullscreen, "Full screen preview", Convention, false),
+    b("a", true, false, SelectAll, "Select every clip on the timeline", Convention, false),
     b(
         "x",
         true,
@@ -511,15 +508,10 @@ mod tests {
     }
 
     #[test]
-    fn planned_shortcuts_are_not_bound() {
-        assert!(!PLANNED.is_empty());
-        for key in ["a"] {
-            assert_eq!(
-                lookup(key, true, false, false),
-                None,
-                "Ctrl+{key} must stay inactive"
-            );
-        }
+    fn ctrl_a_selects_everything_but_not_while_typing() {
+        assert_eq!(lookup("a", true, false, false), Some(SelectAll));
+        assert_eq!(lookup("a", true, false, true), None, "Ctrl+A in a text box selects the text");
+        assert!(PLANNED.iter().all(|p| !p.keys.is_empty()));
     }
 
     #[test]

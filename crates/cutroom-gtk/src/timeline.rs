@@ -543,7 +543,16 @@ fn draw(app: &App, cr: &cairo::Context, w: f64, h: f64, scale: i32) {
     }
     // Library media being dragged in.
     if let Some(target) = &st.drop_ghost {
-        if let Some(at) = target.new_track {
+        if let Some((clip, ok)) = &target.replace {
+            if let Some((row, c)) = tl
+                .tracks
+                .iter()
+                .enumerate()
+                .find_map(|(i, t)| t.clips.iter().find(|c| c.id == *clip).map(|c| (i, c)))
+            {
+                paint_replace_ghost(cr, canvas, view, row, c.start, c.duration, ok);
+            }
+        } else if let Some(at) = target.new_track {
             paint_new_track_ghost(
                 cr,
                 canvas,
@@ -737,6 +746,26 @@ fn draw_waveform(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Media held over a clip: the clip is outlined with what letting go will do.
+fn paint_replace_ghost(
+    cr: &cairo::Context,
+    canvas: Rect,
+    view: &TimelineView,
+    row: usize,
+    start: Ticks,
+    duration: Ticks,
+    ok: &Result<(), String>,
+) {
+    paint_ghost(cr, canvas, view, row, start, duration, ok.is_ok());
+    let top = f64::from(row_top(canvas, row));
+    let x = clip_x(canvas, view, start).max(canvas.left() as f64) + 6.0;
+    let label = match ok {
+        Ok(()) => "Replace".to_string(),
+        Err(why) => why.clone(),
+    };
+    text(cr, &label, x, top + f64::from(ROW_H) / 2.0 + 4.0, 12.0, (1.0, 1.0, 1.0), true);
+}
+
 fn paint_ghost(
     cr: &cairo::Context,
     canvas: Rect,
@@ -1309,6 +1338,14 @@ fn attach_mouse(app: &Rc<App>, area: &gtk::DrawingArea) {
                             } else {
                                 session.select_only(id);
                             }
+                            // A click anywhere on the timeline also moves the playhead there.
+                            if tool != Tool::Split {
+                                session.playing = false;
+                                session.set_playhead(view::quantize_to_frame(
+                                    view_copy.time_for(pos.x - canvas.left()),
+                                    rate,
+                                ));
+                            }
                             if tool == Tool::Split {
                                 let at = view::quantize_to_frame(
                                     view_copy.time_for(pos.x - canvas.left()),
@@ -1321,6 +1358,11 @@ fn attach_mouse(app: &Rc<App>, area: &gtk::DrawingArea) {
                             if !additive {
                                 session.clear_selection();
                             }
+                            session.playing = false;
+                            session.set_playhead(view::quantize_to_frame(
+                                view_copy.time_for(pos.x - canvas.left()),
+                                rate,
+                            ));
                         }
                     }
                 }
@@ -1523,6 +1565,8 @@ fn attach_drop(app: &Rc<App>, area: &gtk::DrawingArea) {
 }
 
 fn drop_library_media(app: &Rc<App>, media: MediaId, canvas: Rect, pos: Pos2) {
+    let mut replace_with_picker = None;
+    let mut replaced = false;
     {
         let mut st = app.state.borrow_mut();
         let st = &mut *st;
@@ -1531,7 +1575,19 @@ fn drop_library_media(app: &Rc<App>, media: MediaId, canvas: Rect, pos: Pos2) {
         let Some(session) = st.session.as_mut() else {
             return;
         };
-        match drop_target(session, &st.view, canvas, pos, media, snap, threshold) {
+        let target = drop_target(session, &st.view, canvas, pos, media, snap, threshold);
+        if let Some((clip, ok)) = target.as_ref().and_then(|t| t.replace.clone()) {
+            st.dragging_media = None;
+            match ok {
+                Err(why) => session.status = Some(why),
+                Ok(()) if session.media_kind_of(media) == MediaKind::Image => {
+                    session.replace_clip_media(clip, media, Ticks::ZERO);
+                }
+                Ok(()) => replace_with_picker = Some(clip),
+            }
+            replaced = true;
+        } else {
+        match target {
             Some(target) if target.valid => match target.new_track {
                 Some(at) => {
                     session.add_media_on_new_track(
@@ -1557,7 +1613,14 @@ fn drop_library_media(app: &Rc<App>, media: MediaId, canvas: Rect, pos: Pos2) {
             Some(_) => session.status = Some("Clips can't overlap, or the track is locked".into()),
             None => session.status = Some("Drop media onto a track".into()),
         }
+        }
         st.dragging_media = None;
+    }
+    if let Some(clip) = replace_with_picker {
+        let _ = crate::replace_ui::open(app, clip, media);
+    }
+    if replaced {
+        app.sync_preview(true);
     }
     app.refresh();
 }

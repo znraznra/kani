@@ -119,6 +119,8 @@ pub struct Settings {
     pub show_rulers: bool,
     pub show_grid: bool,
     pub show_guides: bool,
+    /// Guides cannot be moved, made or removed while locked.
+    pub lock_guides: bool,
 }
 
 impl Default for Settings {
@@ -164,6 +166,7 @@ impl Default for Settings {
             show_rulers: false,
             show_grid: false,
             show_guides: true,
+            lock_guides: false,
         }
     }
 }

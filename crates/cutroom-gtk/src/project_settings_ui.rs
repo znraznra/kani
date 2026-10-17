@@ -30,6 +30,10 @@ pub struct Dialog {
     pub save: gtk::Button,
     pub cancel: gtk::Button,
     pub destination: Rc<RefCell<Option<PathBuf>>>,
+    /// Staged folder for proxies / the render cache: `None` unchanged,
+    /// `Some(None)` back to the project folder, `Some(Some(dir))` a new one.
+    pub proxy_dir: Rc<RefCell<Option<Option<PathBuf>>>>,
+    pub cache_dir: Rc<RefCell<Option<Option<PathBuf>>>>,
 }
 
 fn strings(items: impl IntoIterator<Item = String>) -> gtk::StringList {
@@ -58,7 +62,7 @@ fn grid() -> gtk::Grid {
 }
 
 pub fn open(app: &Rc<App>) -> Option<Rc<Dialog>> {
-    let (name, root, settings, copy_now) = {
+    let (name, root, settings, copy_now, proxy_now, cache_now) = {
         let st = app.state.borrow();
         let s = st.session.as_ref()?;
         (
@@ -66,6 +70,8 @@ pub fn open(app: &Rc<App>) -> Option<Rc<Dialog>> {
             s.folder.root().to_path_buf(),
             s.doc.settings.clone(),
             s.doc.storage.import_copy,
+            s.folder.proxy_dir(&s.doc),
+            s.folder.cache_dir(&s.doc),
         )
     };
     let window = dialog_window(app, "Project settings", 560);
@@ -196,17 +202,66 @@ pub fn open(app: &Rc<App>) -> Option<Rc<Dialog>> {
     g.attach(&note, 0, 8, 2, 1);
     tabs.append_page(&g, Some(&gtk::Label::new(Some("Details"))));
 
-    // ---- Performance (placeholders) -------------------------------------------
+    // ---- Performance --------------------------------------------------------
     let p = grid();
-    for (i, label) in ["Preview resolution", "Render cache", "Proxy files", "Hardware decoding"]
-        .iter()
-        .enumerate()
-    {
-        let l = gtk::Label::new(Some("Not available yet"));
+    let proxy_dir: Rc<RefCell<Option<Option<PathBuf>>>> = Rc::new(RefCell::new(None));
+    let cache_dir: Rc<RefCell<Option<Option<PathBuf>>>> = Rc::new(RefCell::new(None));
+    let mut r = 0;
+    for (label, now, staged, tip) in [
+        (
+            "Proxy files",
+            proxy_now,
+            proxy_dir.clone(),
+            "Where this project's proxies are made. A fast or big drive helps.",
+        ),
+        (
+            "Render cache",
+            cache_now,
+            cache_dir.clone(),
+            "Where this project's generated pictures (filmstrips, sound shapes) are kept.",
+        ),
+    ] {
+        let shown = gtk::Label::new(Some(&now.display().to_string()));
+        shown.set_xalign(0.0);
+        shown.set_wrap(true);
+        shown.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        shown.set_selectable(true);
+        shown.add_css_class("caption");
+        shown.set_tooltip_text(Some(tip));
+        row(&p, r, label, &shown);
+        let buttons_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let change = gtk::Button::with_label("Change...");
+        let reset = gtk::Button::with_label("Use project folder");
+        reset.add_css_class("flat");
+        {
+            let (app, shown, staged) = (app.clone(), shown.clone(), staged.clone());
+            change.connect_clicked(move |_| {
+                let (shown, staged) = (shown.clone(), staged.clone());
+                app.choose_folder("Choose a folder", move |dir| {
+                    shown.set_text(&format!("{}  (on Save)", dir.display()));
+                    *staged.borrow_mut() = Some(Some(dir));
+                });
+            });
+        }
+        {
+            let (shown, staged) = (shown.clone(), staged.clone());
+            reset.connect_clicked(move |_| {
+                shown.set_text("The project folder  (on Save)");
+                *staged.borrow_mut() = Some(None);
+            });
+        }
+        buttons_row.append(&change);
+        buttons_row.append(&reset);
+        p.attach(&buttons_row, 1, r + 1, 1, 1);
+        r += 2;
+    }
+    for label in ["Preview resolution", "Hardware decoding"] {
+        let l = gtk::Label::new(Some("Not available yet (set for all projects in Settings)"));
         l.set_xalign(0.0);
         l.add_css_class("dim-label");
         l.set_sensitive(false);
-        row(&p, i as i32, label, &l);
+        row(&p, r, label, &l);
+        r += 1;
     }
     tabs.append_page(&p, Some(&gtk::Label::new(Some("Performance"))));
 
@@ -234,6 +289,8 @@ pub fn open(app: &Rc<App>) -> Option<Rc<Dialog>> {
         save: save.clone(),
         cancel,
         destination,
+        proxy_dir,
+        cache_dir,
     });
     {
         let (app, d) = (app.clone(), dialog.clone());
@@ -271,6 +328,15 @@ pub fn apply(app: &Rc<App>, d: &Dialog) {
             Ok(n) if n > 0 => notes.push(format!("{n} file(s) copied into the project")),
             Ok(_) => {}
             Err(e) => notes.push(format!("copy failed: {e}")),
+        }
+        for (which, staged) in [
+            (cutroom_core::state::StorageKind::Proxy, d.proxy_dir.borrow().clone()),
+            (cutroom_core::state::StorageKind::Cache, d.cache_dir.borrow().clone()),
+        ] {
+            if let Some(dir) = staged {
+                s.set_storage_dir(which, dir.as_deref());
+                notes.push("storage folder changed".into());
+            }
         }
         if let Some(dest) = dest {
             match s.move_project(&dest) {
