@@ -1,4 +1,5 @@
-//! The Settings window: every preference of the app in one place.
+//! The Settings window: every preference of the app in one place, as a list
+//! of sections down the left and the chosen section on the right.
 //!
 //! Choices are staged and only take effect with Save (Cancel, Esc or closing
 //! the window drops them). Rows for things Kani cannot do yet are shown but
@@ -251,9 +252,9 @@ fn acceleration_value(i: u32) -> &'static str {
 
 fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
     let draft = Rc::new(RefCell::new(initial));
-    let window = crate::dialogs::dialog_window(app, "Settings", 760);
+    let window = crate::dialogs::dialog_window(app, "Settings", 820);
     window.set_resizable(true);
-    window.set_default_size(760, 640);
+    window.set_default_size(820, 600);
     let mut planned: Vec<(String, String, String)> = Vec::new();
     let stack = gtk::Stack::new();
     stack.set_vexpand(true);
@@ -482,41 +483,40 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
     planned_row(&advanced, &mut planned, "advanced", "Send crash reports", Planned::Switch(false), "Phase 11");
     stack.add_titled(&scroll(&advanced), Some("advanced"), "Advanced");
 
-    // ----- Tab bar -------------------------------------------------------
-    let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    tabs.add_css_class("linked");
-    let mut first: Option<gtk::ToggleButton> = None;
-    let mut buttons: Vec<(&str, gtk::ToggleButton)> = Vec::new();
-    for (id, title) in TABS {
-        let b = gtk::ToggleButton::with_label(title);
-        if let Some(f) = &first {
-            b.set_group(Some(f));
-        } else {
-            first = Some(b.clone());
-        }
+    // ----- Sidebar -------------------------------------------------------
+    // The sections run down the left; the chosen one shows on the right.
+    let sidebar = gtk::ListBox::new();
+    sidebar.set_selection_mode(gtk::SelectionMode::Single);
+    sidebar.add_css_class("navigation-sidebar");
+    for (_, title) in TABS {
+        let label = gtk::Label::new(Some(title));
+        label.set_xalign(0.0);
+        label.set_margin_top(8);
+        label.set_margin_bottom(8);
+        label.set_margin_start(10);
+        label.set_margin_end(10);
+        sidebar.append(&label);
+    }
+    {
         let stack = stack.clone();
-        b.connect_toggled(move |b| {
-            if b.is_active() {
-                stack.set_visible_child_name(id);
+        sidebar.connect_row_selected(move |_, row| {
+            if let Some(row) = row {
+                if let Some((id, _)) = TABS.get(row.index() as usize) {
+                    stack.set_visible_child_name(id);
+                }
             }
         });
-        tabs.append(&b);
-        buttons.push((id, b));
     }
-    let tab_scroll = gtk::ScrolledWindow::new();
-    tab_scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
-    tab_scroll.set_child(Some(&tabs));
-    tab_scroll.set_margin_start(18);
-    tab_scroll.set_margin_end(18);
-    tab_scroll.set_margin_top(12);
-    // Keep the buttons in step when something else changes the tab.
+    // Keep the list in step when something else changes the section.
     {
-        let buttons = buttons.clone();
+        let sidebar = sidebar.clone();
         stack.connect_visible_child_name_notify(move |s| {
             let name = s.visible_child_name();
-            for (id, b) in &buttons {
-                if Some(*id) == name.as_deref() && !b.is_active() {
-                    b.set_active(true);
+            if let Some(i) = TABS.iter().position(|(id, _)| Some(*id) == name.as_deref()) {
+                if let Some(row) = sidebar.row_at_index(i as i32) {
+                    if !row.is_selected() {
+                        sidebar.select_row(Some(&row));
+                    }
                 }
             }
         });
@@ -525,11 +525,16 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
         .filter(|t| TABS.iter().any(|(id, _)| id == t))
         .unwrap_or("general");
     stack.set_visible_child_name(start);
-    for (id, b) in &buttons {
-        if *id == start {
-            b.set_active(true);
-        }
+    if let Some(i) = TABS.iter().position(|(id, _)| *id == start) {
+        sidebar.select_row(sidebar.row_at_index(i as i32).as_ref());
     }
+    let side_scroll = gtk::ScrolledWindow::new();
+    side_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    side_scroll.set_min_content_width(170);
+    side_scroll.set_child(Some(&sidebar));
+    side_scroll.set_margin_start(12);
+    side_scroll.set_margin_top(12);
+    side_scroll.set_margin_bottom(8);
 
     let save = gtk::Button::with_label("Save");
     save.add_css_class("suggested-action");
@@ -542,14 +547,20 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
 
     let frame = gtk::Frame::new(None);
     frame.set_child(Some(&stack));
-    frame.set_margin_start(18);
+    frame.set_margin_start(12);
     frame.set_margin_end(18);
-    frame.set_margin_top(10);
+    frame.set_margin_top(12);
+    frame.set_margin_bottom(8);
+    frame.set_hexpand(true);
     frame.set_vexpand(true);
 
+    let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    body.append(&side_scroll);
+    body.append(&frame);
+    body.set_vexpand(true);
+
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    root.append(&tab_scroll);
-    root.append(&frame);
+    root.append(&body);
     root.append(&bottom);
     window.set_child(Some(&root));
 
@@ -635,7 +646,7 @@ fn scroll(page: &gtk::Box) -> gtk::ScrolledWindow {
     let s = gtk::ScrolledWindow::new();
     s.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     s.set_vexpand(true);
-    s.set_min_content_height(380);
+    s.set_min_content_height(360);
     s.set_child(Some(page));
     s
 }

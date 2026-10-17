@@ -10,7 +10,7 @@ choices, and the Auto-Captions panel keeps the spoken language, speech model and
 
 Phase: the window itself is part of Phase 2 (app shell, done); its rows follow the phase that makes them real.
 
-## Tabs and rows
+## Sections and rows (left sidebar, content on the right)
 
 Working = does something now. Disabled = shown, waiting for the phase named.
 
@@ -86,7 +86,7 @@ sticker folder (Phase 10).
 Moved into the Settings window (and removed from where they were):
 - Settings menu: Appearance and Autosave submenus. The menu now has one entry, "Settings...".
 - Home screen: "Change..." / "Use default" for the projects folder. The home screen still shows the folder, with a
-  "Change in Settings..." button that opens the Draft tab.
+  "Change in Settings..." button that opens the Draft section.
 - Media panel, Import options: "Also add dropped files to the timeline" and "Use proxies in the preview". Import
   mode (copy or reference) stays there until Project settings arrives.
 
