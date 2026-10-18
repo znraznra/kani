@@ -511,10 +511,36 @@ pub fn refresh_content(app: &Rc<App>) {
     }
 }
 
-fn draw_cover(cr: &cairo::Context, w: f64, h: f64, summary: Option<&ProjectSummary>) {
+fn draw_cover(
+    cr: &cairo::Context,
+    w: f64,
+    h: f64,
+    summary: Option<&ProjectSummary>,
+    picture: Option<&gtk::gdk_pixbuf::Pixbuf>,
+) {
     cr.set_source_rgb(0.063, 0.067, 0.082);
     rounded(cr, 0.0, 0.0, w, h, 6.0);
     let _ = cr.fill();
+    // The preview as it last was, fitted inside the card.
+    if let Some(p) = picture {
+        let (pw, ph) = (f64::from(p.width().max(1)), f64::from(p.height().max(1)));
+        let k = ((w - 8.0) / pw).min((h - 8.0) / ph);
+        let (dw, dh) = (pw * k, ph * k);
+        let (x, y) = ((w - dw) / 2.0, (h - dh) / 2.0);
+        cr.save().ok();
+        rounded(cr, x, y, dw, dh, 3.0);
+        cr.clip();
+        cr.translate(x, y);
+        cr.scale(k, k);
+        {
+            use gtk::gdk::prelude::GdkCairoContextExt;
+            cr.set_source_pixbuf(p, 0.0, 0.0);
+        }
+        cr.source().set_filter(cairo::Filter::Good);
+        let _ = cr.paint();
+        cr.restore().ok();
+        return;
+    }
     match summary {
         Some(s) => {
             let aspect = f64::from(s.width) / f64::from(s.height.max(1));
@@ -623,10 +649,20 @@ fn project_card(
         ProjectEntry::Ok(s) => Some(s.clone()),
         ProjectEntry::Broken { .. } => None,
     };
+    let picture = summary.as_ref().and_then(|_| {
+        let path = cutroom_project::cover_path(entry.path());
+        gtk::gdk_pixbuf::Pixbuf::from_file(path).ok()
+    });
     {
         let summary = summary.clone();
         cover.set_draw_func(move |_, cr, w, h| {
-            draw_cover(cr, f64::from(w), f64::from(h), summary.as_ref())
+            draw_cover(
+                cr,
+                f64::from(w),
+                f64::from(h),
+                summary.as_ref(),
+                picture.as_ref(),
+            )
         });
     }
     card.append(&cover);

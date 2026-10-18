@@ -526,8 +526,38 @@ impl App {
 
     /// Save, close the project and return to the home screen. If saving fails
     /// the project stays open so no work is lost.
+    /// Keep the picture in the Player as the project's cover on the home screen
+    /// (longest side 480 px).
+    pub fn save_cover(&self) {
+        let Some((path, empty)) = self.state.borrow().session.as_ref().map(|s| {
+            (
+                s.folder.cover_path(),
+                s.doc.timeline.tracks.iter().all(|t| t.clips.is_empty()),
+            )
+        }) else {
+            return;
+        };
+        if empty {
+            // Nothing to show: the home screen draws the project's letter instead.
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+        let Some(texture) = self
+            .ui
+            .get()
+            .and_then(|ui| ui.editor.current_paintable())
+            .and_then(|p| p.downcast::<gtk::gdk::Texture>().ok())
+        else {
+            return;
+        };
+        if let Err(e) = write_cover(&texture, &path) {
+            eprintln!("kani: could not save the project's cover picture: {e}");
+        }
+    }
+
     pub fn close_project(self: &Rc<Self>) {
         self.save_ui_state();
+        self.save_cover();
         let result = {
             let mut st = self.state.borrow_mut();
             match st.session.as_mut() {
@@ -557,6 +587,7 @@ impl App {
 
     pub fn quit(self: &Rc<Self>) {
         self.save_ui_state();
+        self.save_cover();
         let result = {
             let mut st = self.state.borrow_mut();
             st.quitting = true;
@@ -1356,6 +1387,9 @@ impl App {
             }
             other => {
                 self.run_session_action(other);
+                if other == Action::Save {
+                    self.save_cover();
+                }
                 self.refresh();
             }
         }
@@ -1825,4 +1859,53 @@ async fn read_clipboard(clipboard: &gdk::Clipboard, own_clip_available: bool) ->
         }
     }
     Pasted::Nothing(formats.to_str().to_string())
+}
+
+/// Write `texture` shrunk to at most 480 px on its longest side as a PNG.
+fn write_cover(texture: &gtk::gdk::Texture, path: &std::path::Path) -> Result<(), String> {
+    use gtk::cairo;
+    let (w, h) = (texture.width(), texture.height());
+    if w <= 0 || h <= 0 {
+        return Err("empty picture".into());
+    }
+    let stride = cairo::Format::ARgb32
+        .stride_for_width(w as u32)
+        .map_err(|e| e.to_string())?;
+    let mut data = vec![0u8; stride as usize * h as usize];
+    // Downloads as premultiplied B8G8R8A8 in memory order on little-endian
+    // machines, which is cairo's ARGB32.
+    texture.download(&mut data, stride as usize);
+    let source = cairo::ImageSurface::create_for_data(data, cairo::Format::ARgb32, w, h, stride)
+        .map_err(|e| e.to_string())?;
+    let k = (480.0 / f64::from(w.max(h))).min(1.0);
+    let (tw, th) = (
+        ((f64::from(w) * k).round() as i32).max(1),
+        ((f64::from(h) * k).round() as i32).max(1),
+    );
+    let target =
+        cairo::ImageSurface::create(cairo::Format::ARgb32, tw, th).map_err(|e| e.to_string())?;
+    {
+        let cr = cairo::Context::new(&target).map_err(|e| e.to_string())?;
+        cr.scale(f64::from(tw) / f64::from(w), f64::from(th) / f64::from(h));
+        cr.set_source_surface(&source, 0.0, 0.0)
+            .map_err(|e| e.to_string())?;
+        cr.source().set_filter(cairo::Filter::Good);
+        cr.paint().map_err(|e| e.to_string())?;
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let tstride = target.stride();
+    target.flush();
+    let bytes = target.take_data().map_err(|e| e.to_string())?.to_vec();
+    let small = gtk::gdk::MemoryTexture::new(
+        tw,
+        th,
+        gtk::gdk::MemoryFormat::B8g8r8a8Premultiplied,
+        &gtk::glib::Bytes::from_owned(bytes),
+        tstride as usize,
+    );
+    let tmp = path.with_extension("png.tmp");
+    small.save_to_png(&tmp).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }

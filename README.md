@@ -77,6 +77,8 @@ The GTK video sink is compiled in (`gst-plugin-gtk4`), so no extra GStreamer plu
 * A **sidebar** on the left: **Projects** (every project), **Recents** (the twelve you changed last) and **Brand Kits**
   (a placeholder for now, planned for Phase 8). The app's name and version sit at its bottom. The buttons are icons; hover for
   what they do. Open from folder and New project are at the right end of the search row.
+* Each project's card shows the Player's picture as it was when the project was last saved or closed (kept as
+  `thumbnails/cover.png` in the project folder); a project with an empty timeline shows its initial instead.
 * Lists every project in your **projects folder** (default `Documents/Kani`; change it with *Change...*), plus projects
   opened from elsewhere. Search, sort by last modified or name, thumbnail or list view.
 * Right-click a project: **Open**, **Rename** (optionally renames the folder), **Show info**, **Delete** (permanent, with
@@ -340,13 +342,18 @@ Performance, Export, Captions, Libraries, Advanced. Working rows: appearance, pr
 and 1-120 minutes), add dropped files to the timeline, proxies, compositor acceleration, export folder, restore
 defaults. Everything else is listed and disabled until its phase. See [docs/SETTINGS.md](docs/SETTINGS.md).
 
+## Windows
+
+Windows is parked at a checkpoint (0.5.35): it builds, imports, previews and plays sound. The open items, by phase,
+are in [docs/WINDOWS_CHECKPOINT.md](docs/WINDOWS_CHECKPOINT.md).
+
 ## Roadmap
 
 | Phase | Deliverable |
 |------:|-------------|
 | 1 | Timeline, project folder, platform contracts |
 | 2 | App shell: home screen, editing, autosave (done, now on GTK4); home sidebar (0.5.31); tracks renamed and rearranged, new tracks between rows, one interface style (0.5.32) |
-| 3 | Media core: probing, thumbnails, preview, mixed sound, stills, waveforms, filmstrips, proxies, scrub throttling, decoder reporting (done); **automatic proxies, proxy quality, hardware-decode switch, preview resolution, remux on import and scrub sound (0.5.29)**; **a hardware-decoding check you run on your own footage, and proxies that move with their folder (0.5.31)**; checked on the ThinkPad (AV1 on vaav1dec: 47-61% less processor time per picture); **Windows silent preview: Kani now picks the sound output itself with fallback (0.5.34), untested on Windows**; still to do: the check on the Dell, proxy encoder choice per machine |
+| 3 | Media core: probing, thumbnails, preview, mixed sound, stills, waveforms, filmstrips, proxies, scrub throttling, decoder reporting (done); **automatic proxies, proxy quality, hardware-decode switch, preview resolution, remux on import and scrub sound (0.5.29)**; **a hardware-decoding check you run on your own footage, and proxies that move with their folder (0.5.31)**; checked on the ThinkPad (AV1 on vaav1dec: 47-61% less processor time per picture); **Windows silent preview fixed: Kani picks the sound output itself with fallback (0.5.34, confirmed on the Dell)**; Windows parked at a checkpoint (docs/WINDOWS_CHECKPOINT.md); still to do: the check on the Dell, proxy encoder choice per machine |
 | 4 | Compositor: **layers, transforms, opacity, on-canvas transform box, crossfades and keyframes (done, CPU)**; deferred: GPU backend, blend modes, skipping decode of fully covered layers |
 | 5 | Export: **MP4 (H.264 + AAC) with the same pictures and sound as the preview, optional graphics-card compositing (Automatic / Always / Never in the Export window; Automatic uses the card only when a check found a real graphics chip clearly faster, and falls back to the processor for anything it cannot draw), a redesigned Export window (video and/or separate sound file, NTSC-to-PAL sizes by aspect ratio, bit rate presets, H.264 / H.265 / VP9 / AV1, MP4 / MOV / MKV / WebM, frame rate, AAC / MP3 / Opus / FLAC / WAV, mono or stereo, .srt / .vtt / .ass caption files, encoder and graphics-card choices), progress and cancel, and the best encoder that works on the machine (NVENC, Quick Sync, VA-API, AMF, VideoToolbox, else x264) with automatic fallback**; the sound file is made in parallel with the video; export of a time range or of selected clips (also picked with handles on the timeline, Ctrl+Shift+X); presets for named sites; still to do: the new H.265 / VP9 / AV1 hardware encoders checked on real machines, Windows (EGL, NVENC) |
 | 6 | Text engine and templates: **text clips (font, size, colour, outline, shadow, box, spacing), nine built-in styles, skew, perspective, corner pin and 4x4 mesh warp, all grouped as Morph with per-entry resets and keyframes (done)**; corner pin and mesh warp also drawn on the graphics chip (0.5.30); **user-saved text styles (0.5.31)**; **snapping the transform box to guides, the grid and the picture's edges and middle (0.5.32)** |

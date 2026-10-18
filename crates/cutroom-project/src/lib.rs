@@ -8,7 +8,7 @@
 //!   media/          media copied into the project (optional)
 //!   proxies/        low-res editing proxies (location configurable)
 //!   cache/          render cache (location configurable)
-//!   thumbnails/
+//!   thumbnails/     cover.png: the preview as it last was (home screen)
 //!   autosave/       rotating backups
 //! ```
 //!
@@ -26,7 +26,7 @@ pub use doc::{
     StorageSettings, SCHEMA_VERSION,
 };
 pub use error::ProjectError;
-pub use folder::{hash_file, ImportMode, ProjectFolder, PROJECT_FILE};
+pub use folder::{cover_path, hash_file, ImportMode, ProjectFolder, PROJECT_FILE};
 pub use library::{
     delete_project, dir_size, read_entry, rename_project, scan_projects, sort_newest_first,
     summarize, ProjectEntry, ProjectSummary,

@@ -16,6 +16,12 @@ const MEDIA_DIR: &str = "media";
 const PROXY_DIR: &str = "proxies";
 const CACHE_DIR: &str = "cache";
 const THUMB_DIR: &str = "thumbnails";
+
+/// The picture the home screen shows for the project in `root`: the preview
+/// as it last was, saved when the project is saved or closed.
+pub fn cover_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join(THUMB_DIR).join("cover.png")
+}
 const AUTOSAVE_DIR: &str = "autosave";
 
 #[derive(Serialize)]
@@ -176,6 +182,11 @@ impl ProjectFolder {
 
     pub fn thumbnail_dir(&self) -> PathBuf {
         self.root.join(THUMB_DIR)
+    }
+
+    /// The picture the home screen shows for this project.
+    pub fn cover_path(&self) -> PathBuf {
+        cover_path(&self.root)
     }
 
     pub fn proxy_dir(&self, doc: &ProjectDoc) -> PathBuf {

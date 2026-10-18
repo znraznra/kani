@@ -136,6 +136,26 @@ mod tests {
             let mut form = NewProjectForm::new(tmp.path().join("projects"));
             form.name = name.into();
             app.create_project(&form).unwrap();
+            if name == "First clip" {
+                // One project with footage, so its card shows its last picture.
+                let clip = tmp.path().join("first.webm");
+                test_media::make_video(&clip, 2);
+                app.import_paths(vec![clip], None);
+                pump_until(|| {
+                    let st = app.state.borrow();
+                    let s = st.session.as_ref().unwrap();
+                    s.doc.media.iter().all(|m| m.probe.is_some()) && !s.doc.media.is_empty()
+                });
+                {
+                    let mut st = app.state.borrow_mut();
+                    let s = st.session.as_mut().unwrap();
+                    let id = s.doc.media[0].id;
+                    s.add_media_to_timeline(id);
+                }
+                app.sync_preview(true);
+                pump_for(3, || false);
+                app.render_preview();
+            }
             app.run_action(Action::CloseProject);
             pump_until(|| false);
         }
@@ -2039,6 +2059,28 @@ mod tests {
                 } else {
                     eprintln!("no clip/file pair for the Replace check");
                 }
+            }
+
+            // The Player's picture is kept as the project's cover for the home screen.
+            {
+                app.render_preview();
+                pump_until(|| false);
+                app.save_cover();
+                let cover = app
+                    .state
+                    .borrow()
+                    .session
+                    .as_ref()
+                    .unwrap()
+                    .folder
+                    .cover_path();
+                let pb = gtk::gdk_pixbuf::Pixbuf::from_file(&cover).expect("a cover picture");
+                assert!(
+                    pb.width().max(pb.height()) <= 480 && pb.width() > 0,
+                    "{}x{}",
+                    pb.width(),
+                    pb.height()
+                );
             }
 
             // A subtitle file comes in as captions on the Captions track, which
