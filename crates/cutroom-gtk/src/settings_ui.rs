@@ -537,6 +537,42 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
         &hw_decode,
         Some("Uses the graphics chip's video decoders when there are any (VA-API, NVIDIA, Direct3D). Off: the processor decodes. Applies to the preview and to export, from the next file opened."),
     ));
+    let tone = gtk::Button::with_label("Play a test tone");
+    {
+        let app = app.clone();
+        tone.connect_clicked(move |b| {
+            b.set_sensitive(false);
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::sound::test_tone());
+            });
+            let (app, b) = (app.clone(), b.clone());
+            gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+                match rx.try_recv() {
+                    Ok(result) => {
+                        let text = match result {
+                            Ok(name) => format!("Played a test tone through {name}. If you heard nothing, check the system's sound output."),
+                            Err(e) => format!("The test tone could not play: {e}"),
+                        };
+                        eprintln!("kani: {text}");
+                        app.set_status(text);
+                        b.set_sensitive(true);
+                        gtk::glib::ControlFlow::Break
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => gtk::glib::ControlFlow::Continue,
+                    Err(_) => {
+                        b.set_sensitive(true);
+                        gtk::glib::ControlFlow::Break
+                    }
+                }
+            });
+        });
+    }
+    playback.append(&row(
+        "Sound output",
+        &tone,
+        Some("Plays a short tone through the sound output the preview uses (named in the console). On Windows Kani tries WASAPI first, then DirectSound; set KANI_AUDIO_SINK to force one."),
+    ));
     let hw_test = gtk::Button::with_label("Test on a video...");
     {
         let app = app.clone();

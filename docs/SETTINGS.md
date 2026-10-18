@@ -107,6 +107,11 @@ Info tab > "Project settings" opens a window with two tabs, staged Save/Cancel:
 
 Color space is stored in the project only; colour-managed rendering is Phase 9. Format and name changes are not undoable. The media panel's "Import options" fold-out was removed as redundant.
 
+## 0.5.34 changes
+
+- Playback > **Sound output > Play a test tone**: plays a short tone through the output the preview uses.
+- The preview's sound output is chosen by Kani (Windows: WASAPI, then DirectSound) with fallback to the next one on failure.
+
 ## 0.5.33 changes
 
 - The hardware decoding check window keeps one size from start to report (no more "Trying to measure GtkWindow" warnings from it).

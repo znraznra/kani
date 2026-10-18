@@ -32,6 +32,7 @@ mod range_select;
 mod replace_ui;
 mod sample;
 mod settings_ui;
+mod sound;
 mod strips;
 mod text_render;
 mod text_ui;

@@ -291,6 +291,8 @@ struct Player {
     early: bool,
     /// Playing a short piece of sound for a scrub, until this moment.
     blip: Option<Instant>,
+    /// The sound output element this pipeline uses (see sound.rs).
+    sound_out: Option<String>,
 }
 
 impl Player {
@@ -337,7 +339,16 @@ impl Player {
     fn with_sink(sink: gst::Element, has_video: bool, frames: Option<FrameSlot>) -> Option<Player> {
         let playbin = gst::ElementFactory::make("playbin").build().ok()?;
         playbin.set_property("video-sink", &sink);
+        // Name the sound output ourselves (see sound.rs).
+        let sound_out = crate::sound::make_sink().map(|audio| {
+            playbin.set_property("audio-sink", &audio);
+            audio
+                .factory()
+                .map(|f| f.name().to_string())
+                .unwrap_or_default()
+        });
         let player = Player {
+            sound_out,
             playbin,
             uri: None,
             clip: None,
@@ -376,7 +387,8 @@ impl Player {
     }
 
     /// Send sound to a fake sink (tests must not open a sound device).
-    fn use_fake_audio(&self) {
+    fn use_fake_audio(&mut self) {
+        self.sound_out = None;
         if let Ok(fake) = gst::ElementFactory::make("fakesink")
             .property("sync", true)
             .build()
@@ -570,8 +582,29 @@ impl Player {
         }
     }
 
-    /// Handle the pipeline's messages. Returns an error text if it failed.
-    fn poll(&mut self) -> Option<String> {
+    /// Put a new sound output on this pipeline and load its clip again.
+    fn reset_sound_output(&mut self) {
+        let _ = self.playbin.set_state(gst::State::Null);
+        if let Some(audio) = crate::sound::make_sink() {
+            self.playbin.set_property("audio-sink", &audio);
+        }
+        let (uri, clip) = (self.uri.clone(), self.clip);
+        let (play, position) = (self.want_play, self.pending_seek.or(self.position()));
+        if let (Some(uri), Some(clip)) = (uri, clip) {
+            let target = Target {
+                clip,
+                uri,
+                source_time: position.unwrap_or(Ticks::ZERO),
+                muted: false,
+                volume: 1.0,
+            };
+            self.load(&target, play);
+        }
+    }
+
+    /// Handle the pipeline's messages. Returns an error text if it failed,
+    /// and whether it came from the sound side.
+    fn poll(&mut self) -> Option<(String, bool)> {
         if self.blip.is_some_and(|end| Instant::now() >= end) {
             self.blip = None;
             self.set_playing(false);
@@ -599,7 +632,13 @@ impl Player {
                 }
                 gst::MessageView::Eos(_) => self.want_play = false,
                 gst::MessageView::Error(e) => {
-                    error = Some(format!("{} ({})", e.error(), e.debug().unwrap_or_default()));
+                    let sound = crate::sound::is_sound_error(e.src());
+                    let text = format!("{} ({})", e.error(), e.debug().unwrap_or_default());
+                    eprintln!(
+                        "kani: playback error from {}: {text}",
+                        e.src().map_or("?".into(), |s| s.path_string().to_string())
+                    );
+                    error = Some((text, sound));
                 }
                 _ => {}
             }
@@ -821,7 +860,7 @@ impl Preview {
     }
 
     fn new_player(&self, layer: bool) -> Option<Player> {
-        let player = if layer {
+        let mut player = if layer {
             Player::new_layer(self.edge)
         } else {
             Player::new_audio()
@@ -978,8 +1017,24 @@ impl Preview {
     /// Call regularly: finishes seeks and notices failures.
     pub fn poll(&mut self) {
         let mut problem = None;
+        let fake = self.fake_audio;
         for player in self.all_players() {
-            if let Some(error) = player.poll() {
+            if let Some((error, sound)) = player.poll() {
+                if sound && !fake && player.audio_enabled && player.uri.is_some() {
+                    // The sound output failed: try the next one before giving up on sound.
+                    let failed = player.sound_out.clone();
+                    let now = crate::sound::current_name();
+                    let next = if failed.is_some() && failed == now {
+                        crate::sound::next_after_failure(&error)
+                    } else {
+                        now
+                    };
+                    if next.is_some() {
+                        player.sound_out = next;
+                        player.reset_sound_output();
+                        continue;
+                    }
+                }
                 if player.audio_enabled && player.uri.is_some() {
                     // Often "no sound device": keep the picture, drop the sound.
                     player.audio_enabled = false;
