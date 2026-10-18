@@ -677,7 +677,128 @@ fn draw(app: &App, cr: &cairo::Context, w: f64, h: f64, scale: i32) {
         }
         cr.restore().ok();
     }
+    // A track header being dragged: its row lit, and a line where it will go.
+    if let Some((id, target)) = st.track_drag {
+        if let Some(from) = tl.tracks.iter().position(|t| t.id == id) {
+            let top = f64::from(row_top(canvas, from));
+            set(cr, theme::ACCENT, 0.18);
+            cr.rectangle(0.0, top, w, f64::from(ROW_H));
+            let _ = cr.fill();
+            let y = if target <= from {
+                f64::from(row_top(canvas, target)) - f64::from(ROW_GAP) / 2.0
+            } else {
+                f64::from(row_top(canvas, target)) + f64::from(ROW_H) + f64::from(ROW_GAP) / 2.0
+            };
+            line(cr, theme::ACCENT, 3.0, 0.0, y, w, y);
+        }
+    }
     line(cr, pal.tick_minor, 1.0, left, 0.0, left, h);
+}
+
+/// Ask for a track's new name.
+fn rename_track(app: &Rc<App>, track: cutroom_timeline::TrackId) {
+    let current = {
+        let st = app.state.borrow();
+        st.session
+            .as_ref()
+            .and_then(|s| s.doc.timeline.track(track).map(|t| t.name.clone()))
+    };
+    let Some(current) = current else { return };
+    let app2 = app.clone();
+    crate::text_ui::ask_text(
+        app,
+        "Rename track",
+        "Name of the track",
+        "Rename",
+        &current,
+        Rc::new(move |name| {
+            let result = app2
+                .state
+                .borrow_mut()
+                .session
+                .as_mut()
+                .map_or(Ok(()), |s| s.rename_track(track, name));
+            app2.refresh();
+            result
+        }),
+    );
+}
+
+/// The right-click menu of a track header: rename, move up, move down.
+fn track_menu(
+    app: &Rc<App>,
+    anchor: &gtk::Widget,
+    track: cutroom_timeline::TrackId,
+    x: f64,
+    y: f64,
+) {
+    let (range, place, captions) = {
+        let st = app.state.borrow();
+        let Some(s) = st.session.as_ref() else { return };
+        let tl = &s.doc.timeline;
+        (
+            s.track_move_range(track),
+            tl.tracks.iter().position(|t| t.id == track).unwrap_or(0),
+            tl.track(track)
+                .is_some_and(cutroom_core::state::is_caption_track),
+        )
+    };
+    let popover = gtk::Popover::new();
+    popover.set_parent(anchor);
+    popover.set_has_arrow(false);
+    popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+    popover.add_css_class("menu");
+    let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let add = |label: &str, enabled: bool, act: Box<dyn Fn()>| {
+        let b = gtk::Button::with_label(label);
+        b.add_css_class("flat");
+        b.set_sensitive(enabled);
+        if let Some(l) = b.child().and_then(|c| c.downcast::<gtk::Label>().ok()) {
+            l.set_xalign(0.0);
+        }
+        let popover = popover.clone();
+        b.connect_clicked(move |_| {
+            popover.popdown();
+            act();
+        });
+        menu.append(&b);
+    };
+    {
+        let app = app.clone();
+        add(
+            if captions {
+                "Rename... (the Captions track keeps its name)"
+            } else {
+                "Rename..."
+            },
+            !captions,
+            Box::new(move || rename_track(&app, track)),
+        );
+    }
+    for (label, delta) in [("Move up", -1i64), ("Move down", 1i64)] {
+        let enabled = range.is_some_and(|(low, high)| {
+            let to = place as i64 + delta;
+            to >= low as i64 && to <= high as i64
+        });
+        let app = app.clone();
+        add(
+            label,
+            enabled,
+            Box::new(move || {
+                if let Some(s) = app.state.borrow_mut().session.as_mut() {
+                    s.move_track(track, (place as i64 + delta).max(0) as usize);
+                }
+                app.sync_preview(true);
+                app.refresh();
+            }),
+        );
+    }
+    popover.set_child(Some(&menu));
+    popover.connect_closed(|p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || p.unparent());
+    });
+    popover.popup();
 }
 
 /// The clip's picture strip: frames tiled along its length.
@@ -837,7 +958,8 @@ fn paint_new_track_ghost(
     start: Ticks,
     duration: Ticks,
 ) {
-    let index = new_track_index(tl, kind, at == NewTrackAt::Top);
+    let index = cutroom_core::timeline_logic::new_track_insert_index(tl, kind, at)
+        .unwrap_or_else(|| new_track_index(tl, kind, at == NewTrackAt::Top));
     let boundary = f64::from(row_top(canvas, index)) - f64::from(ROW_GAP) / 2.0;
     let (left, right) = (f64::from(canvas.left()), f64::from(canvas.right()));
     line(cr, theme::ACCENT, 3.0, left, boundary, right, boundary);
@@ -969,6 +1091,23 @@ fn attach_mouse(app: &Rc<App>, area: &gtk::DrawingArea) {
                 return;
             }
             if x < f64::from(HEADER_W) {
+                // Grabbing a track's name (not its buttons) starts moving the track.
+                let canvas = canvas_rect(f64::from(area.width()), f64::from(area.height()));
+                let mut st = app.state.borrow_mut();
+                st.drag = Drag::None;
+                let Some(session) = st.session.as_ref() else {
+                    return;
+                };
+                let tl = &session.doc.timeline;
+                let [(mx, _), _, _] = header_buttons();
+                if x < mx - 2.0 {
+                    if let Some(row) = row_at(canvas, ey(&area, y) as f32, tl.tracks.len()) {
+                        let id = tl.tracks[row].id;
+                        if session.track_move_range(id).is_some() {
+                            st.track_drag = Some((id, row));
+                        }
+                    }
+                }
                 return;
             }
             let canvas = canvas_rect(f64::from(area.width()), f64::from(area.height()));
@@ -1020,6 +1159,23 @@ fn attach_mouse(app: &Rc<App>, area: &gtk::DrawingArea) {
             }
             let pos = pos2((sx + dx) as f32, ey(&area, sy + dy) as f32);
             let canvas = canvas_rect(f64::from(area.width()), f64::from(area.height()));
+            {
+                let mut st = app.state.borrow_mut();
+                let st = &mut *st;
+                if let (Some((id, target)), Some(session)) =
+                    (st.track_drag.as_mut(), st.session.as_ref())
+                {
+                    let rows = session.doc.timeline.tracks.len();
+                    let pitch = ROW_H + ROW_GAP;
+                    let rel = (pos.y - canvas.top() - RULER_H).max(0.0);
+                    let row = ((rel / pitch).floor() as usize).min(rows.saturating_sub(1));
+                    if let Some((low, high)) = session.track_move_range(*id) {
+                        *target = row.clamp(low, high);
+                    }
+                    area.queue_draw();
+                    return;
+                }
+            }
             let scrub = {
                 let mut st = app.state.borrow_mut();
                 let st = &mut *st;
@@ -1206,6 +1362,17 @@ fn attach_mouse(app: &Rc<App>, area: &gtk::DrawingArea) {
                 id.remove();
             }
             crate::range_select::release(&app);
+            let track_drag = app.state.borrow_mut().track_drag.take();
+            if let Some((track, target)) = track_drag {
+                if moved.get() {
+                    if let Some(s) = app.state.borrow_mut().session.as_mut() {
+                        s.move_track(track, target);
+                    }
+                    app.sync_preview(true);
+                }
+                app.refresh();
+                return;
+            }
             let sound_changed;
             let had_drag = {
                 let mut st = app.state.borrow_mut();
@@ -1248,6 +1415,20 @@ fn attach_mouse(app: &Rc<App>, area: &gtk::DrawingArea) {
                 return;
             }
             let canvas = canvas_rect(f64::from(area.width()), f64::from(area.height()));
+            if x < f64::from(HEADER_W) {
+                let track = {
+                    let st = app.state.borrow();
+                    st.session.as_ref().and_then(|s| {
+                        let tl = &s.doc.timeline;
+                        row_at(canvas, ey(&area, y) as f32, tl.tracks.len())
+                            .map(|r| tl.tracks[r].id)
+                    })
+                };
+                if let Some(track) = track {
+                    track_menu(&app, area.upcast_ref(), track, x, y);
+                }
+                return;
+            }
             let hit = {
                 let mut st = app.state.borrow_mut();
                 let st = &mut *st;
@@ -1281,7 +1462,7 @@ fn attach_mouse(app: &Rc<App>, area: &gtk::DrawingArea) {
     let click = gtk::GestureClick::builder().button(1).build();
     {
         let (app, area, moved) = (app.clone(), area.clone(), moved.clone());
-        click.connect_released(move |gesture, _, x, y| {
+        click.connect_released(move |gesture, n_press, x, y| {
             let additive = gesture
                 .current_event_state()
                 .intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK);
@@ -1322,7 +1503,10 @@ fn attach_mouse(app: &Rc<App>, area: &gtk::DrawingArea) {
                     if let Some(row) = row_at(canvas, pos.y, session.doc.timeline.tracks.len()) {
                         let id = session.doc.timeline.tracks[row].id;
                         let [(mx, mw), (hx, hw), (lx, lw)] = header_buttons();
-                        if x >= mx && x <= mx + mw {
+                        if n_press >= 2 && x < mx - 2.0 {
+                            let app = app.clone();
+                            glib::idle_add_local_once(move || rename_track(&app, id));
+                        } else if x >= mx && x <= mx + mw {
                             session.toggle_track_muted(id);
                         } else if x >= hx && x <= hx + hw {
                             session.toggle_track_hidden(id);
@@ -1598,12 +1782,21 @@ fn drop_library_media(app: &Rc<App>, media: MediaId, canvas: Rect, pos: Pos2) {
             match target {
                 Some(target) if target.valid => match target.new_track {
                     Some(at) => {
-                        session.add_media_on_new_track(
-                            media,
+                        match cutroom_core::timeline_logic::new_track_insert_index(
+                            &session.doc.timeline,
                             target.new_kind,
-                            at == NewTrackAt::Top,
-                            target.start,
-                        );
+                            at,
+                        ) {
+                            Some(index) => {
+                                session.add_media_on_new_track_at(
+                                    media,
+                                    target.new_kind,
+                                    index,
+                                    target.start,
+                                );
+                            }
+                            None => session.status = Some("A new track can't go there".into()),
+                        }
                     }
                     None => {
                         session.add_media_at(media, target.track, target.start);

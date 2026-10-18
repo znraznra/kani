@@ -75,7 +75,7 @@ fn sidebar(
     ] {
         let button = gtk::ToggleButton::new();
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        row.append(&icons::icon(icon, 18));
+        row.append(&icons::icon(icon, crate::ui::ICON));
         let label = gtk::Label::new(Some(text));
         label.set_xalign(0.0);
         row.append(&label);
@@ -100,9 +100,6 @@ fn sidebar(
         }
         bar.append(&button);
         nav.push((page, button));
-    }
-    if let Some((_, b)) = nav.first() {
-        b.set_active(true);
     }
     let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
     spacer.set_vexpand(true);
@@ -158,15 +155,12 @@ pub fn build(app: &Rc<App>) -> HomeUi {
     root.append(&pages);
 
     // The Projects page.
-    let page = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    page.set_margin_top(14);
-    page.set_margin_start(16);
-    page.set_margin_end(16);
-    page.set_margin_bottom(8);
+    let page = gtk::Box::new(gtk::Orientation::Vertical, crate::ui::GAP);
+    crate::ui::pad(&page);
     pages.add_named(&page, Some(PAGE_PROJECTS));
 
     // Search, sort and view on the left; Open and New on the right.
-    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, crate::ui::GAP);
     let search = gtk::SearchEntry::new();
     search.set_placeholder_text(Some("Search projects"));
     search.set_width_chars(30);
@@ -261,10 +255,8 @@ pub fn build(app: &Rc<App>) -> HomeUi {
     root_page.append(&content);
 
     // The Recents page: the projects worked on last.
-    let recents_page = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    recents_page.set_margin_top(14);
-    recents_page.set_margin_start(16);
-    recents_page.set_margin_end(16);
+    let recents_page = gtk::Box::new(gtk::Orientation::Vertical, crate::ui::GAP);
+    crate::ui::pad(&recents_page);
     let recents_title = gtk::Label::new(Some("Recents"));
     recents_title.set_xalign(0.0);
     recents_title.add_css_class("title-3");
@@ -304,6 +296,10 @@ pub fn build(app: &Rc<App>) -> HomeUi {
         Some(PAGE_BRAND_KITS),
     );
     pages.set_visible_child_name(PAGE_PROJECTS);
+    // Only now that every page exists may the first item be pressed.
+    if let Some((_, b)) = nav.first() {
+        b.set_active(true);
+    }
 
     let ui = HomeUi {
         root,

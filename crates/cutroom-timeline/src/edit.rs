@@ -44,6 +44,16 @@ pub enum Edit {
         clip: ClipId,
         words: Vec<crate::text::Word>,
     },
+    /// Move a track to another place in the list (index after the move).
+    MoveTrack {
+        track: TrackId,
+        index: usize,
+    },
+    /// Give a track a new name.
+    RenameTrack {
+        track: TrackId,
+        name: String,
+    },
     /// Hide or show a whole track.
     SetTrackHidden {
         track: TrackId,
@@ -243,6 +253,31 @@ pub fn apply(tl: &mut Timeline, edit: Edit) -> Result<Edit, EditError> {
             let inverse = Edit::SetClipWords {
                 clip,
                 words: std::mem::replace(&mut c.words, words),
+            };
+            Ok(inverse)
+        }
+        Edit::MoveTrack { track, index } => {
+            let from = tl
+                .tracks
+                .iter()
+                .position(|t| t.id == track)
+                .ok_or(EditError::TrackNotFound(track))?;
+            if index >= tl.tracks.len() {
+                return Err(EditError::IndexOutOfRange);
+            }
+            let moved = tl.tracks.remove(from);
+            tl.tracks.insert(index, moved);
+            Ok(Edit::MoveTrack { track, index: from })
+        }
+        Edit::RenameTrack { track, name } => {
+            let t = tl
+                .tracks
+                .iter_mut()
+                .find(|t| t.id == track)
+                .ok_or(EditError::TrackNotFound(track))?;
+            let inverse = Edit::RenameTrack {
+                track,
+                name: std::mem::replace(&mut t.name, name),
             };
             Ok(inverse)
         }
@@ -618,6 +653,49 @@ mod tests {
 
     fn t(n: i64) -> Ticks {
         Ticks(n)
+    }
+
+    #[test]
+    fn tracks_move_and_rename_and_undo() {
+        let mut tl = Timeline::new();
+        let mut ids = Vec::new();
+        for name in ["A", "B", "C"] {
+            let track = tl.new_track(TrackKind::Video, name);
+            ids.push(track.id);
+            let n = tl.tracks.len();
+            apply(&mut tl, Edit::InsertTrack { index: n, track }).unwrap();
+        }
+        let names = |tl: &Timeline| tl.tracks.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+        let back = apply(
+            &mut tl,
+            Edit::MoveTrack {
+                track: ids[0],
+                index: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(names(&tl), ["B", "C", "A"]);
+        apply(&mut tl, back).unwrap();
+        assert_eq!(names(&tl), ["A", "B", "C"]);
+        assert!(apply(
+            &mut tl,
+            Edit::MoveTrack {
+                track: ids[0],
+                index: 3
+            }
+        )
+        .is_err());
+        let back = apply(
+            &mut tl,
+            Edit::RenameTrack {
+                track: ids[1],
+                name: "Music".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(names(&tl), ["A", "Music", "C"]);
+        apply(&mut tl, back).unwrap();
+        assert_eq!(names(&tl), ["A", "B", "C"]);
     }
 
     /// One video track holding clips at [0,10), [10,20), [30,40).

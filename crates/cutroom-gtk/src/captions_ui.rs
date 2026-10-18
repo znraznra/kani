@@ -69,6 +69,7 @@ pub struct Panel {
     pub progress: gtk::ProgressBar,
     pub message: gtk::Label,
     pub export_srt: gtk::Button,
+    pub import: gtk::Button,
     pub export_vtt: gtk::Button,
     pub source_note: gtk::Label,
     pub job: RefCell<Option<Job>>,
@@ -86,11 +87,8 @@ fn row(title: &str, widget: &impl IsA<gtk::Widget>) -> gtk::Box {
 }
 
 pub fn build() -> Rc<Panel> {
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    root.set_margin_top(10);
-    root.set_margin_bottom(10);
-    root.set_margin_start(10);
-    root.set_margin_end(10);
+    let root = gtk::Box::new(gtk::Orientation::Vertical, crate::ui::GAP + 2);
+    crate::ui::pad(&root);
 
     let title = gtk::Label::new(Some("Auto captions"));
     title.add_css_class("panel-title");
@@ -169,6 +167,17 @@ pub fn build() -> Rc<Panel> {
     root.append(&message);
 
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    let import_label = gtk::Label::new(Some(
+        "Bring in a subtitle file (.srt, .vtt, .ass) as captions on the Captions track, in the look chosen above",
+    ));
+    import_label.set_xalign(0.0);
+    import_label.set_wrap(true);
+    import_label.add_css_class("dim-label");
+    import_label.add_css_class("caption");
+    root.append(&import_label);
+    let import = gtk::Button::with_label("Import caption file…");
+    import.set_halign(gtk::Align::Start);
+    root.append(&import);
     let export_label =
         gtk::Label::new(Some("Save the captions on the timeline as a subtitle file"));
     export_label.set_xalign(0.0);
@@ -197,6 +206,7 @@ pub fn build() -> Rc<Panel> {
         progress,
         message,
         export_srt,
+        import,
         export_vtt,
         source_note,
         job: RefCell::new(None),
@@ -657,6 +667,50 @@ fn debug_path(app: &App) -> Option<PathBuf> {
         .map(|p| p.join("caption-debug.txt"))
 }
 
+/// Put the cues of a subtitle file on the Captions track in the chosen look.
+pub fn import_file(app: &Rc<App>, path: &std::path::Path) -> Result<usize, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("Could not read the file: {e}"))?;
+    let text = String::from_utf8_lossy(&bytes);
+    let cues = srt::parse_subtitles(&text)?;
+    let style = style_spec(app);
+    let style_name = app.state.borrow().settings.caption_style.clone();
+    let added = app
+        .state
+        .borrow_mut()
+        .session
+        .as_mut()
+        .map_or(0, |s| s.import_captions(&cues, &style, &style_name));
+    app.sync_preview(false);
+    app.refresh();
+    Ok(added)
+}
+
+fn choose_and_import(app: &Rc<App>, panel: &Rc<Panel>) {
+    let filter = gtk::FileFilter::new();
+    filter.set_name(Some("Subtitle files (.srt, .vtt, .ass, .ssa)"));
+    for ext in ["srt", "vtt", "ass", "ssa"] {
+        filter.add_suffix(ext);
+    }
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&filter);
+    let dialog = gtk::FileDialog::builder()
+        .title("Import a caption file")
+        .filters(&filters)
+        .build();
+    let (app2, panel) = (app.clone(), panel.clone());
+    dialog.open(Some(&app.window), gio::Cancellable::NONE, move |result| {
+        let Some(path) = result.ok().and_then(|f| f.path()) else {
+            return;
+        };
+        match import_file(&app2, &path) {
+            Ok(n) => panel.message.set_text(&format!(
+                "Imported {n} captions. Click one on the timeline to change its words or look; undo (Ctrl+Z) removes them all."
+            )),
+            Err(e) => panel.message.set_text(&e),
+        }
+    });
+}
+
 fn export(app: &Rc<App>, vtt: bool) {
     let cues = match app.state.borrow().session.as_ref() {
         Some(s) => s.caption_cues(),
@@ -749,6 +803,13 @@ pub fn connect(app: &Rc<App>, panel: &Rc<Panel>) {
             .clone()
             .download
             .connect_clicked(move |_| start_download(&app, &panel));
+    }
+    {
+        let (app, panel) = (app.clone(), panel.clone());
+        panel
+            .clone()
+            .import
+            .connect_clicked(move |_| choose_and_import(&app, &panel));
     }
     {
         let (app, panel) = (app.clone(), panel.clone());

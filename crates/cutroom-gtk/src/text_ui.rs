@@ -120,9 +120,21 @@ pub fn ask_name(
     initial: &str,
     done: Rc<dyn Fn(&str) -> Result<(), String>>,
 ) {
+    ask_text(app, title, "Name of the style", ok_label, initial, done);
+}
+
+/// Ask for a short name in a small window; `done` keeps it or says why not.
+pub fn ask_text(
+    app: &Rc<App>,
+    title: &str,
+    label: &str,
+    ok_label: &str,
+    initial: &str,
+    done: Rc<dyn Fn(&str) -> Result<(), String>>,
+) {
     let window = dialogs::dialog_window(app, title, 380);
     let body = dialogs::content_box();
-    body.append(&dialogs::caption("Name of the style"));
+    body.append(&dialogs::caption(label));
     let entry = gtk::Entry::new();
     entry.set_text(initial);
     entry.set_max_length(MAX_NAME as i32);
@@ -413,11 +425,22 @@ pub fn sections(
             .iter()
             .map(|s| s.name.clone())
             .collect();
+        // A style applied earlier can be taken off again: the last entry puts
+        // back the look the text had before.
+        let applied = app.state.borrow().applied_styles.get(&clip).cloned();
         let mut items = vec!["Choose a saved style...".to_string()];
         items.extend(names);
+        const REMOVE: &str = "No style (put back the earlier look)";
+        if applied.is_some() {
+            items.push(REMOVE.to_string());
+        }
         let refs: Vec<&str> = items.iter().map(String::as_str).collect();
-        let pick = gtk::DropDown::from_strings(&refs);
-        pick.set_hexpand(true);
+        let pick = crate::ui::dropdown(&refs);
+        if let Some((name, _)) = &applied {
+            if let Some(i) = items.iter().position(|n| n == name) {
+                pick.set_selected(i as u32);
+            }
+        }
         {
             let (app, current, building, items) = (
                 app.clone(),
@@ -432,26 +455,46 @@ pub fn sections(
                 let Some(name) = items.get(d.selected() as usize) else {
                     return;
                 };
+                let commit = |look: TextSpec, message: String| {
+                    *current.borrow_mut() = look.clone();
+                    {
+                        let mut st = app.state.borrow_mut();
+                        let all = st.apply_all_captions;
+                        if let Some(session) = st.session.as_mut() {
+                            let targets = session.group_targets(clip, all);
+                            session.edit_text_for(clip, look, &targets);
+                            session.status = Some(message);
+                        }
+                    }
+                    app.sync_preview(false);
+                    crate::timeline::queue_draw(&app);
+                    crate::menu::update(&app);
+                    let app = app.clone();
+                    glib::idle_add_local_once(move || app.refresh());
+                };
+                if name == REMOVE {
+                    let before = app.state.borrow_mut().applied_styles.remove(&clip);
+                    if let Some((style, look)) = before {
+                        let back = restyle(&current.borrow(), &look);
+                        commit(back, format!("Took off the style \"{style}\""));
+                    }
+                    return;
+                }
                 let Some(saved) = app.state.borrow().text_styles.get(name).cloned() else {
                     return;
                 };
-                let styled = restyle(&current.borrow(), &saved.spec);
-                *current.borrow_mut() = styled.clone();
                 {
+                    // Remember the look from before the first style, not the last one.
                     let mut st = app.state.borrow_mut();
-                    let all = st.apply_all_captions;
-                    if let Some(session) = st.session.as_mut() {
-                        let targets = session.group_targets(clip, all);
-                        session.edit_text_for(clip, styled, &targets);
-                        session.status = Some(format!("Applied the style \"{}\"", saved.name));
-                    }
+                    let before = st
+                        .applied_styles
+                        .get(&clip)
+                        .map(|(_, look)| look.clone())
+                        .unwrap_or_else(|| current.borrow().clone());
+                    st.applied_styles.insert(clip, (saved.name.clone(), before));
                 }
-                app.sync_preview(false);
-                crate::timeline::queue_draw(&app);
-                crate::menu::update(&app);
-                // The boxes below show the new look.
-                let app = app.clone();
-                glib::idle_add_local_once(move || app.refresh());
+                let styled = restyle(&current.borrow(), &saved.spec);
+                commit(styled, format!("Applied the style \"{}\"", saved.name));
             });
         }
         let save = icons::button(icons::SAVE, "Keep this look as a saved style");
@@ -498,7 +541,12 @@ pub fn sections(
             .filter(|f| f != crate::fonts::FAMILY),
     );
     let refs: Vec<&str> = families.iter().map(String::as_str).collect();
-    let font = gtk::DropDown::from_strings(&refs);
+    let font = crate::ui::dropdown(&refs);
+    font.set_expression(Some(gtk::PropertyExpression::new(
+        gtk::StringObject::static_type(),
+        None::<gtk::Expression>,
+        "string",
+    )));
     font.set_enable_search(true);
     font.set_selected(
         families

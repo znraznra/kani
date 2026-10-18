@@ -187,11 +187,28 @@ pub fn apply(choice: ThemeChoice) -> bool {
 
 const CSS: &str = r#"
 * { font-family: "Inter", sans-serif; }
+/* ---- one look everywhere (docs/UI_STYLE.md), taken from the media panel ----
+   Body text 13 px, small text 12 px, notes 11 px; text buttons 24 px tall with
+   3 x 12 px padding and 6 px corners; icon buttons 24 x 24 with 16 px icons.
+   These come first so the named classes further down can still refine them. */
+window, popover, tooltip { font-size: 13px; }
+.caption { font-size: 11px; }
+.heading, .panel-title, .cc-section-title { font-size: 13px; font-weight: 700; }
+.title-4 { font-size: 14px; font-weight: 700; }
+.title-3 { font-size: 16px; font-weight: 700; }
+.title-2 { font-size: 18px; font-weight: 700; }
+.title-1 { font-size: 22px; font-weight: 700; }
+.text-button { padding: 3px 12px; min-height: 24px; border-radius: 6px; }
+dropdown > button, combobox > box > button, menubutton > button { padding: 3px 8px; min-height: 24px; border-radius: 6px; }
+entry, spinbutton { min-height: 26px; }
+checkbutton label, switch + label { font-size: 13px; }
+popover.menu modelbutton { min-height: 24px; padding: 2px 10px; }
+
 .monospace { font-family: monospace; }
 .timecode, .cc-timecode-now, .cc-timecode-total { font-feature-settings: "tnum"; }
 .cutroom-title { font-size: 28px; font-weight: 700; }
-.cc-sidebar { padding: 14px 8px 8px 8px; background: alpha(currentColor, 0.04); }
-.cc-nav { padding: 8px 10px; border-radius: 8px; }
+.cc-sidebar { padding: 8px; background: alpha(currentColor, 0.04); }
+.cc-nav { padding: 4px 10px; min-height: 26px; border-radius: 5px; font-size: 12px; }
 .cc-nav:checked { background: alpha(#26c6b0, 0.16); color: #26c6b0; }
 .cutroom-card {
     padding: 8px;
@@ -241,6 +258,8 @@ popover.menu scrollbar.vertical trough {
     background: rgba(15, 16, 19, 0.85);
     color: #ffffff;
 }
+.cc-fullscreen-bar *, .cc-fullscreen-bar button, .cc-fullscreen-bar label { color: #ffffff; }
+.cc-fullscreen-bar button:hover { background: alpha(#ffffff, 0.14); }
 .cc-proxy-badge {
     font-size: 9px;
     font-weight: 700;

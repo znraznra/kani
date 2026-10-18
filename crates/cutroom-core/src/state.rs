@@ -203,11 +203,37 @@ pub fn is_caption_track(track: &cutroom_timeline::Track) -> bool {
     track.kind == TrackKind::Video && track.name == CAPTIONS_TRACK
 }
 
+/// 1 when the Captions track sits at the top (where it always belongs), else 0:
+/// the first place any other track may go.
+pub fn captions_offset(tl: &cutroom_timeline::Timeline) -> usize {
+    usize::from(tl.tracks.first().is_some_and(is_caption_track))
+}
+
+/// Where the audio tracks begin (video tracks are always above them).
+pub fn first_audio_index(tl: &cutroom_timeline::Timeline) -> usize {
+    tl.tracks
+        .iter()
+        .position(|t| t.kind == TrackKind::Audio)
+        .unwrap_or(tl.tracks.len())
+}
+
+/// May a new track of `kind` be inserted at `index`? Video tracks go among
+/// the video tracks (below the Captions track), audio tracks among the audio
+/// tracks; neither goes in the other's group.
+pub fn track_slot_allowed(tl: &cutroom_timeline::Timeline, kind: TrackKind, index: usize) -> bool {
+    let audio = first_audio_index(tl);
+    match kind {
+        TrackKind::Video => index >= captions_offset(tl) && index <= audio,
+        TrackKind::Audio => index >= audio && index <= tl.tracks.len(),
+    }
+}
+
 /// Where a new track of `kind` goes. Video layers stack above audio tracks;
-/// `at_top` puts it at the front of its group (the top layer for video).
+/// `at_top` puts it at the front of its group (the top layer for video, just
+/// below the Captions track, which always stays on top).
 pub fn new_track_index(tl: &cutroom_timeline::Timeline, kind: TrackKind, at_top: bool) -> usize {
     match (kind, at_top) {
-        (TrackKind::Video, true) => 0,
+        (TrackKind::Video, true) => captions_offset(tl),
         (TrackKind::Video, false) => tl
             .tracks
             .iter()
@@ -323,6 +349,20 @@ impl Session {
         let (folder, doc) = ProjectFolder::open(root)?;
         let mut session = Self::from_parts(folder, doc);
         session.refresh_missing();
+        // Older projects may have tracks above their Captions track.
+        if let Some(i) = session
+            .doc
+            .timeline
+            .tracks
+            .iter()
+            .position(is_caption_track)
+        {
+            if i > 0 {
+                let track = session.doc.timeline.tracks.remove(i);
+                session.doc.timeline.tracks.insert(0, track);
+                session.mark_dirty();
+            }
+        }
         Ok(session)
     }
 
@@ -627,6 +667,7 @@ impl Session {
             return false;
         }
         let (edit, pruned) = self.with_pruned_tracks(edit);
+        let edit = self.with_captions_on_top(edit);
         match self.history.execute(&mut self.doc.timeline, edit) {
             Ok(()) => {
                 self.mark_dirty();
@@ -658,6 +699,95 @@ impl Session {
             Edit::Batch(steps) => steps.iter().any(|e| self.puts_other_things_on_captions(e)),
             _ => false,
         }
+    }
+
+    /// The Captions track always stays the top track: if this edit would put
+    /// another track above it, it is moved back up in the same undo step.
+    fn with_captions_on_top(&self, edit: Edit) -> Edit {
+        fn reorders(edit: &Edit) -> bool {
+            match edit {
+                Edit::InsertTrack { .. } | Edit::MoveTrack { .. } => true,
+                Edit::Batch(steps) => steps.iter().any(reorders),
+                _ => false,
+            }
+        }
+        if !reorders(&edit) {
+            return edit;
+        }
+        let mut after = self.doc.timeline.clone();
+        if cutroom_timeline::apply(&mut after, edit.clone()).is_err() {
+            return edit;
+        }
+        match after.tracks.iter().position(is_caption_track) {
+            Some(i) if i > 0 => Edit::Batch(vec![
+                edit,
+                Edit::MoveTrack {
+                    track: after.tracks[i].id,
+                    index: 0,
+                },
+            ]),
+            _ => edit,
+        }
+    }
+
+    // ----- tracks ----------------------------------------------------------
+
+    /// Rename a track. The Captions track keeps its name, and no other track
+    /// may take it.
+    pub fn rename_track(&mut self, track: TrackId, name: &str) -> Result<(), String> {
+        let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+        let Some(t) = self.doc.timeline.track(track) else {
+            return Err("That track is gone.".into());
+        };
+        if is_caption_track(t) {
+            return Err("The Captions track keeps its name.".into());
+        }
+        if name.is_empty() {
+            return Err("Give the track a name.".into());
+        }
+        if name.chars().count() > 40 {
+            return Err("Keep the name to 40 letters or fewer.".into());
+        }
+        if name.eq_ignore_ascii_case(CAPTIONS_TRACK) {
+            return Err("\"Captions\" is kept for the Captions track.".into());
+        }
+        if t.name == name {
+            return Ok(());
+        }
+        if self.exec(Edit::RenameTrack { track, name }) {
+            Ok(())
+        } else {
+            Err(self.status.clone().unwrap_or_default())
+        }
+    }
+
+    /// The places a track may be moved to (inclusive): within its own group,
+    /// never above the Captions track. `None` for the Captions track itself.
+    pub fn track_move_range(&self, track: TrackId) -> Option<(usize, usize)> {
+        let tl = &self.doc.timeline;
+        let t = tl.track(track)?;
+        if is_caption_track(t) {
+            return None;
+        }
+        let audio = first_audio_index(tl);
+        match t.kind {
+            TrackKind::Video => Some((captions_offset(tl), audio.saturating_sub(1))),
+            TrackKind::Audio => Some((audio, tl.tracks.len().saturating_sub(1))),
+        }
+    }
+
+    /// Move a track to `index` (its place after the move), within its group.
+    pub fn move_track(&mut self, track: TrackId, index: usize) -> bool {
+        let Some((low, high)) = self.track_move_range(track) else {
+            self.status = Some("The Captions track always stays on top.".into());
+            return false;
+        };
+        let from = self.doc.timeline.tracks.iter().position(|t| t.id == track);
+        let index = index.clamp(low, high);
+        if from == Some(index) {
+            return false;
+        }
+        self.exec(Edit::MoveTrack { track, index })
     }
 
     /// A track that this edit leaves empty is removed in the same undo step
@@ -1341,8 +1471,23 @@ impl Session {
         at_top: bool,
         start: Ticks,
     ) -> Option<ClipId> {
-        let duration = self.media_duration(media);
         let index = new_track_index(&self.doc.timeline, kind, at_top);
+        self.add_media_on_new_track_at(media, kind, index, start)
+    }
+
+    /// Put media on a brand-new track inserted at `index`.
+    pub fn add_media_on_new_track_at(
+        &mut self,
+        media: MediaId,
+        kind: TrackKind,
+        index: usize,
+        start: Ticks,
+    ) -> Option<ClipId> {
+        if !track_slot_allowed(&self.doc.timeline, kind, index) {
+            self.status = Some("A new track can't go there.".into());
+            return None;
+        }
+        let duration = self.media_duration(media);
         let track = self.new_named_track(kind);
         let track_id = track.id;
         let clip = self
@@ -1371,11 +1516,26 @@ impl Session {
         at_top: bool,
         start: Ticks,
     ) -> bool {
+        let index = new_track_index(&self.doc.timeline, kind, at_top);
+        self.move_clip_to_new_track_at(clip, kind, index, start)
+    }
+
+    /// Move a clip onto a brand-new track inserted at `index`.
+    pub fn move_clip_to_new_track_at(
+        &mut self,
+        clip: ClipId,
+        kind: TrackKind,
+        index: usize,
+        start: Ticks,
+    ) -> bool {
+        if !track_slot_allowed(&self.doc.timeline, kind, index) {
+            self.status = Some("A new track can't go there.".into());
+            return false;
+        }
         let Some((_, c)) = self.doc.timeline.find_clip(clip) else {
             return false;
         };
         let (duration, source_in) = (c.duration, c.source_in);
-        let index = new_track_index(&self.doc.timeline, kind, at_top);
         let track = self.new_named_track(kind);
         let track_id = track.id;
         self.exec(Edit::Batch(vec![
@@ -2437,6 +2597,26 @@ impl Session {
         })
     }
 
+    /// Put the cues of a subtitle file on the Captions track (made if needed)
+    /// as generated captions in the given look, one undo step. Their words are
+    /// spread over each cue's time so word lighting works.
+    pub fn import_captions(
+        &mut self,
+        cues: &[cutroom_captions::srt::Cue],
+        style: &cutroom_timeline::TextSpec,
+        style_name: &str,
+    ) -> usize {
+        let lines: Vec<_> = cues
+            .iter()
+            .map(cutroom_captions::srt::cue_to_line)
+            .collect();
+        let added = self.add_captions(&lines, style, style_name);
+        if added > 0 {
+            self.status = Some(format!("Imported {added} captions onto the Captions track"));
+        }
+        added
+    }
+
     /// Put spoken captions on the timeline, one text clip per line, on a
     /// "Captions" track (made if needed) as a single undo step. Captions
     /// already on that track where the new ones go are replaced. `lines` are
@@ -3326,6 +3506,87 @@ mod tests {
             session.folder.proxy_dir(&session.doc),
             session.folder.root().join("proxies")
         );
+    }
+
+    #[test]
+    fn the_captions_track_stays_on_top_and_tracks_move_within_their_group() {
+        let (_tmp, mut session) = new_session();
+        // Tracks: Video 2, Video 1, Audio 1. Put a Captions track on top.
+        let captions = session
+            .doc
+            .timeline
+            .new_track(TrackKind::Video, CAPTIONS_TRACK);
+        let cap_id = captions.id;
+        assert!(session.exec(Edit::InsertTrack {
+            index: 0,
+            track: captions
+        }));
+        // A new video track "at the top" goes below it.
+        assert_eq!(
+            new_track_index(&session.doc.timeline, TrackKind::Video, true),
+            1
+        );
+        // Even a raw insert above it is put back below in the same undo step.
+        let sneaky = session.doc.timeline.new_track(TrackKind::Video, "Sneaky");
+        assert!(session.exec(Edit::InsertTrack {
+            index: 0,
+            track: sneaky
+        }));
+        assert_eq!(session.doc.timeline.tracks[0].id, cap_id);
+        session.undo();
+        assert_eq!(session.doc.timeline.tracks.len(), 4);
+        // Moving: video stays among video, never above Captions; audio among audio.
+        let names = |s: &Session| {
+            s.doc
+                .timeline
+                .tracks
+                .iter()
+                .map(|t| t.name.clone())
+                .collect::<Vec<_>>()
+        };
+        let v1 = session.doc.timeline.tracks[2].id;
+        assert!(session.move_track(v1, 0));
+        assert_eq!(
+            names(&session),
+            ["Captions", "Video 1", "Video 2", "Audio 1"]
+        );
+        let a1 = session.doc.timeline.tracks[3].id;
+        assert!(!session.move_track(a1, 1), "audio stays below video");
+        assert!(!session.move_track(cap_id, 2), "Captions does not move");
+        session.undo();
+        assert_eq!(
+            names(&session),
+            ["Captions", "Video 2", "Video 1", "Audio 1"]
+        );
+        // Renaming.
+        assert!(session.rename_track(v1, "  B-roll  ").is_ok());
+        assert_eq!(session.doc.timeline.track(v1).unwrap().name, "B-roll");
+        assert!(session.rename_track(v1, "captions").is_err());
+        assert!(session.rename_track(cap_id, "Words").is_err());
+        assert!(session.rename_track(v1, "   ").is_err());
+        session.undo();
+        assert_eq!(session.doc.timeline.track(v1).unwrap().name, "Video 1");
+    }
+
+    #[test]
+    fn an_old_project_with_tracks_above_captions_is_put_right_on_open() {
+        let (_tmp, mut session) = new_session();
+        let captions = session
+            .doc
+            .timeline
+            .new_track(TrackKind::Video, CAPTIONS_TRACK);
+        let n = session.doc.timeline.tracks.len();
+        cutroom_timeline::apply(
+            &mut session.doc.timeline,
+            Edit::InsertTrack {
+                index: n - 1,
+                track: captions,
+            },
+        )
+        .unwrap();
+        session.save();
+        let reopened = Session::open(session.folder.root()).unwrap();
+        assert!(is_caption_track(&reopened.doc.timeline.tracks[0]));
     }
 
     #[test]

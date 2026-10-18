@@ -171,8 +171,8 @@ fn page() -> gtk::Box {
     let b = gtk::Box::new(gtk::Orientation::Vertical, 0);
     b.set_margin_top(8);
     b.set_margin_bottom(8);
-    b.set_margin_start(18);
-    b.set_margin_end(18);
+    b.set_margin_start(crate::ui::DIALOG_PAD);
+    b.set_margin_end(crate::ui::DIALOG_PAD);
     b
 }
 
@@ -867,9 +867,9 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
     save.add_css_class("suggested-action");
     let cancel = gtk::Button::with_label("Cancel");
     let bottom = crate::dialogs::buttons(&save, &cancel);
-    bottom.set_margin_start(18);
-    bottom.set_margin_end(18);
-    bottom.set_margin_bottom(14);
+    bottom.set_margin_start(crate::ui::DIALOG_PAD);
+    bottom.set_margin_end(crate::ui::DIALOG_PAD);
+    bottom.set_margin_bottom(crate::ui::DIALOG_PAD - 2);
     bottom.set_margin_top(8);
 
     let frame = gtk::Frame::new(None);

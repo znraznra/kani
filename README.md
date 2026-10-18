@@ -271,6 +271,13 @@ Tiny and Base are fast but often wrong, especially with noise or non-English spe
 
 ## Timeline
 
+**Tracks:** the Captions track always sits on top; nothing can be put or moved above it. Drag a track's name
+up or down to move the track (video tracks stay among video tracks, audio among audio), or right-click its
+name for **Rename...**, **Move up** and **Move down**; double-click the name to rename it. While dragging a clip
+or a file, hold it on the line **between two rows** to give it a new track there (a teal line shows where), as
+well as over the ruler (top) or below the last track; a video track can't go among the audio tracks, nor an
+audio track among the video tracks.
+
 A click anywhere on the timeline moves the playhead there (and a click on a clip also selects it). **Ctrl+A** selects
 every clip. **Replace a clip:** drag a file from the media library onto a clip. A file shorter than the clip is refused
 (the clip shows why while you hold it there); a photo replaces it at once; for a longer video or sound file a window
@@ -286,8 +293,9 @@ drag it back onto the ruler or off the picture to remove it; guides are saved wi
 being moved, made or removed. **Click a picture in the Player** to select that clip (the topmost one under the pointer) and
 drag to move it straight away; clicking where nothing is drawn clears the selection. The fit button
 resets the zoom so the picture fits the Player; the arrows button (or F11) shows it full screen, with a note on how to
-leave, and play / position slider / time controls and the same arrows icon (to leave) along the bottom that hide while the pointer rests. Guides and the grid are
-visual aids for now: the transform box does not snap to them yet. With **Preview compositing on the graphics chip** the window
+leave, and play / position slider / time controls and the same arrows icon (to leave) along the bottom that hide while the pointer rests. **Snapping:** while you move a picture
+in the Player (with the timeline's magnet on), its edges and middle snap to the picture's edges and middle, to
+guides that are shown, and to grid lines when the grid is shown; the line it snapped to lights up pink. With **Preview compositing on the graphics chip** the window
 no longer waits for the chip: it picks up each finished picture on the next tick and sends the newest layers on, and when
 playback stops the console says how the chip did (time to draw, time to read back, pictures waiting).
 
@@ -297,14 +305,27 @@ playback stops the console says how the chip did (time to draw, time to read bac
 **Check Hardware Decoding...**) decodes the start of one of your own files twice as fast as it can: with the graphics chip's
 decoders allowed, then with only the processor's. The window reports which decoder element each run used, the pictures and
 speed, and the processor time each cost (Linux), says in words whether the chip took the file and what it saved, and
-lists the graphics-chip decoders GStreamer has. **Copy report** puts it on the clipboard; it is also printed on the console.
+lists the graphics-chip decoders GStreamer has. A progress bar shows the two runs; processor time is compared per
+decoded picture (the chip usually decodes many more pictures in the same time). **Copy report** puts it on the clipboard; it is also printed on the console.
+
+## Importing caption files
+
+**Captions panel > Import caption file...** (or drop / import a .srt, .vtt, .ass or .ssa file) puts each cue on the
+Captions track as a caption in the look chosen in the panel, replacing captions already at those times. Words are
+spread over each cue's time (subtitle files have no per-word times), so word lighting works; edit them like generated
+captions. One undo removes them all.
 
 ## Saved text styles
 
 In a text clip's **Text** section, **Saved style** has a drop-down of your styles (pick one to dress the clip in that look; the
-clip keeps its own words) and a save icon (keep the clip's current look under a name; the same name replaces the old one).
+clip keeps its own words; once one is on, the list ends with **No style (put back the earlier look)**) and a save icon (keep the clip's current look under a name; the same name replaces the old one).
 The **Text** library lists them under **My styles**: click one to add text in that look at the playhead, with rename and
 delete beside it. Styles are kept for the whole app (`text-styles.json` in the settings folder), not per project.
+
+## Interface style
+
+Text sizes, button padding, spacing and icons follow one set of numbers taken from the media panel; see
+[docs/UI_STYLE.md](docs/UI_STYLE.md). New interface follows it.
 
 ## Settings
 
@@ -318,12 +339,12 @@ defaults. Everything else is listed and disabled until its phase. See [docs/SETT
 | Phase | Deliverable |
 |------:|-------------|
 | 1 | Timeline, project folder, platform contracts |
-| 2 | App shell: home screen, editing, autosave (done, now on GTK4) |
+| 2 | App shell: home screen, editing, autosave (done, now on GTK4); home sidebar (0.5.31); tracks renamed and rearranged, new tracks between rows, one interface style (0.5.32) |
 | 3 | Media core: probing, thumbnails, preview, mixed sound, stills, waveforms, filmstrips, proxies, scrub throttling, decoder reporting (done); **automatic proxies, proxy quality, hardware-decode switch, preview resolution, remux on import and scrub sound (0.5.29)**; **a hardware-decoding check you run on your own footage, and proxies that move with their folder (0.5.31)**; still to do: read the check's results on real machines and footage, proxy encoder choice per machine |
 | 4 | Compositor: **layers, transforms, opacity, on-canvas transform box, crossfades and keyframes (done, CPU)**; deferred: GPU backend, blend modes, skipping decode of fully covered layers |
 | 5 | Export: **MP4 (H.264 + AAC) with the same pictures and sound as the preview, optional graphics-card compositing (Automatic / Always / Never in the Export window; Automatic uses the card only when a check found a real graphics chip clearly faster, and falls back to the processor for anything it cannot draw), a redesigned Export window (video and/or separate sound file, NTSC-to-PAL sizes by aspect ratio, bit rate presets, H.264 / H.265 / VP9 / AV1, MP4 / MOV / MKV / WebM, frame rate, AAC / MP3 / Opus / FLAC / WAV, mono or stereo, .srt / .vtt / .ass caption files, encoder and graphics-card choices), progress and cancel, and the best encoder that works on the machine (NVENC, Quick Sync, VA-API, AMF, VideoToolbox, else x264) with automatic fallback**; the sound file is made in parallel with the video; export of a time range or of selected clips (also picked with handles on the timeline, Ctrl+Shift+X); presets for named sites; still to do: the new H.265 / VP9 / AV1 hardware encoders checked on real machines, Windows (EGL, NVENC) |
-| 6 | Text engine and templates: **text clips (font, size, colour, outline, shadow, box, spacing), nine built-in styles, skew, perspective, corner pin and 4x4 mesh warp, all grouped as Morph with per-entry resets and keyframes (done)**; corner pin and mesh warp also drawn on the graphics chip (0.5.30); **user-saved text styles (0.5.31)**; still to do: snapping the transform box to guides and the grid |
-| 7 | Captions with local Whisper, styled word highlighting: **generate captions from the sound of selected clips (or the whole timeline), five caption looks, the spoken word or the line so far lit up as it is said, editable word by word, .srt / .vtt export (done)**; the Captions track holds only generated captions (text and media are placed on other tracks); still to do: **import caption files (.srt / .vtt / .ass) onto the Captions track**, real-world accuracy checks on your machine, speaker labels, translation, GPU-accelerated recognition |
+| 6 | Text engine and templates: **text clips (font, size, colour, outline, shadow, box, spacing), nine built-in styles, skew, perspective, corner pin and 4x4 mesh warp, all grouped as Morph with per-entry resets and keyframes (done)**; corner pin and mesh warp also drawn on the graphics chip (0.5.30); **user-saved text styles (0.5.31)**; **snapping the transform box to guides, the grid and the picture's edges and middle (0.5.32)** |
+| 7 | Captions with local Whisper, styled word highlighting: **generate captions from the sound of selected clips (or the whole timeline), five caption looks, the spoken word or the line so far lit up as it is said, editable word by word, .srt / .vtt export (done)**; the Captions track holds only generated captions (text and media are placed on other tracks); **import caption files (.srt / .vtt / .ass / .ssa) onto the Captions track, which always stays on top (0.5.32)**; still to do: real-world accuracy checks on your machine, speaker labels, translation, GPU-accelerated recognition |
 | 8 | Asset libraries and the pack format, with license tracking |
 | 9 | `.cube` LUTs and basic grading |
 | 10 | Stickers (SVG, Lottie) |

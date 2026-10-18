@@ -176,6 +176,49 @@ mod tests {
         };
         let (window, _) = crate::replace_ui::open(&app, clip, second).expect("opens");
         shot(window.upcast_ref(), "replace");
+        window.close();
+        // The editor with the media panel, a text clip in the inspector, the
+        // captions panel, Settings and Project settings.
+        shot(app.window.upcast_ref(), "editor_media");
+        {
+            let mut st = app.state.borrow_mut();
+            let s = st.session.as_mut().unwrap();
+            s.add_text_clip(cutroom_timeline::text::templates()[0].spec.clone());
+        }
+        app.refresh();
+        shot(app.window.upcast_ref(), "editor_text");
+        for (i, (name, _)) in crate::editor::CATEGORIES.iter().enumerate() {
+            if *name == "Captions" || *name == "Text" {
+                app.state.borrow_mut().category = i;
+                crate::editor::refresh_library(&app);
+                shot(
+                    app.window.upcast_ref(),
+                    &format!("editor_{}", name.to_lowercase()),
+                );
+            }
+        }
+        crate::settings_ui::open(&app, Some("performance"));
+        pump_until(|| false);
+        for w in gtk::Window::list_toplevels() {
+            let Ok(w) = w.downcast::<gtk::Window>() else {
+                continue;
+            };
+            if w.is_visible() && w.title().is_some_and(|t| t.contains("Settings")) {
+                shot(w.upcast_ref(), "settings");
+                w.close();
+            }
+        }
+        crate::project_settings_ui::open(&app);
+        pump_until(|| false);
+        for w in gtk::Window::list_toplevels() {
+            let Ok(w) = w.downcast::<gtk::Window>() else {
+                continue;
+            };
+            if w.is_visible() && w.title().is_some_and(|t| t.contains("Project")) {
+                shot(w.upcast_ref(), "project_settings");
+                w.close();
+            }
+        }
     }
 
     #[test]
@@ -1961,6 +2004,55 @@ mod tests {
                 } else {
                     eprintln!("no clip/file pair for the Replace check");
                 }
+            }
+
+            // A subtitle file comes in as captions on the Captions track, which
+            // sits on top; one undo takes them all away again.
+            {
+                let srt = tmp.path().join("words.srt");
+                std::fs::write(&srt, "1\n00:00:00,500 --> 00:00:01,500\nHello there\n\n2\n00:00:02,000 --> 00:00:03,000\n<i>General</i> Kenobi\n").unwrap();
+                let tracks_before = app
+                    .state
+                    .borrow()
+                    .session
+                    .as_ref()
+                    .unwrap()
+                    .doc
+                    .timeline
+                    .tracks
+                    .len();
+                let added = crate::captions_ui::import_file(&app, &srt).expect("imported");
+                assert_eq!(added, 2);
+                {
+                    let st = app.state.borrow();
+                    let tl = &st.session.as_ref().unwrap().doc.timeline;
+                    assert!(
+                        cutroom_core::state::is_caption_track(&tl.tracks[0]),
+                        "Captions on top"
+                    );
+                    let texts: Vec<String> = tl.tracks[0]
+                        .clips
+                        .iter()
+                        .filter_map(|c| c.text.as_ref().map(|t| t.content.clone()))
+                        .collect();
+                    assert!(texts.iter().any(|t| t == "General Kenobi"), "{texts:?}");
+                    assert!(tl.tracks[0]
+                        .clips
+                        .iter()
+                        .all(|c| c.is_caption() && !c.words.is_empty()));
+                }
+                app.state.borrow_mut().session.as_mut().unwrap().undo();
+                let st = app.state.borrow();
+                let tl = &st.session.as_ref().unwrap().doc.timeline;
+                assert!(tl.tracks.len() <= tracks_before + 1);
+                assert!(tl
+                    .tracks
+                    .iter()
+                    .all(|t| !cutroom_core::state::is_caption_track(t)
+                        || t.clips.iter().all(|c| c
+                            .text
+                            .as_ref()
+                            .is_none_or(|x| x.content != "General Kenobi"))));
             }
 
             // Saved text styles: keep a look, list it, apply it to other words,

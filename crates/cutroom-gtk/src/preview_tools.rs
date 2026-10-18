@@ -12,8 +12,76 @@ use cutroom_core::shortcuts::Action;
 use gtk4 as gtk;
 use gtk4::gdk;
 use gtk4::prelude::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+
+// ----- snapping -------------------------------------------------------------------
+
+/// How near (in screen pixels) an edge or the middle of a moved picture must
+/// come to a line to snap onto it.
+pub const SNAP_REACH: f64 = 6.0;
+
+thread_local! {
+    /// The lines a moved picture is snapped to right now, in canvas pixels
+    /// (a vertical line's x, a horizontal line's y), drawn lit.
+    static SNAPPED: Cell<(Option<f32>, Option<f32>)> = const { Cell::new((None, None)) };
+}
+
+/// Show (or clear) the lines a picture is snapped to.
+pub fn set_snapped(lines: (Option<f32>, Option<f32>)) {
+    SNAPPED.with(|s| s.set(lines));
+}
+
+/// The shift that brings the nearest of `edges` onto one of `lines`, and that
+/// line, when one is within `reach`.
+pub fn snap_shift(edges: &[f32], lines: &[f32], reach: f32) -> Option<(f32, f32)> {
+    let mut best: Option<(f32, f32)> = None;
+    for e in edges {
+        for l in lines {
+            let d = l - e;
+            if d.abs() <= reach && best.is_none_or(|(b, _)| d.abs() < b.abs()) {
+                best = Some((d, *l));
+            }
+        }
+    }
+    best
+}
+
+/// The lines a moved picture may snap to, in canvas pixels: the picture's
+/// edges and middle always, the guides while they are shown, and the grid
+/// lines while the grid is shown. (vertical lines' x, horizontal lines' y)
+pub fn snap_lines(app: &App, canvas: (f32, f32)) -> (Vec<f32>, Vec<f32>) {
+    let st = app.state.borrow();
+    let mut xs = vec![0.0, canvas.0 / 2.0, canvas.0];
+    let mut ys = vec![0.0, canvas.1 / 2.0, canvas.1];
+    if st.settings.show_guides {
+        if let Some(s) = st.session.as_ref() {
+            for g in &s.doc.guides {
+                if g.vertical {
+                    xs.push(g.pos as f32);
+                } else {
+                    ys.push(g.pos as f32);
+                }
+            }
+        }
+    }
+    if st.settings.show_grid {
+        let cell = canvas.0 / GRID_CELLS as f32;
+        if cell > 1.0 {
+            let mut v = cell;
+            while v < canvas.0 {
+                xs.push(v);
+                v += cell;
+            }
+            let mut v = cell;
+            while v < canvas.1 {
+                ys.push(v);
+                v += cell;
+            }
+        }
+    }
+    (xs, ys)
+}
 
 /// Width of the rulers, in screen pixels.
 pub const RULER: f64 = 18.0;
@@ -113,6 +181,23 @@ pub fn draw(
                 cr.move_to(0.0, y);
                 cr.line_to(area_size.0, y);
             }
+        }
+        let _ = cr.stroke();
+    }
+    // The lines a picture being moved has snapped to.
+    let (sx, sy) = SNAPPED.with(|s| s.get());
+    if sx.is_some() || sy.is_some() {
+        cr.set_line_width(1.0);
+        cr.set_source_rgba(1.0, 0.25, 0.75, 0.95);
+        if let Some(x) = sx {
+            let x = (ox + f64::from(x) * k).round() + 0.5;
+            cr.move_to(x, oy);
+            cr.line_to(x, oy + ch);
+        }
+        if let Some(y) = sy {
+            let y = (oy + f64::from(y) * k).round() + 0.5;
+            cr.move_to(ox, y);
+            cr.line_to(ox + cw, y);
         }
         let _ = cr.stroke();
     }
@@ -468,6 +553,23 @@ pub fn toggle_fullscreen(app: &Rc<App>) {
 mod tests {
     use super::*;
     use cutroom_project::Guide;
+
+    #[test]
+    fn the_nearest_edge_snaps_to_the_nearest_line_within_reach() {
+        // Edges at 100, 150, 200; lines at 0, 154, 540.
+        assert_eq!(
+            snap_shift(&[100.0, 150.0, 200.0], &[0.0, 154.0, 540.0], 6.0),
+            Some((4.0, 154.0))
+        );
+        assert_eq!(
+            snap_shift(&[100.0, 150.0, 200.0], &[0.0, 160.0, 540.0], 6.0),
+            None
+        );
+        assert_eq!(
+            snap_shift(&[100.0], &[97.0, 104.0], 6.0),
+            Some((-3.0, 97.0))
+        );
+    }
 
     #[test]
     fn ruler_ticks_are_never_closer_than_asked() {

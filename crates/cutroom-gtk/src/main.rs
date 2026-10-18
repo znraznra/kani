@@ -40,6 +40,7 @@ mod thumbs;
 mod timeline;
 mod transform_overlay;
 mod transform_ui;
+mod ui;
 mod ui_test;
 
 use gstreamer as gst;

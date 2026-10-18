@@ -292,6 +292,54 @@ fn inside(poly: &[(f32, f32)], p: (f32, f32)) -> bool {
 
 /// Where the corners of the drawn picture are, and the rotate knob (a fixed
 /// distance above the top edge, in canvas pixels), all in canvas pixels.
+/// `t` moved a little so the picture's edges or middle land on a nearby line;
+/// records the lines it snapped to for drawing.
+fn snap_moved(
+    app: &App,
+    clip: ClipId,
+    mut t: Transform,
+    canvas: (f32, f32),
+    reach: f32,
+) -> Transform {
+    use crate::preview_tools::{set_snapped, snap_lines, snap_shift};
+    set_snapped((None, None));
+    if !app.state.borrow().snap {
+        return t;
+    }
+    let Some(shown) = shown_for(app, clip) else {
+        return t;
+    };
+    let placement = Placement {
+        natural: shown.placement.natural,
+        ..Placement::from(&t)
+    };
+    let mapper = Mapper::new(&placement, canvas, shown.media);
+    let corners: Vec<(f32, f32)> = SQUARE
+        .iter()
+        .filter_map(|&(u, v)| mapper.point(u, v).map(|p| (p.0, p.1)))
+        .collect();
+    if corners.len() < 4 {
+        return t;
+    }
+    let (min_x, max_x) = corners
+        .iter()
+        .fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.0), a.1.max(p.0)));
+    let (min_y, max_y) = corners
+        .iter()
+        .fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.1), a.1.max(p.1)));
+    let (xs, ys) = snap_lines(app, canvas);
+    let sx = snap_shift(&[min_x, (min_x + max_x) / 2.0, max_x], &xs, reach);
+    let sy = snap_shift(&[min_y, (min_y + max_y) / 2.0, max_y], &ys, reach);
+    if let Some((d, _)) = sx {
+        t.x += (d / canvas.0 * 1000.0).round() as i32;
+    }
+    if let Some((d, _)) = sy {
+        t.y += (d / canvas.1 * 1000.0).round() as i32;
+    }
+    set_snapped((sx.map(|s| s.1), sy.map(|s| s.1)));
+    t
+}
+
 fn box_points(
     shown: &Shown,
     knob_offset: f32,
@@ -718,7 +766,18 @@ pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
             let shift = gesture
                 .current_event_state()
                 .contains(gdk::ModifierType::SHIFT_MASK);
-            let t = g.apply(pos, canvas, shift);
+            let mut t = g.apply(pos, canvas, shift);
+            if g.handle == Handle::Body {
+                // Moving: the picture's edges and middle snap to the picture's
+                // edges and middle, guides and grid lines (with snapping on).
+                t = snap_moved(
+                    &app,
+                    clip,
+                    t,
+                    canvas,
+                    (k as f32) * crate::preview_tools::SNAP_REACH as f32,
+                );
+            }
             last.set(Some(t));
             app.state.borrow_mut().transform_preview = Some((clip, t));
             app.render_preview();
@@ -742,6 +801,7 @@ pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
                 return;
             }
             dgrab.set(None);
+            crate::preview_tools::set_snapped((None, None));
             if let Some(clip) = corner_click.take() {
                 // A click on a corner: the next kind of handles for this clip.
                 grab.set(None);

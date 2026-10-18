@@ -17,7 +17,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 pub const CATEGORY_COUNT: usize = 9;
-const CATEGORIES: [(&str, Option<(&str, &str)>); 9] = [
+pub(crate) const CATEGORIES: [(&str, Option<(&str, &str)>); 9] = [
     ("Media", None),
     (
         "Audio",

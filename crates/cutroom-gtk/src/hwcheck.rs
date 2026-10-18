@@ -16,12 +16,14 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How long each run may decode.
 const LIMIT: Duration = Duration::from_secs(8);
+/// The window's fixed width.
+const WINDOW_W: i32 = 440;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decoder {
@@ -48,6 +50,13 @@ impl Run {
         } else {
             0.0
         }
+    }
+
+    /// Processor time per decoded picture, in milliseconds.
+    fn cpu_per_picture(&self) -> Option<f64> {
+        self.cpu
+            .filter(|_| self.frames > 0)
+            .map(|c| c * 1000.0 / self.frames as f64)
     }
 
     fn used_hardware(&self) -> bool {
@@ -123,7 +132,8 @@ pub fn installed_hardware_decoders() -> Vec<String> {
 }
 
 /// Decode the start of `path` as fast as possible and count what comes out.
-fn decode_run(path: &Path) -> Run {
+/// `progress` (thousandths of the whole check) moves from `from` to `from + 500`.
+fn decode_run(path: &Path, progress: &AtomicU32, from: u32) -> Run {
     let mut run = Run::default();
     let Ok(playbin) = gst::ElementFactory::make("playbin")
         .property("uri", crate::media::path_to_uri(path))
@@ -173,6 +183,8 @@ fn decode_run(path: &Path) -> Run {
     }
     if let Some(bus) = playbin.bus() {
         while began.elapsed() < LIMIT {
+            let part = (began.elapsed().as_secs_f64() / LIMIT.as_secs_f64() * 500.0) as u32;
+            progress.store(from + part.min(500), Ordering::Relaxed);
             let Some(message) = bus.timed_pop_filtered(
                 gst::ClockTime::from_mseconds(100),
                 &[gst::MessageType::Eos, gst::MessageType::Error],
@@ -209,12 +221,13 @@ fn decode_run(path: &Path) -> Run {
         }
     }
     let _ = playbin.set_state(gst::State::Null);
+    progress.store(from + 500, Ordering::Relaxed);
     run
 }
 
 /// The whole check. Blocks for up to about twenty seconds: run it on a thread.
 /// `hw_setting` is the user's "Decode with the graphics chip", put back afterwards.
-pub fn run_check(path: &Path, hw_setting: bool) -> Report {
+pub fn run_check(path: &Path, hw_setting: bool, progress: &AtomicU32) -> Report {
     let _ = gst::init();
     let mut report = Report {
         file: path
@@ -225,9 +238,9 @@ pub fn run_check(path: &Path, hw_setting: bool) -> Report {
         ..Report::default()
     };
     apply(true);
-    report.hardware = decode_run(path);
+    report.hardware = decode_run(path, progress, 0);
     apply(false);
-    report.software = decode_run(path);
+    report.software = decode_run(path, progress, 500);
     apply(hw_setting);
     report
 }
@@ -263,20 +276,22 @@ pub fn explain(r: &Report) -> String {
         "Decoding on the graphics chip works for this file ({}).",
         hw.names()
     );
-    match (hw.cpu, sw.cpu) {
-        (Some(a), Some(b)) if b > 0.05 => {
+    // Both runs decode as fast as they can for the same time, so compare the
+    // processor time per picture, not the totals.
+    if let (Some(a), Some(b)) = (hw.cpu_per_picture(), sw.cpu_per_picture()) {
+        if b > 0.0 {
             let saved = ((1.0 - a / b) * 100.0).round();
             if saved >= 10.0 {
                 text += &format!(
-                    " It used {a:.1} s of processor time against {b:.1} s on the processor alone: about {saved:.0}% less."
+                    " Each picture cost {a:.1} ms of processor time against {b:.1} ms on the processor alone: about {saved:.0}% less, and it decoded {:.1}x as fast.",
+                    hw.fps() / sw.fps().max(0.001)
                 );
             } else {
                 text += &format!(
-                    " It used {a:.1} s of processor time against {b:.1} s on the processor alone, so little is saved with this file."
+                    " Each picture cost {a:.1} ms of processor time against {b:.1} ms on the processor alone, so little processor time is saved with this file."
                 );
             }
         }
-        _ => {}
     }
     if sw.fps() > 0.0 && hw.fps() < sw.fps() * 0.6 {
         text += " It was slower than the processor, though: the chip may be copying pictures back for the preview. If playback stutters, turn the setting off.";
@@ -287,9 +302,11 @@ pub fn explain(r: &Report) -> String {
 /// The report as plain text (also what the Copy button copies).
 pub fn text(r: &Report) -> String {
     let line = |label: &str, run: &Run| {
-        let cpu = run
-            .cpu
-            .map_or(String::new(), |c| format!(", {c:.1} s of processor time"));
+        let cpu = match (run.cpu, run.cpu_per_picture()) {
+            (Some(c), Some(p)) => format!(", {c:.1} s of processor time ({p:.1} ms a picture)"),
+            (Some(c), None) => format!(", {c:.1} s of processor time"),
+            _ => String::new(),
+        };
         match &run.error {
             Some(e) => format!("{label}: failed ({e})"),
             None => format!(
@@ -317,26 +334,33 @@ pub fn text(r: &Report) -> String {
 
 /// Open the window, run the check on `path` and show what it found.
 pub fn open(app: &Rc<App>, path: PathBuf) {
-    let window = dialog_window(app, "Check hardware decoding", 560);
+    let window = dialog_window(app, "Check hardware decoding", WINDOW_W);
+    window.set_size_request(WINDOW_W, -1);
     let body = content_box();
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    body.append(&caption(&format!("Decoding the start of \"{name}\" twice: with the graphics chip, then with the processor only.")));
-    let busy = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let spinner = gtk::Spinner::new();
-    spinner.start();
-    busy.append(&spinner);
-    busy.append(&gtk::Label::new(Some(
-        "Testing... this takes up to 20 seconds. Leave playback stopped meanwhile.",
-    )));
+    let intro = caption(&format!(
+        "Decoding the start of \"{name}\" twice: with the graphics chip, then with the processor only."
+    ));
+    intro.set_wrap(true);
+    intro.set_max_width_chars(48);
+    body.append(&intro);
+    let busy = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let bar = gtk::ProgressBar::new();
+    bar.set_show_text(true);
+    bar.set_text(Some("With the graphics chip..."));
+    busy.append(&bar);
+    let note = caption("Takes up to 20 seconds. Leave playback stopped meanwhile.");
+    note.set_wrap(true);
+    busy.append(&note);
     body.append(&busy);
     let result = gtk::Label::new(None);
     result.set_selectable(true);
     result.set_wrap(true);
     result.set_xalign(0.0);
-    result.set_max_width_chars(70);
+    result.set_max_width_chars(48);
     result.set_visible(false);
     body.append(&result);
     let copy = gtk::Button::with_label("Copy report");
@@ -352,20 +376,30 @@ pub fn open(app: &Rc<App>, path: PathBuf) {
 
     let hw_setting = app.state.borrow().settings.hw_decode;
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(run_check(&path, hw_setting));
-    });
+    let progress = Arc::new(AtomicU32::new(0));
+    {
+        let progress = progress.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(run_check(&path, hw_setting, &progress));
+        });
+    }
     let weak = window.downgrade();
     let app = app.clone();
     glib::timeout_add_local(Duration::from_millis(200), move || {
         let Some(window) = weak.upgrade() else {
             return glib::ControlFlow::Break;
         };
+        let done = progress.load(Ordering::Relaxed).min(1000);
+        bar.set_fraction(f64::from(done) / 1000.0);
+        bar.set_text(Some(if done < 500 {
+            "With the graphics chip..."
+        } else {
+            "With the processor only..."
+        }));
         match rx.try_recv() {
             Ok(report) => {
                 let report_text = text(&report);
                 eprintln!("kani: hardware decoding check\n{report_text}");
-                spinner.stop();
                 busy.set_visible(false);
                 result.set_text(&report_text);
                 result.set_visible(true);
@@ -435,7 +469,13 @@ mod tests {
             text.contains("works for this file") && text.contains("75% less"),
             "{text}"
         );
-        r.hardware.frames = 100;
+        // The user's AV1 file: similar totals, but 2.5x the pictures on the chip.
+        r.hardware = run("vaav1dec", true, 2459, 8.8);
+        r.software = run("av1dec", false, 985, 8.6);
+        let text = explain(&r);
+        assert!(text.contains("59% less"), "{text}");
+        r.hardware = run("vah264dec", true, 100, 1.0);
+        r.software = run("avdec_h264", false, 300, 4.0);
         assert!(explain(&r).contains("slower than the processor"));
         r.hardware.error = Some("boom".into());
         assert!(explain(&r).contains("failed: boom"));
@@ -467,7 +507,7 @@ mod tests {
             &[gst::MessageType::Eos, gst::MessageType::Error],
         );
         pipeline.set_state(gst::State::Null).unwrap();
-        let report = run_check(&file, true);
+        let report = run_check(&file, true, &AtomicU32::new(0));
         assert_eq!(report.hardware.frames, 60, "{report:?}");
         assert_eq!(report.software.frames, 60, "{report:?}");
         assert!(report.software.decoders.iter().all(|d| !d.hardware));

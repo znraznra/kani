@@ -104,6 +104,37 @@ pub enum NewTrackAt {
     Top,
     /// Dropped in the empty space below every track.
     Bottom,
+    /// Dropped on the line between two rows: a new track at this index
+    /// (between row `i - 1` and row `i`).
+    Between(usize),
+}
+
+/// How close (in pixels) to the line between two rows the pointer must be to
+/// make a new track there.
+pub const BETWEEN_PX: f32 = 6.0;
+
+/// Where a new track of `kind` would be inserted for `at`, or `None` when that
+/// place is not allowed (a video track among the audio tracks, an audio track
+/// among the video tracks, anything above the Captions track).
+pub fn new_track_insert_index(tl: &Timeline, kind: TrackKind, at: NewTrackAt) -> Option<usize> {
+    match at {
+        NewTrackAt::Top => Some(crate::state::new_track_index(tl, kind, true)),
+        NewTrackAt::Bottom => Some(crate::state::new_track_index(tl, kind, false)),
+        NewTrackAt::Between(i) => crate::state::track_slot_allowed(tl, kind, i).then_some(i),
+    }
+}
+
+/// [`spot_at`], but a line between rows where a `kind` track may not go
+/// counts as the row under the pointer (or nothing).
+pub fn spot_for_kind(tl: &Timeline, canvas: Rect, y: f32, kind: TrackKind) -> Spot {
+    match spot_at(canvas, y, tl.tracks.len()) {
+        Spot::NewTrack(NewTrackAt::Between(i))
+            if new_track_insert_index(tl, kind, NewTrackAt::Between(i)).is_none() =>
+        {
+            row_at(canvas, y, tl.tracks.len()).map_or(Spot::Nowhere, Spot::Row)
+        }
+        spot => spot,
+    }
 }
 
 /// What lies under the pointer in the track area.
@@ -141,6 +172,12 @@ pub struct DropTarget {
 pub fn spot_at(canvas: Rect, y: f32, rows: usize) -> Spot {
     if y < canvas.top() + RULER_H {
         return Spot::NewTrack(NewTrackAt::Top);
+    }
+    for i in 1..rows {
+        let line = row_top(canvas, i) - ROW_GAP / 2.0;
+        if (y - line).abs() <= BETWEEN_PX {
+            return Spot::NewTrack(NewTrackAt::Between(i));
+        }
     }
     if let Some(row) = row_at(canvas, y, rows) {
         return Spot::Row(row);
@@ -401,7 +438,8 @@ pub fn drop_target(
             start = snapped;
         }
     }
-    match spot_at(canvas, pos.y, tl.tracks.len()) {
+    let media_kind = session.media_kind_of(media).track_kind();
+    match spot_for_kind(tl, canvas, pos.y, media_kind) {
         Spot::Nowhere => None,
         // A new track is always possible.
         Spot::NewTrack(at) => Some(DropTarget {
@@ -661,7 +699,8 @@ pub fn update_drag(
             let source_kind = tl.track(*orig_track).map(|t| t.kind);
             let media = tl.find_clip(*clip).map(|(_, c)| c.media);
             *new_track = None;
-            match spot_at(canvas, pos.y, tl.tracks.len()) {
+            let kind = source_kind.unwrap_or(TrackKind::Video);
+            match spot_for_kind(tl, canvas, pos.y, kind) {
                 Spot::NewTrack(at) => *new_track = Some(at),
                 Spot::Row(row) => {
                     let candidate = &tl.tracks[row];
@@ -778,7 +817,12 @@ pub fn commit_drag(session: &mut Session, drag: &Drag) {
                     .track(*orig_track)
                     .map(|t| t.kind)
                     .unwrap_or(TrackKind::Video);
-                session.move_clip_to_new_track(*clip, kind, *at == NewTrackAt::Top, *start);
+                match new_track_insert_index(&session.doc.timeline, kind, *at) {
+                    Some(index) => {
+                        session.move_clip_to_new_track_at(*clip, kind, index, *start);
+                    }
+                    None => session.status = Some("A new track can't go there.".into()),
+                }
             } else if *valid {
                 session.move_clip(*clip, *track, *start);
             } else {
@@ -1420,10 +1464,75 @@ mod tests {
         assert_eq!(bottom.new_track, Some(NewTrackAt::Bottom));
         assert!(bottom.valid);
         let gap = row_top(canvas(), 1) - ROW_GAP / 2.0;
-        assert!(
-            at(gap).is_none(),
-            "between rows is neither a row nor a new track"
+        assert_eq!(
+            at(gap).unwrap().new_track,
+            Some(NewTrackAt::Between(1)),
+            "the line between two video rows makes a video track there"
         );
+    }
+
+    #[test]
+    fn a_new_track_between_rows_stays_in_its_own_group() {
+        let (_tmp, session, _, _) = editing_session();
+        // Rows: Video 2, Video 1, Audio 1.
+        let tl = &session.doc.timeline;
+        let v = TrackKind::Video;
+        let a = TrackKind::Audio;
+        assert_eq!(
+            new_track_insert_index(tl, v, NewTrackAt::Between(1)),
+            Some(1)
+        );
+        assert_eq!(
+            new_track_insert_index(tl, v, NewTrackAt::Between(2)),
+            Some(2)
+        );
+        assert_eq!(
+            new_track_insert_index(tl, a, NewTrackAt::Between(2)),
+            Some(2)
+        );
+        assert_eq!(
+            new_track_insert_index(tl, a, NewTrackAt::Between(1)),
+            None,
+            "no audio among video"
+        );
+        assert_eq!(
+            new_track_insert_index(tl, v, NewTrackAt::Between(3)),
+            None,
+            "no video among audio"
+        );
+        // Not allowed for this kind: the line counts as the row under it.
+        let line = row_top(canvas(), 1) - ROW_GAP / 2.0;
+        assert_eq!(spot_for_kind(tl, canvas(), line, a), Spot::Nowhere);
+        assert_eq!(
+            spot_for_kind(tl, canvas(), line + 3.0, a),
+            Spot::Row(1),
+            "inside the row, an audio clip just sees the row"
+        );
+    }
+
+    #[test]
+    fn dragging_a_clip_onto_the_line_between_rows_makes_a_track_there() {
+        let (_tmp, mut session, a, _) = editing_session();
+        let view = view();
+        let line = row_top(canvas(), 1) - ROW_GAP / 2.0;
+        let (_, clip) = session.doc.timeline.find_clip(a).unwrap();
+        let x = canvas().left() + view.x_for(clip.start) + 10.0;
+        let mut drag = begin_drag(&mut session, &view, canvas(), pos2(x, y_of_row(1)));
+        drag_update(&mut session, &mut drag, x, line, false);
+        match &drag {
+            Drag::Move { new_track, .. } => assert_eq!(*new_track, Some(NewTrackAt::Between(1))),
+            other => panic!("{other:?}"),
+        }
+        commit_drag(&mut session, &drag);
+        let names: Vec<&str> = session
+            .doc
+            .timeline
+            .tracks
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect();
+        assert_eq!(names.len(), 4, "{names:?}");
+        assert_eq!(session.doc.timeline.tracks[1].clips[0].id, a, "{names:?}");
     }
 
     #[test]

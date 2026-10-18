@@ -46,11 +46,8 @@ pub(crate) fn dialog_window(app: &Rc<App>, title: &str, width: i32) -> gtk::Wind
 }
 
 pub(crate) fn content_box() -> gtk::Box {
-    let b = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    b.set_margin_top(16);
-    b.set_margin_bottom(16);
-    b.set_margin_start(18);
-    b.set_margin_end(18);
+    let b = gtk::Box::new(gtk::Orientation::Vertical, crate::ui::GAP + 2);
+    crate::ui::pad_dialog(&b);
     b
 }
 

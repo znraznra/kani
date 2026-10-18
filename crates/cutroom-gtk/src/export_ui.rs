@@ -362,35 +362,7 @@ fn add_compact_style() {
 }
 
 fn dropdown(items: &[&str]) -> gtk::DropDown {
-    let d = gtk::DropDown::from_strings(items);
-    d.set_hexpand(true);
-    // The names are cut short with "..." when the dropdown is narrower, so a
-    // long name never makes the window's right-hand side wider than it is.
-    let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(|_, item| {
-        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-            return;
-        };
-        let label = gtk::Label::new(None);
-        label.set_xalign(0.0);
-        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        label.set_width_chars(1);
-        item.set_child(Some(&label));
-    });
-    factory.connect_bind(|_, item| {
-        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-            return;
-        };
-        if let (Some(label), Some(text)) = (
-            item.child().and_downcast::<gtk::Label>(),
-            item.item().and_downcast::<gtk::StringObject>(),
-        ) {
-            label.set_text(&text.string());
-            label.set_tooltip_text(Some(&text.string()));
-        }
-    });
-    d.set_factory(Some(&factory));
-    d
+    crate::ui::dropdown(items)
 }
 
 /// Open the Export window.

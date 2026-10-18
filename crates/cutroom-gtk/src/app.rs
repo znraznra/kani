@@ -76,6 +76,12 @@ pub struct State {
     pub ui_saved: Option<cutroom_core::ui_state::UiState>,
     /// The part of the timeline being picked for export (Shift+Ctrl+X), if any.
     pub export_range: Option<crate::range_select::ExportRange>,
+    /// A track header being dragged to a new place: (track, place it would take).
+    pub track_drag: Option<(cutroom_timeline::TrackId, usize)>,
+    /// Saved styles put on text clips this session: the style's name and the
+    /// look the clip had before, so the style can be taken off again.
+    pub applied_styles:
+        std::collections::HashMap<cutroom_timeline::ClipId, (String, cutroom_timeline::TextSpec)>,
     /// Text styles the user has saved (shared by every project).
     pub text_styles: cutroom_core::text_styles::StyleBook,
 }
@@ -191,6 +197,8 @@ impl App {
                 tick_count: 0,
                 ui_saved: None,
                 export_range: None,
+                track_drag: None,
+                applied_styles: Default::default(),
                 text_styles,
             }),
             ui: OnceCell::new(),
@@ -426,6 +434,7 @@ impl App {
             st.snap_guide = None;
             st.drop_ghost = None;
             st.notice = None;
+            st.applied_styles.clear();
             st.last_synced_playhead = Ticks::ZERO;
             st.ui_saved = saved.clone();
             if let Some(ui) = &saved {
@@ -574,6 +583,25 @@ impl App {
     /// Import files or folders. `place_at` puts the first imported item on
     /// that track and time (used when dropping onto the timeline).
     pub fn import_paths(self: &Rc<Self>, input: Vec<PathBuf>, place_at: Option<(TrackId, Ticks)>) {
+        // Subtitle files become captions on the Captions track, not media.
+        let (subtitles, mut input): (Vec<_>, Vec<_>) = input.into_iter().partition(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| ["srt", "vtt", "ass", "ssa"].contains(&e.to_lowercase().as_str()))
+        });
+        if self.state.borrow().session.is_some() {
+            for path in &subtitles {
+                if let Err(e) = crate::captions_ui::import_file(self, path) {
+                    self.set_status(e);
+                }
+            }
+            if input.is_empty() && !subtitles.is_empty() {
+                return;
+            }
+        } else {
+            // No project: the usual "open a project first" note covers them too.
+            input.extend(subtitles);
+        }
         // Files in containers Kani cannot read are re-wrapped first (when asked).
         let input = if self.state.borrow().settings.remux_on_import {
             let (wrap, rest): (Vec<_>, Vec<_>) = input

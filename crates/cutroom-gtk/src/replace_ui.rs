@@ -18,9 +18,11 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
-const PREVIEW_W: i32 = 480;
-const PREVIEW_H: i32 = 270;
-const BAR_H: i32 = 56;
+const PREVIEW_W: i32 = 400;
+const PREVIEW_H: i32 = 225;
+const BAR_H: i32 = 44;
+/// The window's fixed width.
+const WINDOW_W: i32 = 440;
 
 /// Where the chosen part may start: from 0 to `length - clip`.
 pub fn clamp_start(start: f64, clip: f64, length: f64) -> f64 {
@@ -143,13 +145,14 @@ pub fn open(app: &Rc<App>, clip: ClipId, media: MediaId) -> Option<(gtk::Window,
     let (clip_len, length, path, name, frame) = facts?;
     crate::strips::request(app, media);
 
-    let window = dialog_window(app, "Replace clip", 640);
+    let window = dialog_window(app, "Replace clip", WINDOW_W);
+    window.set_size_request(WINDOW_W, -1);
     let body = content_box();
     let intro = caption(&format!(
         "Slide the highlighted part along \"{name}\" to choose the {clip_len:.2} s that replace the clip. Its place, length, look and keyframes stay."
     ));
     intro.set_wrap(true);
-    intro.set_max_width_chars(70);
+    intro.set_max_width_chars(48);
     body.append(&intro);
 
     let picture = gtk::Picture::new();

@@ -124,9 +124,252 @@ pub fn to_ass(cues: &[Cue], style: &AssStyle, width: u32, height: u32) -> String
     out
 }
 
+// ----- reading subtitle files ------------------------------------------------------
+
+/// Seconds from "01:02:03,456", "01:02:03.456", "02:03.456" (WebVTT) or
+/// "1:02:03.45" (Advanced SubStation).
+fn parse_stamp(s: &str) -> Option<f64> {
+    let s = s.trim().replace(',', ".");
+    let parts: Vec<&str> = s.split(':').collect();
+    let (h, m, sec) = match parts.as_slice() {
+        [h, m, sec] => (
+            h.parse::<f64>().ok()?,
+            m.parse::<f64>().ok()?,
+            sec.parse::<f64>().ok()?,
+        ),
+        [m, sec] => (0.0, m.parse::<f64>().ok()?, sec.parse::<f64>().ok()?),
+        _ => return None,
+    };
+    Some(h * 3600.0 + m * 60.0 + sec)
+}
+
+/// Text without markup: `<i>`, `<b>`, `<c.x>`, `<00:01.000>` and
+/// `{\an8}`-style blocks go; Advanced SubStation's `\N` becomes a new line.
+fn clean(text: &str) -> String {
+    let mut out = String::new();
+    let mut depth_angle = false;
+    let mut depth_brace = false;
+    for c in text.chars() {
+        match c {
+            '<' => depth_angle = true,
+            '>' if depth_angle => depth_angle = false,
+            '{' => depth_brace = true,
+            '}' if depth_brace => depth_brace = false,
+            _ if depth_angle || depth_brace => {}
+            _ => out.push(c),
+        }
+    }
+    let out = out
+        .replace("\\N", "\n")
+        .replace("\\n", "\n")
+        .replace("\\h", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&nbsp;", " ");
+    out.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Cues from SubRip (.srt) or WebVTT (.vtt): a "start --> end" line, then
+/// the text up to a blank line.
+fn parse_timed_blocks(text: &str) -> Vec<Cue> {
+    let mut cues = Vec::new();
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        let Some((a, rest)) = line.split_once("-->") else {
+            continue;
+        };
+        // WebVTT may put settings after the end time ("00:01.000 align:start").
+        let b = rest.split_whitespace().next().unwrap_or("");
+        let (Some(start), Some(end)) = (parse_stamp(a), parse_stamp(b)) else {
+            continue;
+        };
+        let mut body = Vec::new();
+        while let Some(next) = lines.peek() {
+            if next.trim().is_empty() {
+                break;
+            }
+            body.push(lines.next().unwrap_or_default());
+        }
+        let text = clean(&body.join("\n"));
+        if !text.is_empty() && end > start {
+            cues.push((start, end, text));
+        }
+    }
+    cues
+}
+
+/// Cues from Advanced SubStation Alpha (.ass / .ssa): the Dialogue lines of
+/// the [Events] section, read by its Format line.
+fn parse_ass(text: &str) -> Vec<Cue> {
+    let mut cues = Vec::new();
+    let mut in_events = false;
+    let mut format: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_events = line.eq_ignore_ascii_case("[events]");
+            continue;
+        }
+        if !in_events {
+            continue;
+        }
+        if let Some(f) = line.strip_prefix("Format:") {
+            format = f.split(',').map(|s| s.trim().to_lowercase()).collect();
+            continue;
+        }
+        let Some(d) = line.strip_prefix("Dialogue:") else {
+            continue;
+        };
+        if format.is_empty() {
+            format = [
+                "layer", "start", "end", "style", "name", "marginl", "marginr", "marginv",
+                "effect", "text",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        }
+        let fields: Vec<&str> = d.splitn(format.len(), ',').map(str::trim).collect();
+        let at = |name: &str| {
+            format
+                .iter()
+                .position(|f| f == name)
+                .and_then(|i| fields.get(i).copied())
+        };
+        let (Some(a), Some(b), Some(t)) = (at("start"), at("end"), at("text")) else {
+            continue;
+        };
+        let (Some(start), Some(end)) = (parse_stamp(a), parse_stamp(b)) else {
+            continue;
+        };
+        let text = clean(t);
+        if !text.is_empty() && end > start {
+            cues.push((start, end, text));
+        }
+    }
+    cues.sort_by(|x, y| x.0.total_cmp(&y.0));
+    cues
+}
+
+/// Read a subtitle file (.srt, .vtt, .ass or .ssa, told apart by what is in
+/// it). Cues come back in time order.
+pub fn parse_subtitles(text: &str) -> Result<Vec<Cue>, String> {
+    let text = text.trim_start_matches('\u{feff}');
+    let lower = text.to_lowercase();
+    let mut cues = if lower.contains("[events]") {
+        parse_ass(text)
+    } else {
+        parse_timed_blocks(text)
+    };
+    cues.sort_by(|x, y| x.0.total_cmp(&y.0));
+    if cues.is_empty() {
+        return Err(
+            "No captions were found in this file. Kani reads .srt, .vtt, .ass and .ssa.".into(),
+        );
+    }
+    Ok(cues)
+}
+
+/// One cue as a caption line, its words spread over the cue's time by their
+/// length (subtitle files have no per-word times), so word lighting works.
+pub fn cue_to_line(cue: &Cue) -> crate::lines::Line {
+    let (start, end, text) = cue;
+    let mut pieces: Vec<String> = Vec::new();
+    for (row, line) in text.lines().enumerate() {
+        for (i, word) in line.split_whitespace().enumerate() {
+            let sep = if pieces.is_empty() {
+                ""
+            } else if i == 0 && row > 0 {
+                "\n"
+            } else {
+                " "
+            };
+            pieces.push(format!("{sep}{word}"));
+        }
+    }
+    let weight: usize = pieces.iter().map(|p| p.trim().chars().count() + 1).sum();
+    let span = (end - start).max(0.0);
+    let mut t = *start;
+    let words = pieces
+        .into_iter()
+        .map(|p| {
+            let share = (p.trim().chars().count() + 1) as f64 / weight.max(1) as f64 * span;
+            let w = crate::TimedWord {
+                text: p,
+                start: t,
+                end: t + share,
+            };
+            t += share;
+            w
+        })
+        .collect();
+    crate::lines::Line {
+        start: *start,
+        end: *end,
+        words,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn srt_vtt_and_ass_files_are_read() {
+        let srt = "1\n00:00:01,000 --> 00:00:02,500\n<i>Hello</i> there\nfriend\n\n2\n00:00:03,000 --> 00:00:04,000\n{\\an8}Bye\n";
+        let cues = parse_subtitles(srt).unwrap();
+        assert_eq!(
+            cues,
+            vec![
+                (1.0, 2.5, "Hello there\nfriend".into()),
+                (3.0, 4.0, "Bye".into())
+            ]
+        );
+        let vtt = "\u{feff}WEBVTT\n\nNOTE hi\n\n00:01.000 --> 00:02.000 align:start\nOne &amp; two\n\nx\n01:00:00.000 --> 01:00:01.000\nLate\n";
+        let cues = parse_subtitles(vtt).unwrap();
+        assert_eq!(
+            cues,
+            vec![
+                (1.0, 2.0, "One & two".into()),
+                (3600.0, 3601.0, "Late".into())
+            ]
+        );
+        let ass = "[Script Info]\nTitle: x\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:05.00,0:00:06.50,Default,,0,0,0,,{\\b1}Big{\\b0}, bold\\Nline\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,First\n";
+        let cues = parse_subtitles(ass).unwrap();
+        assert_eq!(
+            cues,
+            vec![
+                (1.0, 2.0, "First".into()),
+                (5.0, 6.5, "Big, bold\nline".into())
+            ]
+        );
+        assert!(parse_subtitles("nothing here").is_err());
+    }
+
+    #[test]
+    fn our_own_files_read_back_the_same() {
+        let cues: Vec<Cue> = vec![(0.5, 1.25, "a b".into()), (2.0, 3.0, "c".into())];
+        assert_eq!(parse_subtitles(&to_srt(&cues)).unwrap(), cues);
+        assert_eq!(parse_subtitles(&to_vtt(&cues)).unwrap(), cues);
+    }
+
+    #[test]
+    fn a_cue_becomes_a_line_with_words_spread_over_its_time() {
+        let line = cue_to_line(&(1.0, 3.0, "ab cd\nef".into()));
+        let texts: Vec<&str> = line.words.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(texts, ["ab", " cd", "\nef"]);
+        assert_eq!(line.words[0].start, 1.0);
+        assert!((line.words[2].end - 3.0).abs() < 1e-9);
+        assert!(line
+            .words
+            .windows(2)
+            .all(|w| (w[0].end - w[1].start).abs() < 1e-9));
+    }
 
     #[test]
     fn srt_and_vtt_have_the_right_shape() {

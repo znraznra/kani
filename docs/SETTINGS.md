@@ -107,6 +107,11 @@ Info tab > "Project settings" opens a window with two tabs, staged Save/Cancel:
 
 Color space is stored in the project only; colour-managed rendering is Phase 9. Format and name changes are not undoable. The media panel's "Import options" fold-out was removed as redundant.
 
+## 0.5.32 changes
+
+- The hardware decoding check window has a fixed width and a progress bar; processor time is compared per picture.
+- Interface text sizes, button padding and spacing follow docs/UI_STYLE.md everywhere (Settings margins 14 px).
+
 ## 0.5.31 changes
 
 - Playback > **Check hardware decoding** > Test on a video...: decodes a real file with and without the graphics chip and reports the
