@@ -221,6 +221,41 @@ mod tests {
         }
     }
 
+    /// Not a check: the hardware decoding window keeps one height while it
+    /// tests and after the report comes.
+    #[test]
+    #[ignore]
+    fn hwcheck_window_keeps_its_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path().join("config"));
+        if gtk::init().is_err() || !test_media::init() {
+            return;
+        }
+        let application = gtk::Application::builder()
+            .application_id("dev.kani.hwsize")
+            .build();
+        application.register(gio::Cancellable::NONE).unwrap();
+        let app: Rc<App> = App::new(&application, Vec::new());
+        let clip = tmp.path().join("c.webm");
+        test_media::make_video(&clip, 2);
+        crate::hwcheck::open(&app, clip);
+        let height = || {
+            gtk::Window::list_toplevels()
+                .into_iter()
+                .filter_map(|w| w.downcast::<gtk::Window>().ok())
+                .find(|w| w.title().is_some_and(|t| t.contains("hardware")))
+                .map(|w| w.measure(gtk::Orientation::Vertical, w.width()).0)
+                .unwrap_or(0)
+        };
+        pump_until(|| false);
+        let before = height();
+        pump_for(40, || false);
+        let after = height();
+        eprintln!("HWCHECK min height before {before}, after {after}");
+        assert_eq!(before, after);
+    }
+
     #[test]
     fn the_application_works_end_to_end() {
         if std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {

@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 const LIMIT: Duration = Duration::from_secs(8);
 /// The window's fixed width.
 const WINDOW_W: i32 = 440;
+/// Height of the area that holds the progress, then the report.
+const REPORT_H: i32 = 260;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decoder {
@@ -355,14 +357,25 @@ pub fn open(app: &Rc<App>, path: PathBuf) {
     let note = caption("Takes up to 20 seconds. Leave playback stopped meanwhile.");
     note.set_wrap(true);
     busy.append(&note);
-    body.append(&busy);
+    // The progress and the report share one fixed-size area, so the window
+    // keeps its size when the report arrives (a window growing after it is
+    // shown made GTK warn "Trying to measure GtkWindow ... needs at least").
+    busy.set_valign(gtk::Align::Center);
     let result = gtk::Label::new(None);
     result.set_selectable(true);
     result.set_wrap(true);
     result.set_xalign(0.0);
+    result.set_yalign(0.0);
     result.set_max_width_chars(48);
-    result.set_visible(false);
-    body.append(&result);
+    let result_scroll = gtk::ScrolledWindow::new();
+    result_scroll.set_hscrollbar_policy(gtk::PolicyType::Never);
+    result_scroll.set_child(Some(&result));
+    let area = gtk::Stack::new();
+    area.set_size_request(-1, REPORT_H);
+    area.set_vhomogeneous(true);
+    area.add_named(&busy, Some("busy"));
+    area.add_named(&result_scroll, Some("report"));
+    body.append(&area);
     let copy = gtk::Button::with_label("Copy report");
     copy.set_sensitive(false);
     let close = gtk::Button::with_label("Close");
@@ -400,9 +413,8 @@ pub fn open(app: &Rc<App>, path: PathBuf) {
             Ok(report) => {
                 let report_text = text(&report);
                 eprintln!("kani: hardware decoding check\n{report_text}");
-                busy.set_visible(false);
                 result.set_text(&report_text);
-                result.set_visible(true);
+                area.set_visible_child_name("report");
                 copy.set_sensitive(true);
                 let app = app.clone();
                 copy.connect_clicked(move |_| {

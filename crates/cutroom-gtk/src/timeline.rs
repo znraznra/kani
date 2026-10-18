@@ -1265,7 +1265,9 @@ fn attach_mouse(app: &Rc<App>, area: &gtk::DrawingArea) {
             let (v_extra, moved) = (v_extra.clone(), moved.clone());
             let id = glib::timeout_add_local(Duration::from_millis(16), move || {
                 let (sx, sy) = start.get();
-                if sx < f64::from(HEADER_W) {
+                // A track being moved by its name scrolls the list up or down.
+                let moving_track = app.state.borrow().track_drag.is_some();
+                if sx < f64::from(HEADER_W) && !moving_track {
                     return glib::ControlFlow::Continue;
                 }
                 // A plain click on a clip near an edge must not scroll the
@@ -1278,7 +1280,9 @@ fn attach_mouse(app: &Rc<App>, area: &gtk::DrawingArea) {
                 let x = sx + dx;
                 let (left, right) = (f64::from(HEADER_W), f64::from(area.width()));
                 const EDGE: f64 = 48.0;
-                let push = if x > right - EDGE {
+                let push = if moving_track {
+                    0.0
+                } else if x > right - EDGE {
                     x - (right - EDGE)
                 } else if x < left + EDGE {
                     -((left + EDGE) - x)
@@ -1307,10 +1311,11 @@ fn attach_mouse(app: &Rc<App>, area: &gtk::DrawingArea) {
                 }
                 // Dragging a clip towards the bottom or top of the track list
                 // scrolls the list that way.
-                let vertical = matches!(
-                    app.state.borrow().drag,
-                    Drag::Move { .. } | Drag::Marquee { .. }
-                );
+                let vertical = moving_track
+                    || matches!(
+                        app.state.borrow().drag,
+                        Drag::Move { .. } | Drag::Marquee { .. }
+                    );
                 if vertical {
                     if let Some(sw) = area
                         .ancestor(gtk::ScrolledWindow::static_type())

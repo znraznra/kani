@@ -272,7 +272,8 @@ Tiny and Base are fast but often wrong, especially with noise or non-English spe
 ## Timeline
 
 **Tracks:** the Captions track always sits on top; nothing can be put or moved above it. Drag a track's name
-up or down to move the track (video tracks stay among video tracks, audio among audio), or right-click its
+up or down to move the track (video tracks stay among video tracks, audio among audio; the track list scrolls
+when you hold it near the top or bottom), or right-click its
 name for **Rename...**, **Move up** and **Move down**; double-click the name to rename it. While dragging a clip
 or a file, hold it on the line **between two rows** to give it a new track there (a teal line shows where), as
 well as over the ruler (top) or below the last track; a video track can't go among the audio tracks, nor an

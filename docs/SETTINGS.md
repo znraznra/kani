@@ -107,6 +107,11 @@ Info tab > "Project settings" opens a window with two tabs, staged Save/Cancel:
 
 Color space is stored in the project only; colour-managed rendering is Phase 9. Format and name changes are not undoable. The media panel's "Import options" fold-out was removed as redundant.
 
+## 0.5.33 changes
+
+- The hardware decoding check window keeps one size from start to report (no more "Trying to measure GtkWindow" warnings from it).
+- Dragging a track by its name scrolls the track list near the top or bottom.
+
 ## 0.5.32 changes
 
 - The hardware decoding check window has a fixed width and a progress bar; processor time is compared per picture.
