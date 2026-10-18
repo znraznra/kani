@@ -68,7 +68,9 @@ mod tests {
         let report = |name: &str| {
             pump_until(|| false);
             for w in gtk::Window::list_toplevels() {
-                let Ok(w) = w.downcast::<gtk::Window>() else { continue };
+                let Ok(w) = w.downcast::<gtk::Window>() else {
+                    continue;
+                };
                 if !w.is_visible() || w.title().is_some_and(|t| t.ends_with("Kani")) {
                     continue;
                 }
@@ -95,6 +97,87 @@ mod tests {
         report("project settings");
     }
 
+    /// Not a check: saves pictures of the home screen pages and the Replace
+    /// window, to look at. `KANI_SHOT_DIR=/tmp/x xvfb-run -a cargo test -p cutroom-gtk look_shots -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn look_shots() {
+        let Ok(dir) = std::env::var("KANI_SHOT_DIR") else {
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path().join("config"));
+        std::env::set_var("GSK_RENDERER", "cairo");
+        if gtk::init().is_err() || !test_media::init() {
+            return;
+        }
+        let application = gtk::Application::builder()
+            .application_id("dev.kani.shots")
+            .build();
+        application.register(gio::Cancellable::NONE).unwrap();
+        let app: Rc<App> = App::new(&application, Vec::new());
+        app.window.present();
+        let shot = |widget: &gtk::Widget, name: &str| {
+            pump_until(|| false);
+            let (w, h) = (widget.width(), widget.height());
+            let paintable = gtk::WidgetPaintable::new(Some(widget));
+            let snap = gtk::Snapshot::new();
+            paintable.snapshot(&snap, f64::from(w), f64::from(h));
+            if let (Some(node), Some(native)) = (snap.to_node(), widget.native()) {
+                if let Some(renderer) = native.renderer() {
+                    let _ = renderer
+                        .render_texture(&node, None)
+                        .save_to_png(format!("{dir}/{name}.png"));
+                }
+            }
+        };
+        for name in ["First clip", "Second one"] {
+            let mut form = NewProjectForm::new(tmp.path().join("projects"));
+            form.name = name.into();
+            app.create_project(&form).unwrap();
+            app.run_action(Action::CloseProject);
+            pump_until(|| false);
+        }
+        for page in ["projects", "recents", "brand-kits"] {
+            app.ui().home.show_page(page);
+            shot(app.window.upcast_ref(), &format!("home_{page}"));
+        }
+        // The Replace window.
+        let mut form = NewProjectForm::new(tmp.path().join("projects"));
+        form.name = "Replace".into();
+        app.create_project(&form).unwrap();
+        let (short, long) = (tmp.path().join("short.webm"), tmp.path().join("long.webm"));
+        test_media::make_video(&short, 2);
+        test_media::make_video(&long, 5);
+        app.import_paths(vec![short, long], None);
+        assert!(pump_until(|| {
+            let st = app.state.borrow();
+            let s = st.session.as_ref().unwrap();
+            s.doc.media.len() == 2 && s.doc.media.iter().all(|m| m.probe.is_some())
+        }));
+        let (first, second) = {
+            let st = app.state.borrow();
+            let m = &st.session.as_ref().unwrap().doc.media;
+            (m[0].id, m[1].id)
+        };
+        let clip = {
+            let mut st = app.state.borrow_mut();
+            let s = st.session.as_mut().unwrap();
+            s.add_media_to_timeline(first);
+            s.doc
+                .timeline
+                .tracks
+                .iter()
+                .flat_map(|t| t.clips.iter())
+                .next()
+                .unwrap()
+                .id
+        };
+        let (window, _) = crate::replace_ui::open(&app, clip, second).expect("opens");
+        shot(window.upcast_ref(), "replace");
+    }
+
     #[test]
     fn the_application_works_end_to_end() {
         if std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
@@ -119,6 +202,17 @@ mod tests {
 
         // 1. Starts on the home screen.
         assert_eq!(page(&app), "home");
+        {
+            // The sidebar: Projects first; Recents and Brand Kits switch the page.
+            let home = &app.ui().home;
+            assert_eq!(home.visible_page(), "projects");
+            home.show_page("brand-kits");
+            assert_eq!(home.visible_page(), "brand-kits");
+            home.show_page("recents");
+            assert_eq!(home.visible_page(), "recents");
+            home.show_page("projects");
+            assert_eq!(home.visible_page(), "projects");
+        }
 
         // 2. Create a project: lands in the editor with the starter tracks.
         let mut form = NewProjectForm::new(tmp.path().join("projects"));
@@ -1049,7 +1143,10 @@ mod tests {
             rs::drag_to(&app, x_of(r0.start) + 60.0);
             rs::release(&app);
             let r1 = range();
-            assert!(r1.end < r0.end && r1.end > r1.start, "the end handle moved: {r0:?} -> {r1:?}");
+            assert!(
+                r1.end < r0.end && r1.end > r1.start,
+                "the end handle moved: {r0:?} -> {r1:?}"
+            );
             // Drag the whole part along.
             let len = r1.end - r1.start;
             rs::press(&app, (x_of(r1.start) + x_of(r1.end)) / 2.0);
@@ -1068,7 +1165,9 @@ mod tests {
                 paintable.snapshot(&snap, f64::from(w), f64::from(h));
                 if let (Some(node), Some(native)) = (snap.to_node(), app.window.native()) {
                     if let Some(renderer) = native.renderer() {
-                        let _ = renderer.render_texture(&node, None).save_to_png(format!("{dir}/range.png"));
+                        let _ = renderer
+                            .render_texture(&node, None)
+                            .save_to_png(format!("{dir}/range.png"));
                     }
                 }
             }
@@ -1092,9 +1191,15 @@ mod tests {
                 .and_then(|o| o.downcast::<gtk::StringObject>().ok())
                 .map(|o| o.string().to_string());
             assert_eq!(picked.as_deref(), Some("From / to"));
-            assert!((d.range_from.value() - 1.0).abs() < 0.01 && (d.range_to.value() - 3.0).abs() < 0.01);
+            assert!(
+                (d.range_from.value() - 1.0).abs() < 0.01
+                    && (d.range_to.value() - 3.0).abs() < 0.01
+            );
             d.window.close();
-            assert!(pump_until(|| crate::export_ui::active().is_none()), "the window closed");
+            assert!(
+                pump_until(|| crate::export_ui::active().is_none()),
+                "the window closed"
+            );
             // The top-right Export button (Ctrl+E, the menu) while a range is
             // being picked exports that range, with no extra step.
             app.run_action(Action::ExportRange);
@@ -1108,7 +1213,8 @@ mod tests {
             assert!(!rs::active(&app), "picking ends");
             let d = crate::export_ui::active().expect("Export opens");
             assert!(
-                (d.range_from.value() - 0.5).abs() < 0.01 && (d.range_to.value() - 2.5).abs() < 0.01,
+                (d.range_from.value() - 0.5).abs() < 0.01
+                    && (d.range_to.value() - 2.5).abs() < 0.01,
                 "the Export window found the picked range"
             );
             d.window.close();
@@ -1129,7 +1235,11 @@ mod tests {
             let dialog = crate::export_ui::active().expect("the Export window opens");
             assert!(!dialog.export.is_sensitive(), "waits for the encoder test");
             let ok = pump_for(60, || dialog.export.is_sensitive());
-            assert!(ok, "an encoder was found: {}", crate::export_ui::debug_state(&dialog));
+            assert!(
+                ok,
+                "an encoder was found: {}",
+                crate::export_ui::debug_state(&dialog)
+            );
             // Smallest size, to keep the test quick.
             dialog.size.set_selected(
                 dialog
@@ -1237,7 +1347,11 @@ mod tests {
             assert!(formats.contains(&"MP4".to_string()), "{formats:?}");
             assert!(!formats.contains(&"WebM".to_string()), "{formats:?}");
             assert!(items(&d.audio_format)[0].starts_with("AAC"));
-            assert_eq!(items(&d.audio_format)[d.audio_format.selected() as usize], "AAC", "the sound format starts on AAC");
+            assert_eq!(
+                items(&d.audio_format)[d.audio_format.selected() as usize],
+                "AAC",
+                "the sound format starts on AAC"
+            );
             // The size list has the NTSC and PAL sizes for the chosen shape, and
             // changes with the shape.
             let sizes = items(&d.size);
@@ -1252,19 +1366,30 @@ mod tests {
             let other = items(&d.size);
             assert_ne!(sizes, other, "another shape, other sizes");
             d.aspect.set_selected(0);
-            assert_eq!(d.size.selected(), project_size, "back on the project's size");
+            assert_eq!(
+                d.size.selected(),
+                project_size,
+                "back on the project's size"
+            );
             // Range: the whole project, or from / to (and the selected clips when there are some).
             {
                 let ranges = items(&d.range);
                 assert_eq!(ranges[0], "Whole project");
                 assert_eq!(ranges.last().map(String::as_str), Some("From / to"));
-                assert!(!d.range_from.is_visible(), "the typed range is hidden until asked for");
+                assert!(
+                    !d.range_from.is_visible(),
+                    "the typed range is hidden until asked for"
+                );
                 let whole = d.summary.text().to_string();
                 d.range.set_selected(ranges.len() as u32 - 1);
                 assert!(d.range_from.is_visible() && d.range_to.is_visible());
                 d.range_from.set_value(1.0);
                 d.range_to.set_value(3.0);
-                assert!(d.summary.text().starts_with("Duration: 0:02"), "{}", d.summary.text());
+                assert!(
+                    d.summary.text().starts_with("Duration: 0:02"),
+                    "{}",
+                    d.summary.text()
+                );
                 assert_ne!(d.summary.text().as_str(), whole.as_str());
                 assert!(d.export.is_sensitive());
                 // A part that ends before it starts leaves nothing to export.
@@ -1278,12 +1403,25 @@ mod tests {
             // The choices scroll up and down only: nothing is wider than the column.
             {
                 let h = d.form_scroll.hadjustment();
-                let (min_w, _, _, _) = d.form_scroll.child().unwrap().measure(gtk::Orientation::Horizontal, -1);
-                eprintln!("ui_test: form column needs {min_w} px, shows {} of {}", h.page_size(), h.upper());
+                let (min_w, _, _, _) = d
+                    .form_scroll
+                    .child()
+                    .unwrap()
+                    .measure(gtk::Orientation::Horizontal, -1);
+                eprintln!(
+                    "ui_test: form column needs {min_w} px, shows {} of {}",
+                    h.page_size(),
+                    h.upper()
+                );
                 fn walk(w: &gtk::Widget, depth: usize) {
                     let (m, _, _, _) = w.measure(gtk::Orientation::Horizontal, -1);
                     if m > 250 {
-                        eprintln!("ui_test: {:indent$}{} min {m}", "", w.type_().name(), indent = depth * 2);
+                        eprintln!(
+                            "ui_test: {:indent$}{} min {m}",
+                            "",
+                            w.type_().name(),
+                            indent = depth * 2
+                        );
                     }
                     let mut c = w.first_child();
                     while let Some(ch) = c {
@@ -1292,16 +1430,28 @@ mod tests {
                     }
                 }
                 walk(&d.form_scroll.child().unwrap(), 0);
-                assert!(h.upper() <= h.page_size() + 0.5, "no sideways scrolling: {} > {}", h.upper(), h.page_size());
+                assert!(
+                    h.upper() <= h.page_size() + 0.5,
+                    "no sideways scrolling: {} > {}",
+                    h.upper(),
+                    h.page_size()
+                );
             }
             // Acceleration: Automatic, Graphics card, Processor.
             assert_eq!(
                 items(&d.gpu_mode),
-                vec!["Automatic (recommended)".to_string(), "Graphics card".to_string(), "Processor".to_string()]
+                vec![
+                    "Automatic (recommended)".to_string(),
+                    "Graphics card".to_string(),
+                    "Processor".to_string()
+                ]
             );
             // The bit rate presets are listed with what they come to.
             let rates = items(&d.bitrate);
-            assert!(rates.iter().any(|r| r.starts_with("Recommended - ")), "{rates:?}");
+            assert!(
+                rates.iter().any(|r| r.starts_with("Recommended - ")),
+                "{rates:?}"
+            );
             assert!(rates.iter().any(|r| r == "Custom"));
             // Another video format brings its own file formats and sound.
             // The Encoder list names kinds of encoder; the Codec list shows only
@@ -1313,16 +1463,29 @@ mod tests {
             let soft_at = kinds.iter().position(|k| k == "Processor").unwrap() as u32;
             d.encoder.set_selected(soft_at);
             let soft_codecs = items(&d.codec);
-            assert!(soft_codecs.iter().all(|c| all_codecs.contains(c)), "{soft_codecs:?} within {all_codecs:?}");
+            assert!(
+                soft_codecs.iter().all(|c| all_codecs.contains(c)),
+                "{soft_codecs:?} within {all_codecs:?}"
+            );
             for kind in kinds.iter().filter(|k| k.starts_with("Graphics chip")) {
                 let at = kinds.iter().position(|k| k == kind).unwrap() as u32;
                 d.encoder.set_selected(at);
                 let hw = items(&d.codec);
-                assert!(!hw.is_empty() && hw.iter().all(|c| all_codecs.contains(c)), "{kind}: {hw:?}");
+                assert!(
+                    !hw.is_empty() && hw.iter().all(|c| all_codecs.contains(c)),
+                    "{kind}: {hw:?}"
+                );
             }
             d.encoder.set_selected(0);
-            assert_eq!(items(&d.codec), all_codecs, "Automatic offers every format found");
-            let vp9_at = items(&d.codec).iter().position(|c| c.contains("VP9")).expect("a VP9 encoder works here");
+            assert_eq!(
+                items(&d.codec),
+                all_codecs,
+                "Automatic offers every format found"
+            );
+            let vp9_at = items(&d.codec)
+                .iter()
+                .position(|c| c.contains("VP9"))
+                .expect("a VP9 encoder works here");
             d.codec.set_selected(vp9_at as u32); // VP9
             assert!(
                 pump_for(60, || d.export.is_sensitive()),
@@ -1341,8 +1504,16 @@ mod tests {
             {
                 let presets = items(&d.preset);
                 assert_eq!(presets[0], "No preset");
-                for name in ["YouTube Shorts", "TikTok", "LinkedIn video (16:9)", "Sound only: MP3"] {
-                    assert!(presets.iter().any(|p| p == name), "{name} is a preset: {presets:?}");
+                for name in [
+                    "YouTube Shorts",
+                    "TikTok",
+                    "LinkedIn video (16:9)",
+                    "Sound only: MP3",
+                ] {
+                    assert!(
+                        presets.iter().any(|p| p == name),
+                        "{name} is a preset: {presets:?}"
+                    );
                 }
                 let at = |name: &str| presets.iter().position(|p| p == name).unwrap() as u32;
                 d.preset.set_selected(at("Instagram feed (4:5)"));
@@ -1354,10 +1525,18 @@ mod tests {
                 );
                 assert!(d.video_on.is_active());
                 assert_eq!(items(&d.format)[d.format.selected() as usize], "MP4");
-                assert_eq!(items(&d.audio_format)[d.audio_format.selected() as usize], "AAC");
-                assert_eq!(d.preset.selected(), at("Instagram feed (4:5)"), "the preset stays while nothing is changed");
+                assert_eq!(
+                    items(&d.audio_format)[d.audio_format.selected() as usize],
+                    "AAC"
+                );
+                assert_eq!(
+                    d.preset.selected(),
+                    at("Instagram feed (4:5)"),
+                    "the preset stays while nothing is changed"
+                );
                 // Another shape and size by hand: no longer that preset.
-                d.rate.set_selected((d.rate.selected() + 1) % items(&d.rate).len() as u32);
+                d.rate
+                    .set_selected((d.rate.selected() + 1) % items(&d.rate).len() as u32);
                 assert_eq!(d.preset.selected(), 0, "a changed choice leaves the preset");
                 d.preset.set_selected(at("LinkedIn video (16:9)"));
                 assert!(pump_for(60, || d.export.is_sensitive()));
@@ -1370,7 +1549,10 @@ mod tests {
                 // A sound-only preset switches the video off.
                 d.preset.set_selected(at("Sound only: MP3"));
                 assert!(!d.video_on.is_active() && d.audio_on.is_active());
-                assert_eq!(items(&d.audio_format)[d.audio_format.selected() as usize], "MP3");
+                assert_eq!(
+                    items(&d.audio_format)[d.audio_format.selected() as usize],
+                    "MP3"
+                );
                 assert!(d.export.is_sensitive());
                 // Back to the plain H.264 start the rest of the test expects.
                 d.preset.set_selected(0);
@@ -1403,7 +1585,10 @@ mod tests {
             let saved = d.saved.borrow().clone().expect("a file was saved");
             assert_eq!(saved.file_name().unwrap(), "e2e sound.m4a");
             assert!(std::fs::metadata(&saved).unwrap().len() > 500);
-            assert!(!out_dir.path().join("e2e sound.mp4").exists(), "no video was asked for");
+            assert!(
+                !out_dir.path().join("e2e sound.mp4").exists(),
+                "no video was asked for"
+            );
             d.window.close();
             assert!(pump_for(5, || crate::export_ui::active().is_none()));
 
@@ -1515,7 +1700,10 @@ mod tests {
             let s = st.session.as_ref().unwrap();
             assert_eq!((s.doc.settings.width, s.doc.settings.height), (1280, 720));
             assert_eq!(s.doc.name, "Renamed in test");
-            assert_eq!(s.doc.settings.color_space, cutroom_project::ColorSpace::DisplayP3);
+            assert_eq!(
+                s.doc.settings.color_space,
+                cutroom_project::ColorSpace::DisplayP3
+            );
         }
 
         // 10b. Settings: one window for every preference. Choices wait for Save.
@@ -1566,7 +1754,10 @@ mod tests {
             d.proxies.set_active(!before.use_proxies);
             d.cancel.emit_clicked();
             assert!(pump_until(|| su::active().is_none()));
-            assert_eq!(app.state.borrow().settings.autosave_every(), before.autosave_every());
+            assert_eq!(
+                app.state.borrow().settings.autosave_every(),
+                before.autosave_every()
+            );
             assert_eq!(app.state.borrow().settings.use_proxies, before.use_proxies);
             // Save applies.
             app.run_action(Action::ShowSettings);
@@ -1593,7 +1784,10 @@ mod tests {
             let d = su::active().unwrap();
             assert!(d.autosave.is_active() && (d.autosave_minutes.value() - 3.0).abs() < 0.01);
             d.autosave.set_active(false);
-            assert!(!d.autosave_minutes.is_sensitive(), "the interval waits for the switch");
+            assert!(
+                !d.autosave_minutes.is_sensitive(),
+                "the interval waits for the switch"
+            );
             d.save.emit_clicked();
             assert!(pump_until(|| su::active().is_none()));
             assert_eq!(app.state.borrow().settings.autosave_every(), 0);
@@ -1628,7 +1822,10 @@ mod tests {
                 assert_eq!(st.settings.preview_edge(), 480);
                 assert_eq!(st.settings.proxy_spec().0, 640);
             }
-            assert!(!app.ui().editor.scrub_active(), "the timeline button follows the setting");
+            assert!(
+                !app.ui().editor.scrub_active(),
+                "the timeline button follows the setting"
+            );
             // The timeline button changes the setting too.
             app.ui().editor.set_scrub_active(true);
             assert!(app.state.borrow().settings.scrub_audio);
@@ -1657,7 +1854,15 @@ mod tests {
             app.ui().editor.queue_overlay();
             pump_until(|| false);
             crate::preview_tools::reset_guides(&app);
-            assert!(app.state.borrow().session.as_ref().unwrap().doc.guides.is_empty());
+            assert!(app
+                .state
+                .borrow()
+                .session
+                .as_ref()
+                .unwrap()
+                .doc
+                .guides
+                .is_empty());
             {
                 let mut st = app.state.borrow_mut();
                 st.settings.show_rulers = false;
@@ -1695,13 +1900,20 @@ mod tests {
                         .flat_map(|t| t.clips.iter())
                         .find(|c| !c.disabled && c.start <= at && at < c.end())
                         .map(|c| c.id);
-                    (s.doc.settings.width as f32, s.doc.settings.height as f32, top)
+                    (
+                        s.doc.settings.width as f32,
+                        s.doc.settings.height as f32,
+                        top,
+                    )
                 };
                 if picture_clip.is_some() {
                     let found = crate::transform_overlay::clip_under(&app, (w / 2.0, h / 2.0));
                     assert!(found.is_some(), "something is drawn in the middle");
                 }
-                assert_eq!(crate::transform_overlay::clip_under(&app, (-50.0, -50.0)), None);
+                assert_eq!(
+                    crate::transform_overlay::clip_under(&app, (-50.0, -50.0)),
+                    None
+                );
             }
 
             // Dropping a long enough file on a clip opens the Replace window;
@@ -1710,33 +1922,109 @@ mod tests {
                 let pair = {
                     let st = app.state.borrow();
                     let s = st.session.as_ref().unwrap();
-                    s.doc.timeline.tracks.iter().flat_map(|t| t.clips.iter()).find_map(|c| {
-                        if c.text.is_some() {
-                            return None;
-                        }
-                        s.doc
-                            .media
-                            .iter()
-                            .find(|m| {
-                                m.id != c.media
-                                    && s.media_kind_of(m.id) == MediaKind::Video
-                                    && s.can_replace(c.id, m.id).is_ok()
-                            })
-                            .map(|m| (c.id, m.id, c.start, c.duration))
-                    })
+                    s.doc
+                        .timeline
+                        .tracks
+                        .iter()
+                        .flat_map(|t| t.clips.iter())
+                        .find_map(|c| {
+                            if c.text.is_some() {
+                                return None;
+                            }
+                            s.doc
+                                .media
+                                .iter()
+                                .find(|m| {
+                                    m.id != c.media
+                                        && s.media_kind_of(m.id) == MediaKind::Video
+                                        && s.can_replace(c.id, m.id).is_ok()
+                                })
+                                .map(|m| (c.id, m.id, c.start, c.duration))
+                        })
                 };
                 if let Some((clip, media, start, duration)) = pair {
-                    let (window, replace) =
-                        crate::replace_ui::open(&app, clip, media).expect("the Replace window opens");
+                    let (window, replace) = crate::replace_ui::open(&app, clip, media)
+                        .expect("the Replace window opens");
                     pump_until(|| false);
                     replace.emit_clicked();
                     assert!(pump_until(|| !window.is_visible()));
                     let st = app.state.borrow();
-                    let (_, c) = st.session.as_ref().unwrap().doc.timeline.find_clip(clip).unwrap();
+                    let (_, c) = st
+                        .session
+                        .as_ref()
+                        .unwrap()
+                        .doc
+                        .timeline
+                        .find_clip(clip)
+                        .unwrap();
                     assert_eq!((c.media, c.start, c.duration), (media, start, duration));
                 } else {
                     eprintln!("no clip/file pair for the Replace check");
                 }
+            }
+
+            // Saved text styles: keep a look, list it, apply it to other words,
+            // and find it again from the file the next time the app starts.
+            {
+                use cutroom_core::text_styles::{restyle, StyleBook};
+                let mut loud = cutroom_timeline::TextSpec::default();
+                loud.content = "Look".into();
+                loud.size = 91;
+                loud.color = [10, 200, 30, 255];
+                fn has_label(widget: &gtk::Widget, text: &str) -> bool {
+                    if widget
+                        .downcast_ref::<gtk::Label>()
+                        .is_some_and(|l| l.text() == text)
+                    {
+                        return true;
+                    }
+                    let mut child = widget.first_child();
+                    while let Some(c) = child {
+                        if has_label(&c, text) {
+                            return true;
+                        }
+                        child = c.next_sibling();
+                    }
+                    false
+                }
+                crate::editor::fill_text_styles(&app);
+                assert!(!has_label(
+                    app.ui().editor.text_list.upcast_ref(),
+                    "Loud green"
+                ));
+                {
+                    let mut st = app.state.borrow_mut();
+                    st.text_styles.save_style("Loud green", &loud).unwrap();
+                    st.save_text_styles();
+                }
+                crate::editor::fill_text_styles(&app);
+                assert!(
+                    has_label(app.ui().editor.text_list.upcast_ref(), "Loud green"),
+                    "the saved style is listed in the Text category"
+                );
+                let dir = app
+                    .state
+                    .borrow()
+                    .config_dir
+                    .clone()
+                    .expect("a config folder");
+                assert_eq!(StyleBook::load(&dir), app.state.borrow().text_styles);
+                let plain = cutroom_timeline::TextSpec {
+                    content: "Other words".into(),
+                    ..cutroom_timeline::TextSpec::default()
+                };
+                let saved = app
+                    .state
+                    .borrow()
+                    .text_styles
+                    .get("loud GREEN")
+                    .cloned()
+                    .unwrap();
+                let styled = restyle(&plain, &saved.spec);
+                assert_eq!(
+                    (styled.content.as_str(), styled.size, styled.color),
+                    ("Other words", 91, [10, 200, 30, 255])
+                );
             }
 
             // The old places for these are gone: no Settings submenu items for them.

@@ -80,7 +80,14 @@ mod tests {
         ] {
             assert!(is_hardware_decoder(hw), "{hw}");
         }
-        for sw in ["avdec_h264", "vp8dec", "vp9dec", "dav1d", "openh264dec", "theoradec"] {
+        for sw in [
+            "avdec_h264",
+            "vp8dec",
+            "vp9dec",
+            "dav1d",
+            "openh264dec",
+            "theoradec",
+        ] {
             assert!(!is_hardware_decoder(sw), "{sw}");
         }
     }

@@ -269,7 +269,10 @@ pub fn frame_rates(project: FrameRate) -> Vec<FrameRate> {
         FrameRate::FPS_60,
         FrameRate::NTSC_59_94,
     ] {
-        if !rates.iter().any(|x| (x.as_f64() - r.as_f64()).abs() < 0.001) {
+        if !rates
+            .iter()
+            .any(|x| (x.as_f64() - r.as_f64()).abs() < 0.001)
+        {
             rates.push(r);
         }
     }
@@ -334,7 +337,10 @@ pub fn aspect_name(width: u32, height: u32) -> String {
 /// Each is `(label, width : height)`.
 pub fn aspect_options(project: (u32, u32)) -> Vec<(String, (u32, u32))> {
     let own = reduced(project.0, project.1);
-    let mut out = vec![(format!("{} (project)", aspect_name(project.0, project.1)), own)];
+    let mut out = vec![(
+        format!("{} (project)", aspect_name(project.0, project.1)),
+        own,
+    )];
     for (w, h) in ASPECTS {
         if !same_shape((w, h), project) {
             out.push((format!("{w}:{h}"), (w, h)));
@@ -407,10 +413,7 @@ pub fn resolutions(aspect: (u32, u32), project: (u32, u32)) -> Vec<Resolution> {
 /// Which size to start on: the project's own when it is there, otherwise the
 /// one whose shorter side is closest to the project's.
 pub fn default_resolution(list: &[Resolution], project: (u32, u32)) -> usize {
-    if let Some(i) = list
-        .iter()
-        .position(|r| (r.width, r.height) == project)
-    {
+    if let Some(i) = list.iter().position(|r| (r.width, r.height) == project) {
         return i;
     }
     let short = i64::from(project.0.min(project.1));
@@ -745,11 +748,7 @@ pub const SITE_PRESETS: [SitePreset; 14] = [
 /// The captions that fall in `start..end` (seconds on the timeline), as they
 /// read in a file that begins at `start`: shifted back by `start` and cut off at
 /// the edges. Captions wholly outside are left out.
-pub fn cues_in_range(
-    cues: &[(f64, f64, String)],
-    start: f64,
-    end: f64,
-) -> Vec<(f64, f64, String)> {
+pub fn cues_in_range(cues: &[(f64, f64, String)], start: f64, end: f64) -> Vec<(f64, f64, String)> {
     cues.iter()
         .filter(|(a, b, _)| *b > start && *a < end)
         .map(|(a, b, text)| ((a.max(start) - start), (b.min(end) - start), text.clone()))
@@ -835,7 +834,9 @@ mod tests {
         // A standard one is marked rather than listed twice.
         let list = resolutions((9, 16), (1080, 1920));
         assert_eq!(
-            list.iter().filter(|r| (r.width, r.height) == (1080, 1920)).count(),
+            list.iter()
+                .filter(|r| (r.width, r.height) == (1080, 1920))
+                .count(),
             1
         );
         let i = default_resolution(&list, (1080, 1920));
@@ -874,17 +875,38 @@ mod tests {
         assert!(fill.0 >= 1920 && fill.1 >= 1080);
         // Same shape: nothing to do.
         assert_eq!(canvas_inside((720, 1280), (1080, 1920), false), (720, 1280));
-        assert_eq!(canvas_inside((1920, 1080), (1920, 1080), true), (1920, 1080));
+        assert_eq!(
+            canvas_inside((1920, 1080), (1920, 1080), true),
+            (1920, 1080)
+        );
     }
 
     #[test]
     fn bit_rate_follows_size_rate_preset_and_codec() {
-        let a = video_kbps(VideoCodec::H264, 1080, 1920, 30.0, BitratePreset::Recommended);
+        let a = video_kbps(
+            VideoCodec::H264,
+            1080,
+            1920,
+            30.0,
+            BitratePreset::Recommended,
+        );
         assert!((7_000..8_000).contains(&a), "{a}");
         assert!(video_kbps(VideoCodec::H264, 1080, 1920, 30.0, BitratePreset::Low) < a);
         assert!(video_kbps(VideoCodec::H264, 1080, 1920, 30.0, BitratePreset::Maximum) > a);
-        let h265 = video_kbps(VideoCodec::H265, 1080, 1920, 30.0, BitratePreset::Recommended);
-        let av1 = video_kbps(VideoCodec::Av1, 1080, 1920, 30.0, BitratePreset::Recommended);
+        let h265 = video_kbps(
+            VideoCodec::H265,
+            1080,
+            1920,
+            30.0,
+            BitratePreset::Recommended,
+        );
+        let av1 = video_kbps(
+            VideoCodec::Av1,
+            1080,
+            1920,
+            30.0,
+            BitratePreset::Recommended,
+        );
         assert!(av1 < h265 && h265 < a);
         assert_eq!(
             video_kbps(VideoCodec::H264, 7680, 4320, 60.0, BitratePreset::Maximum),
@@ -920,8 +942,14 @@ mod tests {
         let bytes = estimated_bytes(10.0, Some(8000), Some(192));
         assert!((bytes - 10_240_000.0).abs() < 1.0);
         assert!((estimated_bytes(10.0, None, Some(192)) - 240_000.0).abs() < 1.0);
-        assert_eq!(lossless_kbps(AudioFormat::Wav, Channels::Stereo, 48_000), 1536);
-        assert_eq!(lossless_kbps(AudioFormat::Flac, Channels::Mono, 48_000), 384);
+        assert_eq!(
+            lossless_kbps(AudioFormat::Wav, Channels::Stereo, 48_000),
+            1536
+        );
+        assert_eq!(
+            lossless_kbps(AudioFormat::Flac, Channels::Mono, 48_000),
+            384
+        );
     }
 
     #[test]
@@ -978,11 +1006,20 @@ mod tests {
             }
         }
         // A preset's size really is what its note says.
-        let shorts = SITE_PRESETS.iter().find(|p| p.id == "youtube-shorts").unwrap();
+        let shorts = SITE_PRESETS
+            .iter()
+            .find(|p| p.id == "youtube-shorts")
+            .unwrap();
         let list = resolutions(shorts.aspect.unwrap(), (1080, 1920));
         assert!(list.iter().any(|r| (r.width, r.height) == (1080, 1920)));
-        let feed = SITE_PRESETS.iter().find(|p| p.id == "instagram-feed").unwrap();
+        let feed = SITE_PRESETS
+            .iter()
+            .find(|p| p.id == "instagram-feed")
+            .unwrap();
         let list = resolutions(feed.aspect.unwrap(), (1080, 1920));
-        assert!(list.iter().any(|r| (r.width, r.height) == (1080, 1350)), "{list:?}");
+        assert!(
+            list.iter().any(|r| (r.width, r.height) == (1080, 1350)),
+            "{list:?}"
+        );
     }
 }

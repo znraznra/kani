@@ -274,7 +274,7 @@ pub fn update_texture(texture: &gdk::Texture) {
 
 /// Open the preview full screen on black, or close it. A note at the top
 /// says how to leave; the controls along the bottom (play, the position
-/// slider, the time and an exit button) show while the pointer moves.
+/// slider, the time and an exit icon) show while the pointer moves.
 /// Esc, F11 or a double click close it; Space plays and pauses.
 pub fn toggle_fullscreen(app: &Rc<App>) {
     if let Some((window, _)) = FULL.with(|f| f.borrow().clone()) {
@@ -322,8 +322,8 @@ pub fn toggle_fullscreen(app: &Rc<App>) {
     seek.set_hexpand(true);
     let time = gtk::Label::new(None);
     time.add_css_class("timecode");
-    let exit = gtk::Button::with_label("Exit full screen");
-    exit.set_tooltip_text(Some("Esc"));
+    // The same icon as the Full screen button in the player.
+    let exit = icons::button(icons::FULLSCREEN, "Exit full screen (Esc)");
     // Keys go to the window (Space plays), not to these controls.
     play.set_focusable(false);
     seek.set_focusable(false);
@@ -413,13 +413,10 @@ pub fn toggle_fullscreen(app: &Rc<App>) {
                     cutroom_core::view::timecode(at, rate),
                     cutroom_core::view::timecode(end, rate)
                 ));
-                icons::set_button_icon(
-                    &play,
-                    if playing { icons::PAUSE } else { icons::PLAY },
-                    16,
-                );
+                icons::set_button_icon(&play, if playing { icons::PAUSE } else { icons::PLAY }, 16);
             }
-            controls.set_reveal_child(idle_since.get().elapsed() < std::time::Duration::from_secs(3));
+            controls
+                .set_reveal_child(idle_since.get().elapsed() < std::time::Duration::from_secs(3));
             gtk::glib::ControlFlow::Continue
         });
     }
@@ -483,8 +480,14 @@ mod tests {
     #[test]
     fn the_nearest_guide_within_reach_is_picked() {
         let guides = [
-            Guide { vertical: true, pos: 100 },
-            Guide { vertical: false, pos: 200 },
+            Guide {
+                vertical: true,
+                pos: 100,
+            },
+            Guide {
+                vertical: false,
+                pos: 200,
+            },
         ];
         let frame = (10.0, 10.0, 0.5);
         // The vertical guide is at x = 10 + 50 = 60.

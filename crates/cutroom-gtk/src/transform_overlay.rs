@@ -6,13 +6,13 @@
 
 use crate::app::App;
 use crate::theme;
+use cutroom_compose::mapping::Mapper;
+use cutroom_compose::Placement;
 use cutroom_core::transform_box::{BoxGeom, Grab, Handle};
 use cutroom_timeline::{ClipId, Transform};
 use gtk4 as gtk;
-use gtk4::{gdk, glib};
 use gtk4::prelude::*;
-use cutroom_compose::mapping::Mapper;
-use cutroom_compose::Placement;
+use gtk4::{gdk, glib};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -292,7 +292,10 @@ fn inside(poly: &[(f32, f32)], p: (f32, f32)) -> bool {
 
 /// Where the corners of the drawn picture are, and the rotate knob (a fixed
 /// distance above the top edge, in canvas pixels), all in canvas pixels.
-fn box_points(shown: &Shown, knob_offset: f32) -> Option<([(f32, f32); 4], (f32, f32), (f32, f32))> {
+fn box_points(
+    shown: &Shown,
+    knob_offset: f32,
+) -> Option<([(f32, f32); 4], (f32, f32), (f32, f32))> {
     let m = shown.mapper();
     let corners = [
         m.point(0.0, 0.0)?,
@@ -659,12 +662,15 @@ pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
         let guide_drag = guide_drag.clone();
         drag.connect_drag_update(move |gesture, dx, dy| {
             if let Some((index, vertical, (gx, gy), _)) = guide_drag.get() {
-                let Some(((ox, oy, k), size)) = canvas_geometry(&app, &area, &canvas_widget)
-                else {
+                let Some(((ox, oy, k), size)) = canvas_geometry(&app, &area, &canvas_widget) else {
                     return;
                 };
                 let (px, py) = (gx + dx, gy + dy);
-                let pos = if vertical { (px - ox) / k } else { (py - oy) / k };
+                let pos = if vertical {
+                    (px - ox) / k
+                } else {
+                    (py - oy) / k
+                };
                 let limit = if vertical { size.0 } else { size.1 };
                 let on_ruler = app.state.borrow().settings.show_rulers
                     && if vertical {
@@ -742,7 +748,12 @@ pub fn build(app: &Rc<App>, canvas_widget: &gtk::Widget) -> gtk::DrawingArea {
                 last.set(None);
                 {
                     let mut st = app.state.borrow_mut();
-                    let next = st.distort_modes.get(&clip).copied().unwrap_or_default().next();
+                    let next = st
+                        .distort_modes
+                        .get(&clip)
+                        .copied()
+                        .unwrap_or_default()
+                        .next();
                     st.distort_modes.insert(clip, next);
                 }
                 app.refresh();

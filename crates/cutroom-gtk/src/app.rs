@@ -11,9 +11,7 @@ use cutroom_core::new_project::NewProjectForm;
 use cutroom_core::paths;
 use cutroom_core::settings::{Settings, ThemeChoice};
 use cutroom_core::shortcuts::{self, Action};
-use cutroom_core::state::{
-    collect_media_files, is_supported_media, ClipCopy, Session,
-};
+use cutroom_core::state::{collect_media_files, is_supported_media, ClipCopy, Session};
 use cutroom_core::timeline_logic::{Drag, DropTarget, Tool};
 use cutroom_core::view::TimelineView;
 use cutroom_platform::AppPaths;
@@ -57,7 +55,8 @@ pub struct State {
     /// A transform being adjusted with a slider, shown before it is committed.
     pub transform_preview: Option<(cutroom_timeline::ClipId, cutroom_timeline::Transform)>,
     /// Which handles the preview shows over each clip (box, corner pin or mesh).
-    pub distort_modes: std::collections::HashMap<cutroom_timeline::ClipId, crate::transform_overlay::Distort>,
+    pub distort_modes:
+        std::collections::HashMap<cutroom_timeline::ClipId, crate::transform_overlay::Distort>,
     /// "Apply to all captions" in the Auto-Captions section: while on, changes
     /// made to one generated caption go to all of them.
     pub apply_all_captions: bool,
@@ -77,11 +76,21 @@ pub struct State {
     pub ui_saved: Option<cutroom_core::ui_state::UiState>,
     /// The part of the timeline being picked for export (Shift+Ctrl+X), if any.
     pub export_range: Option<crate::range_select::ExportRange>,
+    /// Text styles the user has saved (shared by every project).
+    pub text_styles: cutroom_core::text_styles::StyleBook,
 }
 
 impl State {
     pub fn projects_dir(&self) -> PathBuf {
         self.settings.projects_dir_or(&self.default_projects_dir)
+    }
+
+    pub fn save_text_styles(&mut self) {
+        if let Some(dir) = &self.config_dir {
+            if let Err(e) = self.text_styles.save(dir) {
+                self.notice = Some(format!("Could not save text styles: {e}"));
+            }
+        }
     }
 
     pub fn save_settings(&mut self) {
@@ -135,6 +144,10 @@ impl App {
             .as_deref()
             .map(Settings::load)
             .unwrap_or_default();
+        let text_styles = config_dir
+            .as_deref()
+            .map(cutroom_core::text_styles::StyleBook::load)
+            .unwrap_or_default();
         let dark = theme::apply(settings.theme);
         theme::load_css();
 
@@ -178,6 +191,7 @@ impl App {
                 tick_count: 0,
                 ui_saved: None,
                 export_range: None,
+                text_styles,
             }),
             ui: OnceCell::new(),
             preview: RefCell::new(Preview::new()),
@@ -223,7 +237,12 @@ impl App {
         let (hw, edge, gpu, scrub) = {
             let st = self.state.borrow();
             let s = &st.settings;
-            (s.hw_decode, s.preview_edge(), s.preview_on_gpu, s.scrub_audio)
+            (
+                s.hw_decode,
+                s.preview_edge(),
+                s.preview_on_gpu,
+                s.scrub_audio,
+            )
         };
         crate::hwdecode::apply(hw);
         self.preview.borrow_mut().configure(edge, scrub, gpu);

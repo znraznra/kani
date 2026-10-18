@@ -661,6 +661,49 @@ pub struct Preview {
     gpu: Option<crate::preview_gpu::PreviewGpu>,
     /// Recently bent pictures (see [`Preview::bent`]).
     bends: Vec<Bend>,
+    /// The picture the chip is drawing now (live player only).
+    in_flight: Option<Sent>,
+    /// How the chip has been doing since playback began.
+    stats: ChipStats,
+}
+
+/// A picture handed to the chip and not yet back.
+struct Sent {
+    key: RenderKey,
+    size: (u32, u32),
+    /// Kept so the processor can draw it if the chip cannot.
+    layers: Vec<(Arc<Frame>, Placement)>,
+}
+
+/// Counts for the console, so slowness can be pinned on a step.
+#[derive(Default)]
+struct ChipStats {
+    pictures: u32,
+    layers: u32,
+    draw: Duration,
+    read: Duration,
+    slowest: Duration,
+    /// Times a new picture had to wait because the chip was still busy.
+    waited: u32,
+}
+
+impl ChipStats {
+    fn report(&mut self) {
+        if self.pictures >= 20 {
+            let n = f64::from(self.pictures);
+            let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+            eprintln!(
+                "kani: preview on the graphics chip: {} pictures, {:.1} layers each; per picture {:.1} ms uploading and drawing, {:.1} ms reading back; slowest {:.1} ms; {} times a newer picture waited for the chip",
+                self.pictures,
+                f64::from(self.layers) / n,
+                ms(self.draw) / n,
+                ms(self.read) / n,
+                ms(self.slowest),
+                self.waited
+            );
+        }
+        *self = ChipStats::default();
+    }
 }
 
 /// A bent copy of a picture, kept while it is still wanted.
@@ -689,6 +732,8 @@ impl Preview {
             gpu_wanted: false,
             gpu: None,
             bends: Vec::new(),
+            in_flight: None,
+            stats: ChipStats::default(),
         }
     }
 
@@ -706,6 +751,7 @@ impl Preview {
         if gpu != self.gpu_wanted {
             self.gpu_wanted = gpu;
             self.gpu = None;
+            self.in_flight = None;
             self.invalidate();
         }
     }
@@ -713,7 +759,12 @@ impl Preview {
     /// `frame` placed by `placement` as a picture that needs no bending: the
     /// same picture for plain layers, else a bent copy (reused while the
     /// picture, the bend and the size stay the same).
-    fn bent(&mut self, frame: &Arc<Frame>, placement: &Placement, size: (u32, u32)) -> (Arc<Frame>, Placement) {
+    fn bent(
+        &mut self,
+        frame: &Arc<Frame>,
+        placement: &Placement,
+        size: (u32, u32),
+    ) -> (Arc<Frame>, Placement) {
         if !placement.has_distort() {
             return (frame.clone(), *placement);
         }
@@ -956,6 +1007,7 @@ impl Preview {
     }
 
     pub fn pause(&mut self) {
+        self.stats.report();
         for player in self.all_players() {
             player.set_playing(false);
         }
@@ -1019,7 +1071,13 @@ impl Preview {
         canvas: (u32, u32),
         override_transform: Option<(ClipId, Transform)>,
     ) -> Option<gdk::Texture> {
-        let canvas = self.compose_now(canvas, override_transform)?;
+        // On the chip the picture comes back a moment later, and the window
+        // goes on meanwhile; otherwise it is drawn right here.
+        let canvas = if self.gpu_wanted {
+            self.compose_live(canvas, override_transform)?
+        } else {
+            self.compose_now(canvas, override_transform)?
+        };
         let (width, height) = (canvas.width, canvas.height);
         let bytes = glib::Bytes::from_owned(canvas.rgba);
         Some(
@@ -1034,12 +1092,13 @@ impl Preview {
         )
     }
 
-    /// The picture itself, as pixels (see [`Preview::render`]).
-    pub fn compose_now(
+    /// The layers to draw now, bottom first, with what they were made from;
+    /// `None` while a clip's first picture is awaited or nothing changed.
+    fn pick_layers(
         &mut self,
         canvas: (u32, u32),
         override_transform: Option<(ClipId, Transform)>,
-    ) -> Option<cutroom_compose::Canvas> {
+    ) -> Option<((u32, u32), RenderKey, Vec<(Arc<Frame>, Placement)>)> {
         let size = preview_size(canvas.0.max(2), canvas.1.max(2), self.edge);
         let mut picked: Vec<(Arc<Frame>, Placement, (ClipId, u64, Transform))> = Vec::new();
         let mut waiting = false;
@@ -1098,19 +1157,40 @@ impl Preview {
         if self.last_render.as_ref() == Some(&key) {
             return None;
         }
+        let layers = picked.into_iter().map(|(f, p, _)| (f, p)).collect();
+        Some((size, key, layers))
+    }
+
+    /// Draw with the processor (bent layers come from a small cache, so a
+    /// bent photo or text is not bent again for every picture of the video
+    /// around it).
+    fn cpu_compose(
+        &mut self,
+        layers: &[(Arc<Frame>, Placement)],
+        size: (u32, u32),
+    ) -> cutroom_compose::Canvas {
+        let layers: Vec<(Arc<Frame>, Placement)> =
+            layers.iter().map(|(f, p)| self.bent(f, p, size)).collect();
+        compose(size.0, size.1, layers.iter().map(|(f, p)| (&**f, p)))
+    }
+
+    /// The picture itself, as pixels, waiting for the chip if it is used
+    /// (see [`Preview::render`] for the live player, which does not wait).
+    pub fn compose_now(
+        &mut self,
+        canvas: (u32, u32),
+        override_transform: Option<(ClipId, Transform)>,
+    ) -> Option<cutroom_compose::Canvas> {
+        let (size, key, layers) = self.pick_layers(canvas, override_transform)?;
         let on_card = if self.gpu_wanted {
-            let gpu = self.gpu.get_or_insert_with(crate::preview_gpu::PreviewGpu::start);
-            let layers = picked.iter().map(|(f, p, _)| (f.clone(), *p)).collect();
-            match gpu.compose(size, layers) {
+            let gpu = self
+                .gpu
+                .get_or_insert_with(crate::preview_gpu::PreviewGpu::start);
+            match gpu.compose(size, layers.clone()) {
                 Ok(Some(rgba)) => cutroom_compose::Canvas::from_rgba(size.0, size.1, rgba),
                 Ok(None) => None,
                 Err(why) => {
-                    eprintln!("kani: the preview could not use the graphics chip: {why}");
-                    self.problem = Some(format!(
-                        "The preview could not use the graphics chip ({why}); the processor does it now."
-                    ));
-                    self.gpu_wanted = false;
-                    self.gpu = None;
+                    self.gpu_failed(&why);
                     None
                 }
             }
@@ -1119,18 +1199,77 @@ impl Preview {
         };
         let canvas = match on_card {
             Some(c) => c,
-            None => {
-                // Bent layers come from a small cache, so a bent photo or text
-                // is not bent again for every picture of the video around it.
-                let layers: Vec<(Arc<Frame>, Placement)> = picked
-                    .iter()
-                    .map(|(f, p, _)| self.bent(f, p, size))
-                    .collect();
-                compose(size.0, size.1, layers.iter().map(|(f, p)| (&**f, p)))
-            }
+            None => self.cpu_compose(&layers, size),
         };
         self.last_render = Some(key);
         Some(canvas)
+    }
+
+    fn gpu_failed(&mut self, why: &str) {
+        eprintln!("kani: the preview could not use the graphics chip: {why}");
+        self.problem = Some(format!(
+            "The preview could not use the graphics chip ({why}); the processor does it now."
+        ));
+        self.gpu_wanted = false;
+        self.gpu = None;
+        self.in_flight = None;
+        self.last_render = None;
+    }
+
+    /// The live player's picture with the chip: collect the one that came
+    /// back, and send the newest layers for the next. Never waits.
+    fn compose_live(
+        &mut self,
+        canvas: (u32, u32),
+        override_transform: Option<(ClipId, Transform)>,
+    ) -> Option<cutroom_compose::Canvas> {
+        use crate::preview_gpu::{Reply, STUCK_AFTER};
+        let gpu = self
+            .gpu
+            .get_or_insert_with(crate::preview_gpu::PreviewGpu::start);
+        let mut finished = None;
+        match gpu.poll() {
+            Some(Reply::Picture(rgba, timing)) => {
+                if let Some(sent) = self.in_flight.take() {
+                    self.stats.pictures += 1;
+                    self.stats.layers += sent.layers.len() as u32;
+                    self.stats.draw += timing.draw;
+                    self.stats.read += timing.read;
+                    self.stats.slowest = self.stats.slowest.max(timing.draw + timing.read);
+                    finished = cutroom_compose::Canvas::from_rgba(sent.size.0, sent.size.1, rgba);
+                    self.last_render = Some(sent.key);
+                }
+            }
+            Some(Reply::Unsupported) => {
+                // Something the chip cannot place: the processor draws this one.
+                if let Some(sent) = self.in_flight.take() {
+                    finished = Some(self.cpu_compose(&sent.layers, sent.size));
+                    self.last_render = Some(sent.key);
+                }
+            }
+            Some(Reply::Failed(why)) => {
+                self.gpu_failed(&why);
+                return None;
+            }
+            None => {
+                if gpu.busy_for().is_some_and(|t| t > STUCK_AFTER) {
+                    self.gpu_failed("the graphics chip took too long");
+                    return None;
+                }
+            }
+        }
+        let busy = self.gpu.as_ref().is_some_and(|g| g.busy_for().is_some());
+        if let Some((size, key, layers)) = self.pick_layers(canvas, override_transform) {
+            if busy {
+                self.stats.waited += 1;
+            } else if let Some(gpu) = self.gpu.as_ref() {
+                match gpu.submit(size, layers.clone()) {
+                    Ok(()) => self.in_flight = Some(Sent { key, size, layers }),
+                    Err(why) => self.gpu_failed(&why),
+                }
+            }
+        }
+        finished
     }
 
     // ---- what tests look at
@@ -1732,7 +1871,10 @@ mod tests {
             "a 320x240 picture is cut to a 240 px edge"
         );
         preview.configure(960, false, false);
-        assert!(preview.layers.is_empty(), "a new size starts the pipelines again");
+        assert!(
+            preview.layers.is_empty(),
+            "a new size starts the pipelines again"
+        );
         preview.shutdown();
     }
 
@@ -1786,7 +1928,8 @@ mod tests {
             let mut preview = Preview::for_tests();
             preview.configure(960, asked, false);
             preview.sync(&tl, &resolve, s(1.0), false, true);
-            assert!(wait_for(&mut preview, |p| p.total_loads() > 0 && p.layers.iter().all(|l| l.ready)));
+            assert!(wait_for(&mut preview, |p| p.total_loads() > 0
+                && p.layers.iter().all(|l| l.ready)));
             preview.sync(&tl, &resolve, s(1.6), false, true);
             let heard = preview.layers.iter().any(|l| l.blip.is_some());
             assert_eq!(heard, expect, "scrub sound {asked}");

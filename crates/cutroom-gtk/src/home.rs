@@ -3,6 +3,7 @@
 
 use crate::app::App;
 use crate::dialogs;
+use crate::icons;
 use cutroom_core::home_logic::{
     ago_text, cover_tint, filter_and_sort, format_duration, meta_line, SortKey,
 };
@@ -18,8 +19,20 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::SystemTime;
 
+/// The pages the sidebar switches between.
+const PAGE_PROJECTS: &str = "projects";
+const PAGE_RECENTS: &str = "recents";
+const PAGE_BRAND_KITS: &str = "brand-kits";
+
 pub struct HomeUi {
+    /// The sidebar and the page beside it.
     pub root: gtk::Box,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pages: gtk::Stack,
+    #[cfg_attr(not(test), allow(dead_code))]
+    nav: Vec<(&'static str, gtk::ToggleButton)>,
+    recents: gtk::FlowBox,
+    recents_stack: gtk::Stack,
     search: gtk::SearchEntry,
     sort: gtk::DropDown,
     thumbs_button: gtk::ToggleButton,
@@ -34,53 +47,159 @@ pub struct HomeUi {
     syncing: Cell<bool>,
 }
 
+/// A flat icon button; `suggested` makes it the accent-coloured main action.
+fn tool_button(icon: &'static str, tip: &str, suggested: bool) -> gtk::Button {
+    let b = icons::button(icon, tip);
+    if suggested {
+        b.remove_css_class("flat");
+        b.add_css_class("suggested-action");
+    }
+    b
+}
+
+/// The left strip: Projects, Recents, Brand Kits, and the app's name and
+/// version at the bottom.
+fn sidebar(
+    app: &Rc<App>,
+    pages: &gtk::Stack,
+) -> (gtk::Box, Vec<(&'static str, gtk::ToggleButton)>) {
+    let bar = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    bar.add_css_class("cc-sidebar");
+    bar.set_size_request(190, -1);
+    let mut nav = Vec::new();
+    let mut first: Option<gtk::ToggleButton> = None;
+    for (page, icon, text) in [
+        (PAGE_PROJECTS, icons::PROJECTS, "Projects"),
+        (PAGE_RECENTS, icons::RECENTS, "Recents"),
+        (PAGE_BRAND_KITS, icons::BRAND_KITS, "Brand Kits"),
+    ] {
+        let button = gtk::ToggleButton::new();
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        row.append(&icons::icon(icon, 18));
+        let label = gtk::Label::new(Some(text));
+        label.set_xalign(0.0);
+        row.append(&label);
+        button.set_child(Some(&row));
+        button.add_css_class("flat");
+        button.add_css_class("cc-nav");
+        match &first {
+            Some(f) => button.set_group(Some(f)),
+            None => first = Some(button.clone()),
+        }
+        {
+            let (app, pages) = (app.clone(), pages.clone());
+            button.connect_toggled(move |b| {
+                if !b.is_active() {
+                    return;
+                }
+                pages.set_visible_child_name(page);
+                if page == PAGE_RECENTS {
+                    refresh_recents(&app);
+                }
+            });
+        }
+        bar.append(&button);
+        nav.push((page, button));
+    }
+    if let Some((_, b)) = nav.first() {
+        b.set_active(true);
+    }
+    let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    spacer.set_vexpand(true);
+    bar.append(&spacer);
+    let name = gtk::Label::new(Some("Kani"));
+    name.set_xalign(0.0);
+    name.add_css_class("title-4");
+    let version = gtk::Label::new(Some(&format!("Version {}", env!("CARGO_PKG_VERSION"))));
+    version.set_xalign(0.0);
+    version.add_css_class("dim-label");
+    version.add_css_class("caption");
+    let about = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    about.set_margin_start(10);
+    about.set_margin_bottom(6);
+    about.append(&name);
+    about.append(&version);
+    bar.append(&about);
+    (bar, nav)
+}
+
+/// A page that is not built yet, saying when it will be.
+fn coming_soon(icon: &'static str, title: &str, text: &str, phase: &str) -> gtk::Widget {
+    let page = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    page.set_valign(gtk::Align::Center);
+    page.set_halign(gtk::Align::Center);
+    let glyph = icons::icon(icon, 48);
+    glyph.set_opacity(0.5);
+    page.append(&glyph);
+    let heading = gtk::Label::new(Some(title));
+    heading.add_css_class("title-2");
+    page.append(&heading);
+    let body = gtk::Label::new(Some(text));
+    body.set_wrap(true);
+    body.set_justify(gtk::Justification::Center);
+    body.set_max_width_chars(56);
+    body.add_css_class("dim-label");
+    page.append(&body);
+    let when = gtk::Label::new(Some(phase));
+    when.add_css_class("cc-pill");
+    when.set_margin_top(6);
+    page.append(&when);
+    page.upcast()
+}
+
 pub fn build(app: &Rc<App>) -> HomeUi {
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    root.set_margin_top(14);
-    root.set_margin_start(16);
-    root.set_margin_end(16);
-    root.set_margin_bottom(8);
+    let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let pages = gtk::Stack::new();
+    pages.set_hexpand(true);
+    pages.set_vexpand(true);
+    let (side, nav) = sidebar(app, &pages);
+    root.append(&side);
+    root.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+    root.append(&pages);
 
-    // Title and main buttons.
-    let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    // No title: the window already says Kani; the buttons sit on the right.
-    let title = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    title.set_hexpand(true);
-    let open_folder = gtk::Button::with_label("Open from folder...");
-    {
-        let app = app.clone();
-        open_folder.connect_clicked(move |_| app.run_action(Action::OpenProject));
-    }
-    let new_project = gtk::Button::with_label("New project");
-    new_project.add_css_class("suggested-action");
-    {
-        let app = app.clone();
-        new_project.connect_clicked(move |_| app.run_action(Action::NewProject));
-    }
-    top.append(&title);
-    top.append(&open_folder);
-    top.append(&new_project);
-    root.append(&top);
+    // The Projects page.
+    let page = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    page.set_margin_top(14);
+    page.set_margin_start(16);
+    page.set_margin_end(16);
+    page.set_margin_bottom(8);
+    pages.add_named(&page, Some(PAGE_PROJECTS));
 
-    // Search, sort, view toggle.
+    // Search, sort and view on the left; Open and New on the right.
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let search = gtk::SearchEntry::new();
     search.set_placeholder_text(Some("Search projects"));
     search.set_width_chars(30);
     let sort = gtk::DropDown::from_strings(&["Sort: Last modified", "Sort: Name"]);
-    let thumbs_button = gtk::ToggleButton::with_label("Thumbnails");
-    let list_button = gtk::ToggleButton::with_label("List");
+    let thumbs_button = icons::toggle(icons::GRID, "Thumbnails");
+    let list_button = icons::toggle(icons::LIST, "List");
     list_button.set_group(Some(&thumbs_button));
     let view_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     view_box.add_css_class("linked");
     view_box.append(&thumbs_button);
     view_box.append(&list_button);
-    let refresh = gtk::Button::with_label("Refresh");
+    let refresh = icons::button(icons::REFRESH, "Look for projects again");
     bar.append(&search);
     bar.append(&sort);
     bar.append(&view_box);
     bar.append(&refresh);
-    root.append(&bar);
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    bar.append(&spacer);
+    let open_folder = tool_button(icons::FOLDER, "Open a project from a folder...", false);
+    {
+        let app = app.clone();
+        open_folder.connect_clicked(move |_| app.run_action(Action::OpenProject));
+    }
+    let new_project = tool_button(icons::IMPORT, "New project", true);
+    {
+        let app = app.clone();
+        new_project.connect_clicked(move |_| app.run_action(Action::NewProject));
+    }
+    bar.append(&open_folder);
+    bar.append(&new_project);
+    page.append(&bar);
+    let root_page = page;
 
     // Where projects are stored.
     let dir_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -90,13 +209,12 @@ pub fn build(app: &Rc<App>) -> HomeUi {
     dir_label.set_selectable(true);
     dir_label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
     dir_label.add_css_class("caption");
-    let change = gtk::Button::with_label("Change in Settings...");
-    change.add_css_class("flat");
+    let change = icons::button(icons::SETTINGS, "Change in Settings...");
     dir_row.append(&stored);
     dir_row.append(&dir_label);
     dir_row.append(&change);
-    root.append(&dir_row);
-    root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    root_page.append(&dir_row);
+    root_page.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
     // Content.
     let content = gtk::Stack::new();
@@ -126,7 +244,7 @@ pub fn build(app: &Rc<App>) -> HomeUi {
     empty_title.add_css_class("title-2");
     let empty_hint = gtk::Label::new(Some("Create your first project to get started."));
     empty_hint.add_css_class("dim-label");
-    let empty_button = gtk::Button::with_label("New project");
+    let empty_button = tool_button(icons::IMPORT, "New project", true);
     empty_button.set_halign(gtk::Align::Center);
     {
         let app = app.clone();
@@ -140,10 +258,59 @@ pub fn build(app: &Rc<App>) -> HomeUi {
     let no_match = gtk::Label::new(None);
     no_match.add_css_class("title-4");
     content.add_named(&no_match, Some("nomatch"));
-    root.append(&content);
+    root_page.append(&content);
+
+    // The Recents page: the projects worked on last.
+    let recents_page = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    recents_page.set_margin_top(14);
+    recents_page.set_margin_start(16);
+    recents_page.set_margin_end(16);
+    let recents_title = gtk::Label::new(Some("Recents"));
+    recents_title.set_xalign(0.0);
+    recents_title.add_css_class("title-3");
+    let recents_hint = gtk::Label::new(Some("The projects you changed most recently."));
+    recents_hint.set_xalign(0.0);
+    recents_hint.add_css_class("dim-label");
+    recents_page.append(&recents_title);
+    recents_page.append(&recents_hint);
+    let recents = gtk::FlowBox::new();
+    recents.set_selection_mode(gtk::SelectionMode::None);
+    recents.set_homogeneous(true);
+    recents.set_min_children_per_line(1);
+    recents.set_max_children_per_line(40);
+    recents.set_row_spacing(14);
+    recents.set_column_spacing(14);
+    recents.set_valign(gtk::Align::Start);
+    let recents_scroll = gtk::ScrolledWindow::new();
+    recents_scroll.set_vexpand(true);
+    recents_scroll.set_child(Some(&recents));
+    let recents_stack = gtk::Stack::new();
+    recents_stack.add_named(&recents_scroll, Some("list"));
+    let recents_empty = gtk::Label::new(Some("No projects yet. Make one in Projects."));
+    recents_empty.add_css_class("dim-label");
+    recents_stack.add_named(&recents_empty, Some("empty"));
+    recents_stack.set_vexpand(true);
+    recents_page.append(&recents_stack);
+    pages.add_named(&recents_page, Some(PAGE_RECENTS));
+
+    // Brand Kits: not built yet.
+    pages.add_named(
+        &coming_soon(
+            icons::BRAND_KITS,
+            "Brand Kits",
+            "Keep your logo, fonts and colours in one kit and use them in any project. Saved text styles come first; the full kits arrive with the asset libraries.",
+            "Planned for Phase 8 (asset libraries)",
+        ),
+        Some(PAGE_BRAND_KITS),
+    );
+    pages.set_visible_child_name(PAGE_PROJECTS);
 
     let ui = HomeUi {
         root,
+        pages,
+        nav,
+        recents,
+        recents_stack,
         search,
         sort,
         thumbs_button,
@@ -213,6 +380,25 @@ pub fn build(app: &Rc<App>) -> HomeUi {
     ui
 }
 
+impl HomeUi {
+    /// The page showing: "projects", "recents" or "brand-kits".
+    #[cfg(test)]
+    pub fn visible_page(&self) -> String {
+        self.pages
+            .visible_child_name()
+            .map(|n| n.to_string())
+            .unwrap_or_default()
+    }
+
+    /// Press a sidebar item.
+    #[cfg(test)]
+    pub fn show_page(&self, page: &str) {
+        if let Some((_, button)) = self.nav.iter().find(|(p, _)| *p == page) {
+            button.set_active(true);
+        }
+    }
+}
+
 /// Sync the toolbar widgets with the state, then rebuild the project list.
 pub fn refresh(app: &Rc<App>) {
     let ui = &app.ui().home;
@@ -233,6 +419,34 @@ pub fn refresh(app: &Rc<App>) {
         ui.syncing.set(false);
     }
     refresh_content(app);
+    refresh_recents(app);
+}
+
+/// The most recently changed projects, newest first.
+fn refresh_recents(app: &Rc<App>) {
+    let ui = &app.ui().home;
+    let shown: Vec<ProjectEntry> = {
+        let st = app.state.borrow();
+        filter_and_sort(&st.home.entries, "", SortKey::Modified)
+            .into_iter()
+            .take(12)
+            .cloned()
+            .collect()
+    };
+    while let Some(child) = ui.recents.first_child() {
+        ui.recents.remove(&child);
+    }
+    if shown.is_empty() {
+        ui.recents_stack.set_visible_child_name("empty");
+        return;
+    }
+    let (selected, now) = (app.state.borrow().home.selected.clone(), SystemTime::now());
+    for entry in &shown {
+        let is_selected = selected.as_deref() == Some(entry.path());
+        ui.recents
+            .append(&project_card(app, entry, is_selected, now));
+    }
+    ui.recents_stack.set_visible_child_name("list");
 }
 
 fn clear(container: &impl IsA<gtk::Widget>) {
@@ -520,15 +734,17 @@ fn update_selection(app: &Rc<App>) {
             widget.remove_css_class("selected");
         }
     };
-    let mut child = ui.grid.first_child();
-    while let Some(flow_child) = child {
-        if let Some(card) = flow_child
-            .downcast_ref::<gtk::FlowBoxChild>()
-            .and_then(|c| c.child())
-        {
-            apply(&card);
+    for flow in [&ui.grid, &ui.recents] {
+        let mut child = flow.first_child();
+        while let Some(flow_child) = child {
+            if let Some(card) = flow_child
+                .downcast_ref::<gtk::FlowBoxChild>()
+                .and_then(|c| c.child())
+            {
+                apply(&card);
+            }
+            child = flow_child.next_sibling();
         }
-        child = flow_child.next_sibling();
     }
     let mut child = ui.list.first_child();
     while let Some(row) = child {

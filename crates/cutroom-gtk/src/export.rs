@@ -94,37 +94,101 @@ const fn enc_with(
     }
 }
 
-use VideoCodec::{Av1, H264, H265, Vp9};
+use VideoCodec::{Av1, Vp9, H264, H265};
 
 const H264_NVENC: &[Encoder] = &[enc(H264, "nvenc", "NVIDIA NVENC", "nvh264enc", true)];
 const H264_QSV: &[Encoder] = &[enc(H264, "qsv", "Intel Quick Sync", "qsvh264enc", true)];
 const H264_VAAPI: &[Encoder] = &[
     enc(H264, "vaapi-lp", "VA-API (low power)", "vah264lpenc", true),
     enc(H264, "vaapi", "VA-API", "vah264enc", true),
-    enc(H264, "vaapi-old", "VA-API (older plug-in)", "vaapih264enc", true),
+    enc(
+        H264,
+        "vaapi-old",
+        "VA-API (older plug-in)",
+        "vaapih264enc",
+        true,
+    ),
 ];
 const H264_AMF: &[Encoder] = &[enc(H264, "amf", "AMD AMF", "amfh264enc", true)];
-const H264_VT: &[Encoder] = &[enc(H264, "videotoolbox", "Apple VideoToolbox", "vtenc_h264", true)];
-const H264_MF: &[Encoder] = &[enc(H264, "mf", "Windows Media Foundation", "mfh264enc", true)];
+const H264_VT: &[Encoder] = &[enc(
+    H264,
+    "videotoolbox",
+    "Apple VideoToolbox",
+    "vtenc_h264",
+    true,
+)];
+const H264_MF: &[Encoder] = &[enc(
+    H264,
+    "mf",
+    "Windows Media Foundation",
+    "mfh264enc",
+    true,
+)];
 const H264_SOFT: &[Encoder] = &[
     enc(H264, "x264", "Software (x264)", "x264enc", false),
-    enc_with(H264, "openh264", "Software (OpenH264)", "openh264enc", false, "bitrate", 1000),
+    enc_with(
+        H264,
+        "openh264",
+        "Software (OpenH264)",
+        "openh264enc",
+        false,
+        "bitrate",
+        1000,
+    ),
 ];
 
 const H265_NVENC: &[Encoder] = &[enc(H265, "nvenc-h265", "NVIDIA NVENC", "nvh265enc", true)];
-const H265_QSV: &[Encoder] = &[enc(H265, "qsv-h265", "Intel Quick Sync", "qsvh265enc", true)];
+const H265_QSV: &[Encoder] = &[enc(
+    H265,
+    "qsv-h265",
+    "Intel Quick Sync",
+    "qsvh265enc",
+    true,
+)];
 const H265_VAAPI: &[Encoder] = &[
-    enc(H265, "vaapi-lp-h265", "VA-API (low power)", "vah265lpenc", true),
+    enc(
+        H265,
+        "vaapi-lp-h265",
+        "VA-API (low power)",
+        "vah265lpenc",
+        true,
+    ),
     enc(H265, "vaapi-h265", "VA-API", "vah265enc", true),
-    enc(H265, "vaapi-old-h265", "VA-API (older plug-in)", "vaapih265enc", true),
+    enc(
+        H265,
+        "vaapi-old-h265",
+        "VA-API (older plug-in)",
+        "vaapih265enc",
+        true,
+    ),
 ];
 const H265_AMF: &[Encoder] = &[enc(H265, "amf-h265", "AMD AMF", "amfh265enc", true)];
-const H265_VT: &[Encoder] = &[enc(H265, "videotoolbox-h265", "Apple VideoToolbox", "vtenc_h265", true)];
-const H265_MF: &[Encoder] = &[enc(H265, "mf-h265", "Windows Media Foundation", "mfh265enc", true)];
+const H265_VT: &[Encoder] = &[enc(
+    H265,
+    "videotoolbox-h265",
+    "Apple VideoToolbox",
+    "vtenc_h265",
+    true,
+)];
+const H265_MF: &[Encoder] = &[enc(
+    H265,
+    "mf-h265",
+    "Windows Media Foundation",
+    "mfh265enc",
+    true,
+)];
 const H265_SOFT: &[Encoder] = &[enc(H265, "x265", "Software (x265)", "x265enc", false)];
 
 const VP9_VAAPI: &[Encoder] = &[
-    enc_with(Vp9, "vaapi-lp-vp9", "VA-API (low power)", "vavp9lpenc", true, "bitrate", 1),
+    enc_with(
+        Vp9,
+        "vaapi-lp-vp9",
+        "VA-API (low power)",
+        "vavp9lpenc",
+        true,
+        "bitrate",
+        1,
+    ),
     enc_with(Vp9, "vaapi-vp9", "VA-API", "vavp9enc", true, "bitrate", 1),
 ];
 const VP9_QSV: &[Encoder] = &[enc(Vp9, "qsv-vp9", "Intel Quick Sync", "qsvvp9enc", true)];
@@ -141,13 +205,35 @@ const VP9_SOFT: &[Encoder] = &[enc_with(
 const AV1_NVENC: &[Encoder] = &[enc(Av1, "nvenc-av1", "NVIDIA NVENC", "nvav1enc", true)];
 const AV1_QSV: &[Encoder] = &[enc(Av1, "qsv-av1", "Intel Quick Sync", "qsvav1enc", true)];
 const AV1_VAAPI: &[Encoder] = &[
-    enc(Av1, "vaapi-lp-av1", "VA-API (low power)", "vaav1lpenc", true),
+    enc(
+        Av1,
+        "vaapi-lp-av1",
+        "VA-API (low power)",
+        "vaav1lpenc",
+        true,
+    ),
     enc(Av1, "vaapi-av1", "VA-API", "vaav1enc", true),
 ];
 const AV1_AMF: &[Encoder] = &[enc(Av1, "amf-av1", "AMD AMF", "amfav1enc", true)];
 const AV1_SOFT: &[Encoder] = &[
-    enc_with(Av1, "svtav1", "Software (SVT-AV1)", "svtav1enc", false, "target-bitrate", 1),
-    enc_with(Av1, "libaom", "Software (libaom)", "av1enc", false, "target-bitrate", 1),
+    enc_with(
+        Av1,
+        "svtav1",
+        "Software (SVT-AV1)",
+        "svtav1enc",
+        false,
+        "target-bitrate",
+        1,
+    ),
+    enc_with(
+        Av1,
+        "libaom",
+        "Software (libaom)",
+        "av1enc",
+        false,
+        "target-bitrate",
+        1,
+    ),
 ];
 
 /// The graphics hardware encoders of one kind for one video format.
@@ -660,9 +746,9 @@ pub struct Job {
 impl Job {
     /// How much of the timeline is exported.
     fn duration(&self) -> Ticks {
-        let end = self
-            .range_end
-            .map_or(self.timeline.duration(), |e| e.min(self.timeline.duration()));
+        let end = self.range_end.map_or(self.timeline.duration(), |e| {
+            e.min(self.timeline.duration())
+        });
         let all = if end > self.range_start {
             end - self.range_start
         } else {
@@ -1216,7 +1302,13 @@ impl<'a> Renderer<'a> {
             let milli = t.scale;
             // What else is special about this layer (shown in the timing table).
             let flags = u8::from(t.rotation != 0)
-                | u8::from(t.skew_x != 0 || t.skew_y != 0 || t.persp_x != 0 || t.persp_y != 0 || !t.warp.is_identity()) << 1
+                | u8::from(
+                    t.skew_x != 0
+                        || t.skew_y != 0
+                        || t.persp_x != 0
+                        || t.persp_y != 0
+                        || !t.warp.is_identity(),
+                ) << 1
                 | u8::from(t.opacity < 1000) << 2
                 | u8::from(t.flip_h || t.flip_v) << 3;
             let mut cached = None;
@@ -1811,7 +1903,13 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
             let t1 = std::time::Instant::now();
             while let Some(pixels) = renderer.ready.pop_front() {
                 let pixels = into_frame(job, pixels);
-                progress.show(job.width, job.height, &pixels, pushed + 1, pushed + 1 >= frames);
+                progress.show(
+                    job.width,
+                    job.height,
+                    &pixels,
+                    pushed + 1,
+                    pushed + 1 >= frames,
+                );
                 push_video(&vsrc, &bus, pixels, pushed, &frame_ns)?;
                 pushed += 1;
             }
@@ -1834,7 +1932,13 @@ fn run_with(job: &Job, encoder: &Encoder, progress: &Progress, temp: &Path) -> R
         picture_time += t0.elapsed();
         while let Some(pixels) = renderer.ready.pop_front() {
             let pixels = into_frame(job, pixels);
-            progress.show(job.width, job.height, &pixels, pushed + 1, pushed + 1 >= frames);
+            progress.show(
+                job.width,
+                job.height,
+                &pixels,
+                pushed + 1,
+                pushed + 1 >= frames,
+            );
             push_video(&vsrc, &bus, pixels, pushed, &frame_ns)?;
             pushed += 1;
         }
@@ -2345,7 +2449,11 @@ mod tests {
         assert!((progress.fraction() - 1.0).abs() < 1e-9);
         assert!(job.output.as_ref().unwrap().is_file());
         assert!(
-            !job.output.as_ref().unwrap().with_file_name("result.exporting.mp4").exists(),
+            !job.output
+                .as_ref()
+                .unwrap()
+                .with_file_name("result.exporting.mp4")
+                .exists(),
             "the temporary file is gone"
         );
         if let Some(info) = ffprobe(
@@ -2680,7 +2788,13 @@ mod tests {
             audio_output: None,
             fps: FrameRate::FPS_30,
             sample_rate: 48_000,
-            video_kbps: crate::export_options::video_kbps(VideoCodec::H264, 1080, 1920, 30.0, crate::export_options::BitratePreset::Recommended),
+            video_kbps: crate::export_options::video_kbps(
+                VideoCodec::H264,
+                1080,
+                1920,
+                30.0,
+                crate::export_options::BitratePreset::Recommended,
+            ),
             audio_kbps: 192,
             encoders: candidates(VideoCodec::H264)
                 .into_iter()
@@ -2822,7 +2936,13 @@ mod tests {
             audio_output: None,
             fps: FrameRate::FPS_30,
             sample_rate: 48_000,
-            video_kbps: crate::export_options::video_kbps(VideoCodec::H264, 1080, 1920, 30.0, crate::export_options::BitratePreset::Low),
+            video_kbps: crate::export_options::video_kbps(
+                VideoCodec::H264,
+                1080,
+                1920,
+                30.0,
+                crate::export_options::BitratePreset::Low,
+            ),
             audio_kbps: 192,
             encoders: candidates(VideoCodec::H264)
                 .into_iter()
@@ -2929,9 +3049,12 @@ mod tests {
                     .copied()
                     .find(|f| audio_available(*f))
                     .unwrap();
-                let path = dir
-                    .path()
-                    .join(format!("{}-{}.{}", codec.id(), container.id(), container.extension()));
+                let path = dir.path().join(format!(
+                    "{}-{}.{}",
+                    codec.id(),
+                    container.id(),
+                    container.extension()
+                ));
                 job.output = Some(path.clone());
                 export(&job, &Progress::default())
                     .unwrap_or_else(|e| panic!("{} in {}: {e:?}", codec.name(), container.label()));
@@ -3125,9 +3248,17 @@ mod tests {
         let Some(base) = small_job(dir.path()) else {
             return;
         };
-        let frames: u32 = std::env::var("KANI_MEM_FPS").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
+        let frames: u32 = std::env::var("KANI_MEM_FPS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60);
         let only = std::env::var("KANI_MEM_CODEC").unwrap_or_default();
-        for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Vp9, VideoCodec::Av1] {
+        for codec in [
+            VideoCodec::H264,
+            VideoCodec::H265,
+            VideoCodec::Vp9,
+            VideoCodec::Av1,
+        ] {
             if !only.is_empty() && only != codec.id() {
                 continue;
             }
@@ -3146,8 +3277,16 @@ mod tests {
             job.fps = FrameRate::new(frames, 1);
             job.encoders = encoders;
             job.container = codec.containers()[0];
-            job.audio_format = job.container.audio_formats().iter().copied().find(|f| audio_available(*f)).unwrap();
-            let path = dir.path().join(format!("big.{}", job.container.extension()));
+            job.audio_format = job
+                .container
+                .audio_formats()
+                .iter()
+                .copied()
+                .find(|f| audio_available(*f))
+                .unwrap();
+            let path = dir
+                .path()
+                .join(format!("big.{}", job.container.extension()));
             job.output = Some(path);
             let before = peak_megabytes();
             let started = std::time::Instant::now();
@@ -3166,7 +3305,12 @@ mod tests {
         let progress = Progress::default();
         let big = vec![200u8; 1080 * 1920 * 4];
         progress.show(1080, 1920, &big, 1, false);
-        let first = progress.live.lock().unwrap().take().expect("the first picture is kept");
+        let first = progress
+            .live
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the first picture is kept");
         assert_eq!((first.width, first.height), (203, 360));
         assert_eq!(first.rgba.len(), 203 * 360 * 4);
         assert_eq!(first.frame, 1);
@@ -3202,7 +3346,10 @@ mod tests {
                     .find_map(|l| l.strip_prefix("duration="))
                     .and_then(|v| v.parse::<f64>().ok())
                 {
-                    assert!((seconds - 1.5).abs() < 0.2, "{what} is {seconds} s, not 1.5");
+                    assert!(
+                        (seconds - 1.5).abs() < 0.2,
+                        "{what} is {seconds} s, not 1.5"
+                    );
                 }
             }
         }

@@ -53,7 +53,8 @@ thread_local! {
 
 /// The open Settings window, if any.
 pub fn active() -> Option<Rc<Dialog>> {
-    OPEN.with(|o| o.borrow().clone()).filter(|d| d.window.is_visible())
+    OPEN.with(|o| o.borrow().clone())
+        .filter(|d| d.window.is_visible())
 }
 
 pub fn open(app: &Rc<App>, tab: Option<&str>) {
@@ -155,7 +156,11 @@ fn planned_row(
         }
     };
     control.set_valign(gtk::Align::Center);
-    let r = row(label, &control, Some(&format!("Not available yet - {phase}")));
+    let r = row(
+        label,
+        &control,
+        Some(&format!("Not available yet - {phase}")),
+    );
     r.set_sensitive(false);
     r.set_tooltip_text(Some(&format!("Comes with {phase}")));
     page.append(&r);
@@ -272,7 +277,14 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
         });
     }
     general.append(&row("Appearance", &theme, None));
-    planned_row(&general, &mut planned, "general", "Language", Planned::Choice(&["English"], 0), "Phase 11");
+    planned_row(
+        &general,
+        &mut planned,
+        "general",
+        "Language",
+        Planned::Choice(&["English"], 0),
+        "Phase 11",
+    );
     let shortcuts = gtk::Button::with_label("View...");
     {
         let app = app.clone();
@@ -283,12 +295,24 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
         &shortcuts,
         Some("Ctrl+, opens these settings."),
     ));
-    planned_row(&general, &mut planned, "general", "Check for updates automatically", Planned::Switch(false), "Phase 11");
+    planned_row(
+        &general,
+        &mut planned,
+        "general",
+        "Check for updates automatically",
+        Planned::Switch(false),
+        "Phase 11",
+    );
     stack.add_titled(&scroll(&general), Some("general"), "General");
 
     // ----- Draft ---------------------------------------------------------
     let draft_page = page();
-    let default_dir = app.state.borrow().default_projects_dir.display().to_string();
+    let default_dir = app
+        .state
+        .borrow()
+        .default_projects_dir
+        .display()
+        .to_string();
     draft_page.append(&folder_row(
         app,
         &draft,
@@ -332,11 +356,46 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
     every.append(&gtk::Label::new(Some("minutes")));
     draft_page.append(&row("Autosave interval", &every, None));
     separator(&draft_page);
-    planned_row(&draft_page, &mut planned, "draft", "Import material in new projects", Planned::Choice(&["Keep in original place", "Copy into the project"], 0), "Project settings");
-    planned_row(&draft_page, &mut planned, "draft", "Frame rate for new projects", Planned::Choice(&["30.00 fps"], 0), "Project settings");
-    planned_row(&draft_page, &mut planned, "draft", "Resolution for new projects", Planned::Choice(&["1080 x 1920"], 0), "Project settings");
-    planned_row(&draft_page, &mut planned, "draft", "Colour space for new projects", Planned::Choice(&["Rec. 709"], 0), "Project settings");
-    planned_row(&draft_page, &mut planned, "draft", "Keep backup copies of projects", Planned::Switch(true), "Phase 11");
+    planned_row(
+        &draft_page,
+        &mut planned,
+        "draft",
+        "Import material in new projects",
+        Planned::Choice(&["Keep in original place", "Copy into the project"], 0),
+        "Project settings",
+    );
+    planned_row(
+        &draft_page,
+        &mut planned,
+        "draft",
+        "Frame rate for new projects",
+        Planned::Choice(&["30.00 fps"], 0),
+        "Project settings",
+    );
+    planned_row(
+        &draft_page,
+        &mut planned,
+        "draft",
+        "Resolution for new projects",
+        Planned::Choice(&["1080 x 1920"], 0),
+        "Project settings",
+    );
+    planned_row(
+        &draft_page,
+        &mut planned,
+        "draft",
+        "Colour space for new projects",
+        Planned::Choice(&["Rec. 709"], 0),
+        "Project settings",
+    );
+    planned_row(
+        &draft_page,
+        &mut planned,
+        "draft",
+        "Keep backup copies of projects",
+        Planned::Switch(true),
+        "Phase 11",
+    );
     stack.add_titled(&scroll(&draft_page), Some("draft"), "Draft");
 
     // ----- Edit ----------------------------------------------------------
@@ -354,10 +413,38 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
         Some("Files dropped on the window go into the library, and also onto the timeline when this is on."),
     ));
     separator(&edit);
-    planned_row(&edit, &mut planned, "edit", "Step forward", Planned::Number(10.0, 1.0, 100.0, "frames"), "Phase 11");
-    planned_row(&edit, &mut planned, "edit", "Adjust values by", Planned::Number(10.0, 1.0, 100.0, "units"), "Phase 11");
-    planned_row(&edit, &mut planned, "edit", "Image duration", Planned::Number(5.0, 1.0, 600.0, "s"), "Phase 11");
-    planned_row(&edit, &mut planned, "edit", "Target loudness", Planned::Choice(&["Default (-23 LUFS)"], 0), "Phase 11");
+    planned_row(
+        &edit,
+        &mut planned,
+        "edit",
+        "Step forward",
+        Planned::Number(10.0, 1.0, 100.0, "frames"),
+        "Phase 11",
+    );
+    planned_row(
+        &edit,
+        &mut planned,
+        "edit",
+        "Adjust values by",
+        Planned::Number(10.0, 1.0, 100.0, "units"),
+        "Phase 11",
+    );
+    planned_row(
+        &edit,
+        &mut planned,
+        "edit",
+        "Image duration",
+        Planned::Number(5.0, 1.0, 600.0, "s"),
+        "Phase 11",
+    );
+    planned_row(
+        &edit,
+        &mut planned,
+        "edit",
+        "Target loudness",
+        Planned::Choice(&["Default (-23 LUFS)"], 0),
+        "Phase 11",
+    );
     let scrub = switch(draft.borrow().scrub_audio);
     {
         let draft = draft.clone();
@@ -368,9 +455,30 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
         &scrub,
         Some("Also on the timeline toolbar (the speaker button next to Snap)."),
     ));
-    planned_row(&edit, &mut planned, "edit", "Layers can be reordered in new projects", Planned::Switch(false), "Phase 11");
-    planned_row(&edit, &mut planned, "edit", "Snap to clips and the playhead", Planned::Switch(true), "Phase 11");
-    planned_row(&edit, &mut planned, "edit", "Time code", Planned::Choice(&["HH:MM:SS+frame"], 0), "Phase 11");
+    planned_row(
+        &edit,
+        &mut planned,
+        "edit",
+        "Layers can be reordered in new projects",
+        Planned::Switch(false),
+        "Phase 11",
+    );
+    planned_row(
+        &edit,
+        &mut planned,
+        "edit",
+        "Snap to clips and the playhead",
+        Planned::Switch(true),
+        "Phase 11",
+    );
+    planned_row(
+        &edit,
+        &mut planned,
+        "edit",
+        "Time code",
+        Planned::Choice(&["HH:MM:SS+frame"], 0),
+        "Phase 11",
+    );
     stack.add_titled(&scroll(&edit), Some("edit"), "Edit");
 
     // ----- Playback ------------------------------------------------------
@@ -391,7 +499,8 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
     let auto_proxies = switch(draft.borrow().auto_proxies);
     {
         let draft = draft.clone();
-        auto_proxies.connect_active_notify(move |s| draft.borrow_mut().auto_proxies = s.is_active());
+        auto_proxies
+            .connect_active_notify(move |s| draft.borrow_mut().auto_proxies = s.is_active());
     }
     playback.append(&row(
         "Create proxies automatically",
@@ -408,8 +517,9 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
     {
         let draft = draft.clone();
         proxy_quality.connect_selected_notify(move |d| {
-            draft.borrow_mut().proxy_quality =
-                PROXY_QUALITIES[(d.selected() as usize).min(2)].0.to_string();
+            draft.borrow_mut().proxy_quality = PROXY_QUALITIES[(d.selected() as usize).min(2)]
+                .0
+                .to_string();
         });
     }
     playback.append(&row(
@@ -426,6 +536,16 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
         "Decode with the graphics chip",
         &hw_decode,
         Some("Uses the graphics chip's video decoders when there are any (VA-API, NVIDIA, Direct3D). Off: the processor decodes. Applies to the preview and to export, from the next file opened."),
+    ));
+    let hw_test = gtk::Button::with_label("Test on a video...");
+    {
+        let app = app.clone();
+        hw_test.connect_clicked(move |_| crate::hwcheck::choose_and_open(&app));
+    }
+    playback.append(&row(
+        "Check hardware decoding",
+        &hw_test,
+        Some("Decodes the start of one of your own videos with and without the graphics chip, and tells you which decoder was used and how much processor time it saved."),
     ));
     let remux = switch(draft.borrow().remux_on_import);
     {
@@ -447,8 +567,10 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
     {
         let draft = draft.clone();
         preview_resolution.connect_selected_notify(move |d| {
-            draft.borrow_mut().preview_resolution =
-                PREVIEW_RESOLUTIONS[(d.selected() as usize).min(3)].0.to_string();
+            draft.borrow_mut().preview_resolution = PREVIEW_RESOLUTIONS
+                [(d.selected() as usize).min(3)]
+            .0
+            .to_string();
         });
     }
     playback.append(&row(
@@ -470,7 +592,11 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
             draft.borrow_mut().export_graphics_card = acceleration_value(d.selected()).to_string();
         });
     }
-    let card_state = match draft.borrow().graphics_card_available.or(draft.borrow().graphics_card_ok) {
+    let card_state = match draft
+        .borrow()
+        .graphics_card_available
+        .or(draft.borrow().graphics_card_ok)
+    {
         Some(true) => "The last check found a graphics chip that works.",
         Some(false) => "The last check found no graphics chip that works here.",
         None => "The graphics chip has not been checked yet (the Export window checks it).",
@@ -486,17 +612,46 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
     let preview_gpu = switch(draft.borrow().preview_on_gpu);
     {
         let draft = draft.clone();
-        preview_gpu.connect_active_notify(move |s| draft.borrow_mut().preview_on_gpu = s.is_active());
+        preview_gpu
+            .connect_active_notify(move |s| draft.borrow_mut().preview_on_gpu = s.is_active());
     }
     performance.append(&row(
         "Preview compositing on the graphics chip",
         &preview_gpu,
         Some("Puts the preview picture together on the graphics chip. If the chip cannot be used, the preview falls back to the processor and says so in the status bar. Corner pin and mesh warp are always done by the processor."),
     ));
-    planned_row(&performance, &mut planned, "performance", "Processor threads", Planned::Choice(&["Automatic"], 0), "Phase 11");
-    planned_row(&performance, &mut planned, "performance", "Memory limit", Planned::Choice(&["Automatic"], 0), "Phase 11");
-    planned_row(&performance, &mut planned, "performance", "Cache folder", Planned::Text("Default"), "Phase 11");
-    planned_row(&performance, &mut planned, "performance", "Clear the cache", Planned::Button("Clear"), "Phase 11");
+    planned_row(
+        &performance,
+        &mut planned,
+        "performance",
+        "Processor threads",
+        Planned::Choice(&["Automatic"], 0),
+        "Phase 11",
+    );
+    planned_row(
+        &performance,
+        &mut planned,
+        "performance",
+        "Memory limit",
+        Planned::Choice(&["Automatic"], 0),
+        "Phase 11",
+    );
+    planned_row(
+        &performance,
+        &mut planned,
+        "performance",
+        "Cache folder",
+        Planned::Text("Default"),
+        "Phase 11",
+    );
+    planned_row(
+        &performance,
+        &mut planned,
+        "performance",
+        "Clear the cache",
+        Planned::Button("Clear"),
+        "Phase 11",
+    );
     stack.add_titled(&scroll(&performance), Some("performance"), "Performance");
 
     // ----- Export --------------------------------------------------------
@@ -514,8 +669,22 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
         "Format, quality, sound and caption files are chosen in the Export window, which remembers them.",
     ));
     separator(&export);
-    planned_row(&export, &mut planned, "export", "Play a sound when an export finishes", Planned::Switch(false), "Phase 11");
-    planned_row(&export, &mut planned, "export", "Open the folder when an export finishes", Planned::Switch(false), "Phase 11");
+    planned_row(
+        &export,
+        &mut planned,
+        "export",
+        "Play a sound when an export finishes",
+        Planned::Switch(false),
+        "Phase 11",
+    );
+    planned_row(
+        &export,
+        &mut planned,
+        "export",
+        "Open the folder when an export finishes",
+        Planned::Switch(false),
+        "Phase 11",
+    );
     stack.add_titled(&scroll(&export), Some("export"), "Export");
 
     // ----- Captions ------------------------------------------------------
@@ -524,19 +693,82 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
         "The spoken language, speech model and caption look are chosen in the Auto-Captions panel, where they are used, and remembered.",
     ));
     separator(&captions);
-    planned_row(&captions, &mut planned, "captions", "Label speakers", Planned::Switch(false), "Phase 7 (open item)");
-    planned_row(&captions, &mut planned, "captions", "Translate captions", Planned::Choice(&["Off"], 0), "Phase 7 (open item)");
-    planned_row(&captions, &mut planned, "captions", "Recognise speech on the graphics chip", Planned::Switch(false), "Phase 7 (open item)");
-    planned_row(&captions, &mut planned, "captions", "Speech model folder", Planned::Text("Default"), "Phase 7 (open item)");
+    planned_row(
+        &captions,
+        &mut planned,
+        "captions",
+        "Label speakers",
+        Planned::Switch(false),
+        "Phase 7 (open item)",
+    );
+    planned_row(
+        &captions,
+        &mut planned,
+        "captions",
+        "Translate captions",
+        Planned::Choice(&["Off"], 0),
+        "Phase 7 (open item)",
+    );
+    planned_row(
+        &captions,
+        &mut planned,
+        "captions",
+        "Recognise speech on the graphics chip",
+        Planned::Switch(false),
+        "Phase 7 (open item)",
+    );
+    planned_row(
+        &captions,
+        &mut planned,
+        "captions",
+        "Speech model folder",
+        Planned::Text("Default"),
+        "Phase 7 (open item)",
+    );
     stack.add_titled(&scroll(&captions), Some("captions"), "Captions");
 
     // ----- Libraries -----------------------------------------------------
     let libraries = page();
-    planned_row(&libraries, &mut planned, "libraries", "Asset library folder", Planned::Text("Default"), "Phase 8");
-    planned_row(&libraries, &mut planned, "libraries", "Installed asset packs", Planned::Button("Manage..."), "Phase 8");
-    planned_row(&libraries, &mut planned, "libraries", "Colour look (LUT) folder", Planned::Text("Default"), "Phase 9");
-    planned_row(&libraries, &mut planned, "libraries", "Default grading colour space", Planned::Choice(&["Rec. 709"], 0), "Phase 9");
-    planned_row(&libraries, &mut planned, "libraries", "Sticker folder", Planned::Text("Default"), "Phase 10");
+    planned_row(
+        &libraries,
+        &mut planned,
+        "libraries",
+        "Asset library folder",
+        Planned::Text("Default"),
+        "Phase 8",
+    );
+    planned_row(
+        &libraries,
+        &mut planned,
+        "libraries",
+        "Installed asset packs",
+        Planned::Button("Manage..."),
+        "Phase 8",
+    );
+    planned_row(
+        &libraries,
+        &mut planned,
+        "libraries",
+        "Colour look (LUT) folder",
+        Planned::Text("Default"),
+        "Phase 9",
+    );
+    planned_row(
+        &libraries,
+        &mut planned,
+        "libraries",
+        "Default grading colour space",
+        Planned::Choice(&["Rec. 709"], 0),
+        "Phase 9",
+    );
+    planned_row(
+        &libraries,
+        &mut planned,
+        "libraries",
+        "Sticker folder",
+        Planned::Text("Default"),
+        "Phase 10",
+    );
     stack.add_titled(&scroll(&libraries), Some("libraries"), "Libraries");
 
     // ----- Advanced ------------------------------------------------------
@@ -560,8 +792,22 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
         Some("Puts every setting in this window back to how Kani starts. Nothing changes until you press Save."),
     ));
     separator(&advanced);
-    planned_row(&advanced, &mut planned, "advanced", "Write a diagnostic log", Planned::Switch(false), "Phase 11");
-    planned_row(&advanced, &mut planned, "advanced", "Send crash reports", Planned::Switch(false), "Phase 11");
+    planned_row(
+        &advanced,
+        &mut planned,
+        "advanced",
+        "Write a diagnostic log",
+        Planned::Switch(false),
+        "Phase 11",
+    );
+    planned_row(
+        &advanced,
+        &mut planned,
+        "advanced",
+        "Send crash reports",
+        Planned::Switch(false),
+        "Phase 11",
+    );
     stack.add_titled(&scroll(&advanced), Some("advanced"), "Advanced");
 
     // ----- Sidebar -------------------------------------------------------

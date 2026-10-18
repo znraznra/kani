@@ -40,6 +40,7 @@ pub enum Command {
     Relink,
     CreateProxy,
     DeleteProxy,
+    CheckDecoding,
     Reveal,
     CopyPath,
     Properties,
@@ -124,6 +125,15 @@ pub fn menu_items(state: &ItemState) -> Vec<MenuItem> {
             false,
             true,
         )),
+    }
+    if state.proxy != ProxyState::NotApplicable {
+        items.push(item(
+            Command::CheckDecoding,
+            "Check Hardware Decoding...",
+            !state.missing,
+            false,
+            false,
+        ));
     }
     items.push(item(
         Command::Reveal,
@@ -250,6 +260,17 @@ pub fn run(app: &Rc<App>, id: MediaId, command: Command) {
         Command::Relink => relink(app, id),
         Command::CreateProxy => app.create_proxy(id),
         Command::DeleteProxy => app.delete_proxy(id),
+        Command::CheckDecoding => {
+            let path = app
+                .state
+                .borrow()
+                .session
+                .as_ref()
+                .and_then(|s| s.media_path(id));
+            if let Some(path) = path {
+                crate::hwcheck::open(app, path);
+            }
+        }
         Command::Reveal => reveal(app, id),
         Command::CopyPath => {
             let path = app

@@ -100,8 +100,7 @@ pub fn open(app: &Rc<App>) -> Option<Rc<Dialog>> {
     row(&g, 1, "Project path", &path_row);
     let destination: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
     {
-        let (app, path_label, destination) =
-            (app.clone(), path_label.clone(), destination.clone());
+        let (app, path_label, destination) = (app.clone(), path_label.clone(), destination.clone());
         move_btn.connect_clicked(move |_| {
             let (path_label, destination) = (path_label.clone(), destination.clone());
             app.choose_folder(
@@ -183,7 +182,9 @@ pub fn open(app: &Rc<App>) -> Option<Rc<Dialog>> {
     row(&g, 6, "Frame rate", &rate);
 
     let color = gtk::DropDown::new(
-        Some(strings(ColorSpace::ALL.iter().map(|c| c.label().to_owned()))),
+        Some(strings(
+            ColorSpace::ALL.iter().map(|c| c.label().to_owned()),
+        )),
         gtk::Expression::NONE,
     );
     color.set_selected(
@@ -330,12 +331,28 @@ pub fn apply(app: &Rc<App>, d: &Dialog) {
             Err(e) => notes.push(format!("copy failed: {e}")),
         }
         for (which, staged) in [
-            (cutroom_core::state::StorageKind::Proxy, d.proxy_dir.borrow().clone()),
-            (cutroom_core::state::StorageKind::Cache, d.cache_dir.borrow().clone()),
+            (
+                cutroom_core::state::StorageKind::Proxy,
+                d.proxy_dir.borrow().clone(),
+            ),
+            (
+                cutroom_core::state::StorageKind::Cache,
+                d.cache_dir.borrow().clone(),
+            ),
         ] {
             if let Some(dir) = staged {
-                s.set_storage_dir(which, dir.as_deref());
-                notes.push("storage folder changed".into());
+                let report = s.set_storage_dir(which, dir.as_deref());
+                let mut note = String::from("storage folder changed");
+                if report.moved + report.already_there > 0 {
+                    note += &format!(
+                        ", {} file(s) moved with it",
+                        report.moved + report.already_there
+                    );
+                }
+                if report.failed > 0 {
+                    note += &format!(", {} could not be moved", report.failed);
+                }
+                notes.push(note);
             }
         }
         if let Some(dest) = dest {

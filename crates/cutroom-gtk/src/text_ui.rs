@@ -4,6 +4,9 @@
 //! one step, not one per letter.
 
 use crate::app::App;
+use crate::dialogs;
+use crate::icons;
+use cutroom_core::text_styles::{restyle, MAX_NAME};
 use cutroom_timeline::{ClipId, Prop, TextAlign, TextSpec};
 use gtk4 as gtk;
 use gtk4::gdk;
@@ -107,6 +110,151 @@ fn grid() -> (gtk::Grid, impl Fn(&str, &gtk::Widget)) {
         }
     };
     (g, add)
+}
+
+/// Ask for a style's name; `done` keeps it, or says why not (shown in the window).
+pub fn ask_name(
+    app: &Rc<App>,
+    title: &str,
+    ok_label: &str,
+    initial: &str,
+    done: Rc<dyn Fn(&str) -> Result<(), String>>,
+) {
+    let window = dialogs::dialog_window(app, title, 380);
+    let body = dialogs::content_box();
+    body.append(&dialogs::caption("Name of the style"));
+    let entry = gtk::Entry::new();
+    entry.set_text(initial);
+    entry.set_max_length(MAX_NAME as i32);
+    body.append(&entry);
+    let problem = dialogs::error_label();
+    body.append(&problem);
+    let cancel = gtk::Button::with_label("Cancel");
+    let ok = gtk::Button::with_label(ok_label);
+    ok.add_css_class("suggested-action");
+    body.append(&dialogs::buttons(&ok, &cancel));
+    window.set_child(Some(&body));
+    let accept: Rc<dyn Fn()> = {
+        let (entry, problem, window) = (entry.clone(), problem.clone(), window.clone());
+        Rc::new(move || match done(entry.text().as_str()) {
+            Ok(()) => window.close(),
+            Err(why) => problem.set_text(&why),
+        })
+    };
+    {
+        let accept = accept.clone();
+        ok.connect_clicked(move |_| accept());
+    }
+    entry.connect_activate(move |_| accept());
+    {
+        let window = window.clone();
+        cancel.connect_clicked(move |_| window.close());
+    }
+    window.present();
+    entry.grab_focus();
+}
+
+/// A name not used yet: "My style", "My style 2", ...
+fn free_name(app: &Rc<App>) -> String {
+    let st = app.state.borrow();
+    let taken = |n: &str| st.text_styles.get(n).is_some();
+    if !taken("My style") {
+        return "My style".into();
+    }
+    (2..)
+        .map(|i| format!("My style {i}"))
+        .find(|n| !taken(n))
+        .unwrap_or_default()
+}
+
+/// The user's saved styles in the Text category: click one to add text in
+/// that look; rename or delete beside it.
+pub fn fill_saved_styles(app: &Rc<App>, list: &gtk::Box) {
+    let title = gtk::Label::new(Some("My styles"));
+    title.set_xalign(0.0);
+    title.add_css_class("cc-section-title");
+    title.set_margin_top(10);
+    list.append(&title);
+    let styles = app.state.borrow().text_styles.styles.clone();
+    if styles.is_empty() {
+        let hint = gtk::Label::new(Some(
+            "Select a text clip and press the save icon next to \"Saved style\" in its Text section to keep its look here.",
+        ));
+        hint.set_xalign(0.0);
+        hint.set_wrap(true);
+        hint.add_css_class("dim-label");
+        list.append(&hint);
+        return;
+    }
+    for style in styles {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        let button = gtk::Button::new();
+        button.add_css_class("cc-text-style");
+        button.set_hexpand(true);
+        let inner = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let name = gtk::Label::new(Some(&style.name));
+        name.set_xalign(0.0);
+        name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        name.add_css_class("panel-title");
+        inner.append(&name);
+        inner.append(&style_picture(&style.spec));
+        button.set_child(Some(&inner));
+        button.set_tooltip_text(Some("Add text in this style at the playhead"));
+        {
+            let (app, spec) = (app.clone(), style.spec.clone());
+            button.connect_clicked(move |_| {
+                {
+                    let mut st = app.state.borrow_mut();
+                    if let Some(session) = st.session.as_mut() {
+                        session.add_text_clip(spec.clone());
+                    }
+                }
+                app.refresh();
+            });
+        }
+        let rename = icons::button(icons::RENAME, "Rename this style");
+        {
+            let (app, old) = (app.clone(), style.name.clone());
+            rename.connect_clicked(move |_| {
+                let (app2, old2) = (app.clone(), old.clone());
+                ask_name(
+                    &app,
+                    "Rename style",
+                    "Rename",
+                    &old,
+                    Rc::new(move |new| {
+                        let kept = app2.state.borrow_mut().text_styles.rename(&old2, new)?;
+                        {
+                            app2.state.borrow_mut().save_text_styles();
+                        }
+                        app2.set_status(format!("Renamed the style to \"{kept}\""));
+                        crate::editor::refresh_library(&app2);
+                        Ok(())
+                    }),
+                );
+            });
+        }
+        let delete = icons::button(icons::DELETE, "Delete this style");
+        {
+            let (app, name) = (app.clone(), style.name.clone());
+            delete.connect_clicked(move |_| {
+                {
+                    let mut st = app.state.borrow_mut();
+                    st.text_styles.delete(&name);
+                    st.save_text_styles();
+                }
+                app.set_status(format!("Deleted the style \"{name}\""));
+                app.refresh();
+            });
+        }
+        row.append(&button);
+        let side = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        side.set_valign(gtk::Align::Center);
+        side.append(&rename);
+        side.append(&delete);
+        row.append(&side);
+        list.append(&row);
+    }
 }
 
 /// A small picture of how a caption style looks, "Abc1234" on a dark tile.
@@ -254,6 +402,93 @@ pub fn sections(
     text_section.append(&frame);
 
     let (g1, add1) = grid();
+
+    // Saved styles: pick one to dress this text, or keep this look.
+    {
+        let names: Vec<String> = app
+            .state
+            .borrow()
+            .text_styles
+            .styles
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        let mut items = vec!["Choose a saved style...".to_string()];
+        items.extend(names);
+        let refs: Vec<&str> = items.iter().map(String::as_str).collect();
+        let pick = gtk::DropDown::from_strings(&refs);
+        pick.set_hexpand(true);
+        {
+            let (app, current, building, items) = (
+                app.clone(),
+                current.clone(),
+                building.clone(),
+                items.clone(),
+            );
+            pick.connect_selected_notify(move |d| {
+                if building.get() || d.selected() == 0 {
+                    return;
+                }
+                let Some(name) = items.get(d.selected() as usize) else {
+                    return;
+                };
+                let Some(saved) = app.state.borrow().text_styles.get(name).cloned() else {
+                    return;
+                };
+                let styled = restyle(&current.borrow(), &saved.spec);
+                *current.borrow_mut() = styled.clone();
+                {
+                    let mut st = app.state.borrow_mut();
+                    let all = st.apply_all_captions;
+                    if let Some(session) = st.session.as_mut() {
+                        let targets = session.group_targets(clip, all);
+                        session.edit_text_for(clip, styled, &targets);
+                        session.status = Some(format!("Applied the style \"{}\"", saved.name));
+                    }
+                }
+                app.sync_preview(false);
+                crate::timeline::queue_draw(&app);
+                crate::menu::update(&app);
+                // The boxes below show the new look.
+                let app = app.clone();
+                glib::idle_add_local_once(move || app.refresh());
+            });
+        }
+        let save = icons::button(icons::SAVE, "Keep this look as a saved style");
+        {
+            let (app, current) = (app.clone(), current.clone());
+            save.connect_clicked(move |_| {
+                let (app2, current) = (app.clone(), current.clone());
+                ask_name(
+                    &app,
+                    "Save text style",
+                    "Save",
+                    &free_name(&app),
+                    Rc::new(move |name| {
+                        let spec = current.borrow().clone();
+                        let (kept, replaced) = app2
+                            .state
+                            .borrow_mut()
+                            .text_styles
+                            .save_style(name, &spec)?;
+                        app2.state.borrow_mut().save_text_styles();
+                        app2.set_status(if replaced {
+                            format!("Replaced the style \"{kept}\"")
+                        } else {
+                            format!("Saved the style \"{kept}\"")
+                        });
+                        let app3 = app2.clone();
+                        glib::idle_add_local_once(move || app3.refresh());
+                        Ok(())
+                    }),
+                );
+            });
+        }
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        row.append(&pick);
+        row.append(&save);
+        add1("Saved style", row.upcast_ref());
+    }
 
     // Font: the app's own first, then everything installed.
     let mut families = vec!["Inter (default)".to_string()];

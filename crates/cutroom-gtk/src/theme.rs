@@ -190,6 +190,9 @@ const CSS: &str = r#"
 .monospace { font-family: monospace; }
 .timecode, .cc-timecode-now, .cc-timecode-total { font-feature-settings: "tnum"; }
 .cutroom-title { font-size: 28px; font-weight: 700; }
+.cc-sidebar { padding: 14px 8px 8px 8px; background: alpha(currentColor, 0.04); }
+.cc-nav { padding: 8px 10px; border-radius: 8px; }
+.cc-nav:checked { background: alpha(#26c6b0, 0.16); color: #26c6b0; }
 .cutroom-card {
     padding: 8px;
     border-radius: 10px;

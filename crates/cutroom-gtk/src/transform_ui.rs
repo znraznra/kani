@@ -390,11 +390,7 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
         &morph_grid,
         &morph_rows,
         "Skew",
-        &[reset_props_button(
-            vec![Prop::SkewX, Prop::SkewY],
-            "Reset skew",
-        )
-        .upcast()],
+        &[reset_props_button(vec![Prop::SkewX, Prop::SkewY], "Reset skew").upcast()],
     );
     add_slider(
         &morph_grid,
@@ -420,11 +416,7 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
         &morph_grid,
         &morph_rows,
         "Perspective",
-        &[reset_props_button(
-            vec![Prop::PerspX, Prop::PerspY],
-            "Reset perspective",
-        )
-        .upcast()],
+        &[reset_props_button(vec![Prop::PerspX, Prop::PerspY], "Reset perspective").upcast()],
     );
     add_slider(
         &morph_grid,
@@ -512,7 +504,10 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
         });
     }
     bend.append(&modes);
-    let unbend = reset_props_button(Prop::WARP.to_vec(), "Remove the bend (corner pin and mesh warp)");
+    let unbend = reset_props_button(
+        Prop::WARP.to_vec(),
+        "Remove the bend (corner pin and mesh warp)",
+    );
     unbend.set_sensitive(!initial.warp.is_identity() || has_warp_keys(app, clip));
     bend.append(&unbend);
     // One diamond for the whole bend: corner pin and mesh are keyed together.
@@ -566,7 +561,13 @@ pub fn controls(app: &Rc<App>, clip: ClipId, initial: Transform) -> gtk::Box {
     title.set_hexpand(true);
     header.append(&title);
     header.append(&reset);
-    header.append(&diamond(&[Prop::X, Prop::Y, Prop::Scale, Prop::Rotation, Prop::Opacity]));
+    header.append(&diamond(&[
+        Prop::X,
+        Prop::Y,
+        Prop::Scale,
+        Prop::Rotation,
+        Prop::Opacity,
+    ]));
     column.prepend(&header);
     column.append(&morph);
     building.set(false);

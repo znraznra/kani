@@ -74,6 +74,9 @@ The GTK video sink is compiled in (`gst-plugin-gtk4`), so no extra GStreamer plu
 ## What you can do
 
 **Home screen** (at start, and whenever you close a project)
+* A **sidebar** on the left: **Projects** (every project), **Recents** (the twelve you changed last) and **Brand Kits**
+  (a placeholder for now, planned for Phase 8). The app's name and version sit at its bottom. The buttons are icons; hover for
+  what they do. Open from folder and New project are at the right end of the search row.
 * Lists every project in your **projects folder** (default `Documents/Kani`; change it with *Change...*), plus projects
   opened from elsewhere. Search, sort by last modified or name, thumbnail or list view.
 * Right-click a project: **Open**, **Rename** (optionally renames the folder), **Show info**, **Delete** (permanent, with
@@ -96,7 +99,7 @@ into the next one) it gets a **new track** (video on top, audio at the bottom). 
 
 **Library:** list or thumbnails. **Right-click an item** for the usual media-panel commands: Add to Timeline, Show in
 Timeline (with the clip count), Rename (display name only), Relink Media (for moved or missing files), Create/Delete Proxy,
-Show in File Manager, Copy File Path, Properties (size, streams, frame rate, the decoder in use and whether it is hardware)
+Show in File Manager, Copy File Path, Properties (size, streams, frame rate, the decoder in use and whether it is hardware), **Check Hardware Decoding...** (see below)
 and Remove from Project (warns when clips use it; only files the project itself stores can be deleted from disk). Drag an item onto the timeline: video and images go on video tracks, audio on audio
 tracks, with a ghost showing where it lands.
 
@@ -272,7 +275,7 @@ A click anywhere on the timeline moves the playhead there (and a click on a clip
 every clip. **Replace a clip:** drag a file from the media library onto a clip. A file shorter than the clip is refused
 (the clip shows why while you hold it there); a photo replaces it at once; for a longer video or sound file a window
 opens with a preview and a strip of the file with a highlighted part as long as the clip: slide it to the part you
-want, press Play this part to watch it, then Replace. The clip keeps its place, length, look, keyframes and sound
+want, watch it with the play / pause and one-frame-back / one-frame-forward icons, then Replace. The clip keeps its place, length, look, keyframes and sound
 settings, and Undo puts the old file back.
 
 ## The Player
@@ -283,8 +286,25 @@ drag it back onto the ruler or off the picture to remove it; guides are saved wi
 being moved, made or removed. **Click a picture in the Player** to select that clip (the topmost one under the pointer) and
 drag to move it straight away; clicking where nothing is drawn clears the selection. The fit button
 resets the zoom so the picture fits the Player; the arrows button (or F11) shows it full screen, with a note on how to
-leave, and play / position slider / time / Exit controls along the bottom that hide while the pointer rests. Guides and the grid are
-visual aids for now: the transform box does not snap to them yet.
+leave, and play / position slider / time controls and the same arrows icon (to leave) along the bottom that hide while the pointer rests. Guides and the grid are
+visual aids for now: the transform box does not snap to them yet. With **Preview compositing on the graphics chip** the window
+no longer waits for the chip: it picks up each finished picture on the next tick and sends the newest layers on, and when
+playback stops the console says how the chip did (time to draw, time to read back, pictures waiting).
+
+## Hardware decoding check
+
+**Settings > Playback > Check hardware decoding > Test on a video...** (or right-click a video in the library >
+**Check Hardware Decoding...**) decodes the start of one of your own files twice as fast as it can: with the graphics chip's
+decoders allowed, then with only the processor's. The window reports which decoder element each run used, the pictures and
+speed, and the processor time each cost (Linux), says in words whether the chip took the file and what it saved, and
+lists the graphics-chip decoders GStreamer has. **Copy report** puts it on the clipboard; it is also printed on the console.
+
+## Saved text styles
+
+In a text clip's **Text** section, **Saved style** has a drop-down of your styles (pick one to dress the clip in that look; the
+clip keeps its own words) and a save icon (keep the clip's current look under a name; the same name replaces the old one).
+The **Text** library lists them under **My styles**: click one to add text in that look at the playhead, with rename and
+delete beside it. Styles are kept for the whole app (`text-styles.json` in the settings folder), not per project.
 
 ## Settings
 
@@ -299,10 +319,10 @@ defaults. Everything else is listed and disabled until its phase. See [docs/SETT
 |------:|-------------|
 | 1 | Timeline, project folder, platform contracts |
 | 2 | App shell: home screen, editing, autosave (done, now on GTK4) |
-| 3 | Media core: probing, thumbnails, preview, mixed sound, stills, waveforms, filmstrips, proxies, scrub throttling, decoder reporting (done); **automatic proxies, proxy quality, hardware-decode switch, preview resolution, remux on import and scrub sound (0.5.29)**; still to do: check hardware decoding on real machines and footage, proxy encoder choice per machine |
+| 3 | Media core: probing, thumbnails, preview, mixed sound, stills, waveforms, filmstrips, proxies, scrub throttling, decoder reporting (done); **automatic proxies, proxy quality, hardware-decode switch, preview resolution, remux on import and scrub sound (0.5.29)**; **a hardware-decoding check you run on your own footage, and proxies that move with their folder (0.5.31)**; still to do: read the check's results on real machines and footage, proxy encoder choice per machine |
 | 4 | Compositor: **layers, transforms, opacity, on-canvas transform box, crossfades and keyframes (done, CPU)**; deferred: GPU backend, blend modes, skipping decode of fully covered layers |
 | 5 | Export: **MP4 (H.264 + AAC) with the same pictures and sound as the preview, optional graphics-card compositing (Automatic / Always / Never in the Export window; Automatic uses the card only when a check found a real graphics chip clearly faster, and falls back to the processor for anything it cannot draw), a redesigned Export window (video and/or separate sound file, NTSC-to-PAL sizes by aspect ratio, bit rate presets, H.264 / H.265 / VP9 / AV1, MP4 / MOV / MKV / WebM, frame rate, AAC / MP3 / Opus / FLAC / WAV, mono or stereo, .srt / .vtt / .ass caption files, encoder and graphics-card choices), progress and cancel, and the best encoder that works on the machine (NVENC, Quick Sync, VA-API, AMF, VideoToolbox, else x264) with automatic fallback**; the sound file is made in parallel with the video; export of a time range or of selected clips (also picked with handles on the timeline, Ctrl+Shift+X); presets for named sites; still to do: the new H.265 / VP9 / AV1 hardware encoders checked on real machines, Windows (EGL, NVENC) |
-| 6 | Text engine and templates: **text clips (font, size, colour, outline, shadow, box, spacing), nine built-in styles, skew, perspective, corner pin and 4x4 mesh warp, all grouped as Morph with per-entry resets and keyframes (done)**; corner pin and mesh warp also drawn on the graphics chip (0.5.30); still to do: user-saved text styles, snapping the transform box to guides and the grid |
+| 6 | Text engine and templates: **text clips (font, size, colour, outline, shadow, box, spacing), nine built-in styles, skew, perspective, corner pin and 4x4 mesh warp, all grouped as Morph with per-entry resets and keyframes (done)**; corner pin and mesh warp also drawn on the graphics chip (0.5.30); **user-saved text styles (0.5.31)**; still to do: snapping the transform box to guides and the grid |
 | 7 | Captions with local Whisper, styled word highlighting: **generate captions from the sound of selected clips (or the whole timeline), five caption looks, the spoken word or the line so far lit up as it is said, editable word by word, .srt / .vtt export (done)**; the Captions track holds only generated captions (text and media are placed on other tracks); still to do: **import caption files (.srt / .vtt / .ass) onto the Captions track**, real-world accuracy checks on your machine, speaker labels, translation, GPU-accelerated recognition |
 | 8 | Asset libraries and the pack format, with license tracking |
 | 9 | `.cube` LUTs and basic grading |

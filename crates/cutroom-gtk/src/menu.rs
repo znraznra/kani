@@ -124,7 +124,6 @@ pub fn build(app: &Rc<App>) -> MenuUi {
         register(action);
     }
 
-
     let model = gio::Menu::new();
 
     let file = gio::Menu::new();
@@ -206,10 +205,7 @@ pub fn build(app: &Rc<App>) -> MenuUi {
     model.append_submenu(Some("Help"), &help);
 
     let bar = gtk::PopoverMenuBar::from_model(Some(&model));
-    MenuUi {
-        bar,
-        actions,
-    }
+    MenuUi { bar, actions }
 }
 
 /// Enable or disable items to match what can be done right now.

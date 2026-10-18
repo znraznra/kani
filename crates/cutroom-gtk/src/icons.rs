@@ -74,6 +74,14 @@ bundle!(
     "volume-off",
     "lock",
     "lock-open",
+    "chevron-left",
+    "chevron-right",
+    "folder",
+    "clock",
+    "palette",
+    "refresh",
+    "pencil",
+    "device-floppy",
 );
 
 pub const IMPORT: &str = "plus";
@@ -118,6 +126,15 @@ pub const FLIP: &str = "flip-vertical";
 pub const FOLDER: &str = "folder-open";
 pub const PASTE: &str = "clipboard";
 pub const FILTER: &str = "filter";
+pub const STEP_BACK: &str = "chevron-left";
+pub const STEP_FORWARD: &str = "chevron-right";
+pub const PROJECTS: &str = "folder";
+pub const RECENTS: &str = "clock";
+pub const BRAND_KITS: &str = "palette";
+pub const REFRESH: &str = "refresh";
+pub const RENAME: &str = "pencil";
+pub const SAVE: &str = "device-floppy";
+pub const SETTINGS: &str = "adjustments";
 
 /// The icon for a library tab.
 pub fn category(name: &str) -> &'static str {
@@ -305,6 +322,15 @@ mod tests {
     fn every_named_icon_is_bundled_and_recolourable() {
         for name in [
             IMPORT,
+            STEP_BACK,
+            STEP_FORWARD,
+            PROJECTS,
+            RECENTS,
+            BRAND_KITS,
+            REFRESH,
+            SETTINGS,
+            RENAME,
+            SAVE,
             UNDO,
             REDO,
             DELETE,

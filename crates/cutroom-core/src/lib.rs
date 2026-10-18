@@ -11,6 +11,7 @@ pub mod paths;
 pub mod settings;
 pub mod shortcuts;
 pub mod state;
+pub mod text_styles;
 pub mod timeline_logic;
 pub mod transform_box;
 pub mod ui_state;

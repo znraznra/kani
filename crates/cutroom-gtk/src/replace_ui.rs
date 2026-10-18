@@ -6,13 +6,14 @@
 
 use crate::app::App;
 use crate::dialogs::{buttons, caption, content_box, dialog_window};
+use crate::icons;
 use cutroom_timeline::{ClipId, MediaId, Ticks};
-use gtk4 as gtk;
-use gtk4::prelude::*;
-use gtk4::glib;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
+use gtk4 as gtk;
+use gtk4::glib;
+use gtk4::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
@@ -24,6 +25,11 @@ const BAR_H: i32 = 56;
 /// Where the chosen part may start: from 0 to `length - clip`.
 pub fn clamp_start(start: f64, clip: f64, length: f64) -> f64 {
     start.clamp(0.0, (length - clip).max(0.0))
+}
+
+/// Where one frame step from `at` lands: inside the chosen part, never outside it.
+pub fn step_cursor(at: f64, frames: i32, frame: f64, start: f64, clip: f64) -> f64 {
+    (at + f64::from(frames) * frame).clamp(start, start + clip)
 }
 
 /// The start a drag on the bar gives: the window keeps where it was grabbed.
@@ -67,7 +73,9 @@ impl Grabber {
         self.playbin
             .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE, at)
             .ok()?;
-        let sample = self.sink.try_pull_preroll(gst::ClockTime::from_mseconds(1500))?;
+        let sample = self
+            .sink
+            .try_pull_preroll(gst::ClockTime::from_mseconds(1500))?;
         crate::media::sample_to_thumb(&sample).map(crate::thumbs::texture_from)
     }
 
@@ -121,10 +129,18 @@ pub fn open(app: &Rc<App>, clip: ClipId, media: MediaId) -> Option<(gtk::Window,
                 .media_item(media)
                 .map(cutroom_core::state::media_label)
                 .unwrap_or_default();
-            Some((c.duration.as_seconds_f64(), length, path, name))
+            let fps = s
+                .doc
+                .media_item(media)
+                .ok()
+                .and_then(|m| m.probe.as_ref())
+                .and_then(|p| p.frame_rate)
+                .map_or(30.0, |r| r.as_f64())
+                .max(1.0);
+            Some((c.duration.as_seconds_f64(), length, path, name, 1.0 / fps))
         })
     };
-    let (clip_len, length, path, name) = facts?;
+    let (clip_len, length, path, name, frame) = facts?;
     crate::strips::request(app, media);
 
     let window = dialog_window(app, "Replace clip", 640);
@@ -143,19 +159,27 @@ pub fn open(app: &Rc<App>, clip: ClipId, media: MediaId) -> Option<(gtk::Window,
     body.append(&picture);
 
     let controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let play = gtk::Button::with_label("Play this part");
+    // Icons only: one frame back, play / pause, one frame forward.
+    let back = icons::button(icons::STEP_BACK, "One frame back");
+    let play = icons::button(icons::PLAY, "Play this part");
+    play.set_widget_name(icons::PLAY);
+    let forward = icons::button(icons::STEP_FORWARD, "One frame forward");
     let span = gtk::Label::new(None);
     span.set_hexpand(true);
     span.set_xalign(1.0);
     span.add_css_class("timecode");
+    controls.append(&back);
     controls.append(&play);
+    controls.append(&forward);
     controls.append(&span);
     body.append(&controls);
 
     let bar = gtk::DrawingArea::new();
     bar.set_content_height(BAR_H);
     bar.set_hexpand(true);
-    bar.set_tooltip_text(Some("Drag the highlighted part, or click where it should be"));
+    bar.set_tooltip_text(Some(
+        "Drag the highlighted part, or click where it should be",
+    ));
     body.append(&bar);
 
     let cancel = gtk::Button::with_label("Cancel");
@@ -165,24 +189,42 @@ pub fn open(app: &Rc<App>, clip: ClipId, media: MediaId) -> Option<(gtk::Window,
     window.set_child(Some(&body));
 
     let start = Rc::new(Cell::new(0.0f64));
+    // The time shown in the preview, inside the chosen part.
+    let cursor = Rc::new(Cell::new(0.0f64));
     let grabber = Rc::new(Grabber::new(&crate::media::path_to_uri(&path)));
     let playing: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
 
     let stop_playing = {
-        let (playing, grabber, play) = (playing.clone(), grabber.clone(), play.clone());
+        let (playing, grabber, play, cursor, start) = (
+            playing.clone(),
+            grabber.clone(),
+            play.clone(),
+            cursor.clone(),
+            start.clone(),
+        );
         Rc::new(move || {
-            if let Some(id) = playing.borrow_mut().take() {
+            let was_playing = playing.borrow_mut().take();
+            if let Some(id) = was_playing {
                 id.remove();
+                // Stopping keeps the picture where it was.
+                if let Some(p) = grabber.as_ref().as_ref().and_then(|g| g.position()) {
+                    cursor.set(p.clamp(start.get(), start.get() + clip_len));
+                }
             }
             if let Some(g) = grabber.as_ref() {
                 g.pause();
             }
-            play.set_label("Play this part");
+            icons::set_button_icon(&play, icons::PLAY, 16);
         })
     };
     let show_frame = {
-        let (grabber, picture, start, span) =
-            (grabber.clone(), picture.clone(), start.clone(), span.clone());
+        let (grabber, picture, start, span, cursor) = (
+            grabber.clone(),
+            picture.clone(),
+            start.clone(),
+            span.clone(),
+            cursor.clone(),
+        );
         Rc::new(move || {
             let s = start.get();
             span.set_text(&format!(
@@ -191,7 +233,8 @@ pub fn open(app: &Rc<App>, clip: ClipId, media: MediaId) -> Option<(gtk::Window,
                 clock(s + clip_len),
                 clock(length)
             ));
-            if let Some(texture) = grabber.as_ref().as_ref().and_then(|g| g.frame_at(s)) {
+            let at = cursor.get().clamp(s, s + clip_len);
+            if let Some(texture) = grabber.as_ref().as_ref().and_then(|g| g.frame_at(at)) {
                 picture.set_paintable(Some(&texture));
             }
         })
@@ -258,9 +301,10 @@ pub fn open(app: &Rc<App>, clip: ClipId, media: MediaId) -> Option<(gtk::Window,
     let drag = gtk::GestureDrag::new();
     let grab = Rc::new(Cell::new((0.0f64, 0.0f64)));
     {
-        let (bar, start, grab, request_frame, stop_playing) = (
+        let (bar, start, cursor, grab, request_frame, stop_playing) = (
             bar.clone(),
             start.clone(),
+            cursor.clone(),
             grab.clone(),
             request_frame.clone(),
             stop_playing.clone(),
@@ -278,17 +322,24 @@ pub fn open(app: &Rc<App>, clip: ClipId, media: MediaId) -> Option<(gtk::Window,
             };
             grab.set((x, offset));
             start.set(start_from_bar(x, offset, w, clip_len, length));
+            cursor.set(start.get());
             bar.queue_draw();
             request_frame();
         });
     }
     {
-        let (bar, start, grab, request_frame) =
-            (bar.clone(), start.clone(), grab.clone(), request_frame.clone());
+        let (bar, start, cursor, grab, request_frame) = (
+            bar.clone(),
+            start.clone(),
+            cursor.clone(),
+            grab.clone(),
+            request_frame.clone(),
+        );
         drag.connect_drag_update(move |_, dx, _| {
             let (x, offset) = grab.get();
             let w = f64::from(bar.width()).max(1.0);
             start.set(start_from_bar(x + dx, offset, w, clip_len, length));
+            cursor.set(start.get());
             bar.queue_draw();
             request_frame();
         });
@@ -300,11 +351,12 @@ pub fn open(app: &Rc<App>, clip: ClipId, media: MediaId) -> Option<(gtk::Window,
     bar.add_controller(drag);
 
     {
-        let (grabber, playing, picture, start, stop_playing) = (
+        let (grabber, playing, picture, start, cursor, stop_playing) = (
             grabber.clone(),
             playing.clone(),
             picture.clone(),
             start.clone(),
+            cursor.clone(),
             stop_playing.clone(),
         );
         play.connect_clicked(move |button| {
@@ -313,9 +365,15 @@ pub fn open(app: &Rc<App>, clip: ClipId, media: MediaId) -> Option<(gtk::Window,
                 return;
             }
             let Some(g) = grabber.as_ref() else { return };
-            let (from, to) = (start.get(), start.get() + clip_len);
+            let to = start.get() + clip_len;
+            // From the end (or before the part), play from its start.
+            let from = if cursor.get() >= to - frame || cursor.get() < start.get() {
+                start.get()
+            } else {
+                cursor.get()
+            };
             g.play_from(from);
-            button.set_label("Stop");
+            icons::set_button_icon(button, icons::PAUSE, 16);
             let (grabber, picture, stop_playing) =
                 (grabber.clone(), picture.clone(), stop_playing.clone());
             let id = glib::timeout_add_local(Duration::from_millis(30), move || {
@@ -333,6 +391,25 @@ pub fn open(app: &Rc<App>, clip: ClipId, media: MediaId) -> Option<(gtk::Window,
                 glib::ControlFlow::Continue
             });
             *playing.borrow_mut() = Some(id);
+        });
+    }
+    for (button, frames) in [(&back, -1), (&forward, 1)] {
+        let (cursor, start, stop_playing, show_frame) = (
+            cursor.clone(),
+            start.clone(),
+            stop_playing.clone(),
+            show_frame.clone(),
+        );
+        button.connect_clicked(move |_| {
+            stop_playing();
+            cursor.set(step_cursor(
+                cursor.get(),
+                frames,
+                frame,
+                start.get(),
+                clip_len,
+            ));
+            show_frame();
         });
     }
     {
@@ -364,6 +441,8 @@ pub fn open(app: &Rc<App>, clip: ClipId, media: MediaId) -> Option<(gtk::Window,
     }
     if grabber.is_none() {
         play.set_sensitive(false);
+        back.set_sensitive(false);
+        forward.set_sensitive(false);
         span.set_text("The file could not be opened for a preview");
     }
     window.present();
@@ -383,5 +462,9 @@ mod tests {
         // A bar 200 px wide for a 20 s file: 10 px a second.
         assert_eq!(start_from_bar(100.0, 20.0, 200.0, 5.0, 20.0), 8.0);
         assert_eq!(start_from_bar(500.0, 0.0, 200.0, 5.0, 20.0), 15.0);
+        // One frame (1/25 s) at a time, kept inside the part that starts at 4 s and lasts 5 s.
+        assert_eq!(step_cursor(4.0, -1, 0.04, 4.0, 5.0), 4.0);
+        assert!((step_cursor(4.0, 1, 0.04, 4.0, 5.0) - 4.04).abs() < 1e-9);
+        assert_eq!(step_cursor(9.0, 1, 0.04, 4.0, 5.0), 9.0);
     }
 }

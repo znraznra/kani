@@ -481,7 +481,10 @@ impl GpuCompositor {
                 size.0,
                 size.1,
             );
-            gl.uniform_1_f32(gl.get_uniform_location(self.program, "shown").as_ref(), shown);
+            gl.uniform_1_f32(
+                gl.get_uniform_location(self.program, "shown").as_ref(),
+                shown,
+            );
             gl.uniform_1_f32(
                 gl.get_uniform_location(self.program, "opacity").as_ref(),
                 opacity,
@@ -630,7 +633,11 @@ impl GpuCompositor {
     pub fn draw(&mut self, frame: &Arc<Frame>, placement: &Placement) -> Result<(), String> {
         if placement.has_distort() {
             // Corner pin and mesh warp: a grid of triangles bends the picture.
-            if frame.width == 0 || frame.height == 0 || placement.opacity <= 0.0 || placement.scale <= 0.0 {
+            if frame.width == 0
+                || frame.height == 0
+                || placement.opacity <= 0.0
+                || placement.scale <= 0.0
+            {
                 return Ok(());
             }
             return self.draw_warped(frame, placement);
@@ -947,8 +954,22 @@ mod tests {
         pin[2] = -0.1; // top right corner in
         pin[5] = 0.05; // bottom right corner down
         for (name, placement) in [
-            ("mesh", Placement { scale: 1.1, mesh, ..Placement::default() }),
-            ("pin", Placement { scale: 1.0, pin, ..Placement::default() }),
+            (
+                "mesh",
+                Placement {
+                    scale: 1.1,
+                    mesh,
+                    ..Placement::default()
+                },
+            ),
+            (
+                "pin",
+                Placement {
+                    scale: 1.0,
+                    pin,
+                    ..Placement::default()
+                },
+            ),
             (
                 "pin, flipped and turned",
                 Placement {
@@ -971,7 +992,10 @@ mod tests {
                 .zip(cpu.rgba.chunks_exact(4))
                 .filter(|(p, q)| (0..3).any(|c| p[c].abs_diff(q[c]) > 24))
                 .count();
-            eprintln!("{name}: {off} of {} pixels differ by more than 24", 120 * 200);
+            eprintln!(
+                "{name}: {off} of {} pixels differ by more than 24",
+                120 * 200
+            );
             assert!(off < 120 * 200 / 25, "{name}: {off} pixels differ");
         }
     }
@@ -998,13 +1022,19 @@ mod tests {
             // Keep two on their way, like export does.
             while card.pictures_waiting() > 2 {
                 let got = card.take_picture().unwrap();
-                assert!(got == expected.pop_front().unwrap(), "picture {taken} differs");
+                assert!(
+                    got == expected.pop_front().unwrap(),
+                    "picture {taken} differs"
+                );
                 taken += 1;
             }
         }
         while card.pictures_waiting() > 0 {
             let got = card.take_picture().unwrap();
-            assert!(got == expected.pop_front().unwrap(), "picture {taken} differs");
+            assert!(
+                got == expected.pop_front().unwrap(),
+                "picture {taken} differs"
+            );
             taken += 1;
         }
         assert_eq!(taken, 9);

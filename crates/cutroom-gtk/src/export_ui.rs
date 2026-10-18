@@ -409,7 +409,19 @@ pub fn open_range(app: &Rc<App>, picked: Option<(Ticks, Ticks)>) {
         existing.window.present();
         return;
     }
-    let (project_name, canvas, project_rate, sample_rate, seconds, sources, timeline, cues, look, playhead, selection) = {
+    let (
+        project_name,
+        canvas,
+        project_rate,
+        sample_rate,
+        seconds,
+        sources,
+        timeline,
+        cues,
+        look,
+        playhead,
+        selection,
+    ) = {
         let st = app.state.borrow();
         let Some(session) = st.session.as_ref() else {
             return;
@@ -583,7 +595,10 @@ pub fn open_range(app: &Rc<App>, picked: Option<(Ticks, Ticks)>) {
     let at_playhead = |target: &gtk::SpinButton| {
         let b = gtk::Button::from_icon_name("go-jump-symbolic");
         b.set_tooltip_text(Some("Use the playhead"));
-        let (target, at) = (target.clone(), playhead.as_seconds_f64().clamp(0.0, seconds));
+        let (target, at) = (
+            target.clone(),
+            playhead.as_seconds_f64().clamp(0.0, seconds),
+        );
         b.connect_clicked(move |_| target.set_value(at));
         b
     };
@@ -604,9 +619,7 @@ pub fn open_range(app: &Rc<App>, picked: Option<(Ticks, Ticks)>) {
 
     // ---- Video
     let video_on = section_check("Video", settings.export_video);
-    video_on.set_tooltip_text(Some(
-        "Make a video file. It carries the project's sound.",
-    ));
+    video_on.set_tooltip_text(Some("Make a video file. It carries the project's sound."));
     let video_grid = new_grid();
     let aspects = opts::aspect_options(canvas);
     let aspect = dropdown(&aspects.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>());
@@ -622,7 +635,12 @@ pub fn open_range(app: &Rc<App>, picked: Option<(Ticks, Ticks)>) {
     let bitrate_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     bitrate_row.append(&bitrate);
     bitrate_row.append(&custom_kbps);
-    let codec = dropdown(&VideoCodec::ALL.iter().map(|c| c.label()).collect::<Vec<_>>());
+    let codec = dropdown(
+        &VideoCodec::ALL
+            .iter()
+            .map(|c| c.label())
+            .collect::<Vec<_>>(),
+    );
     let format = dropdown(&["..."]);
     let rates = opts::frame_rates(project_rate);
     let rate_labels: Vec<String> = rates
@@ -681,12 +699,7 @@ pub fn open_range(app: &Rc<App>, picked: Option<(Ticks, Ticks)>) {
     ));
     let audio_grid = new_grid();
     let audio_format = dropdown(&["..."]);
-    let audio_bitrate = dropdown(
-        &AUDIO_BITRATES
-            .iter()
-            .map(|_| "")
-            .collect::<Vec<_>>(),
-    );
+    let audio_bitrate = dropdown(&AUDIO_BITRATES.iter().map(|_| "").collect::<Vec<_>>());
     let channels = dropdown(&Channels::ALL.iter().map(|c| c.label()).collect::<Vec<_>>());
     channels.set_tooltip_text(Some(
         "Kani mixes the project's sound to stereo, so mono and stereo are on offer; there is no surround source to keep.",
@@ -704,7 +717,10 @@ pub fn open_range(app: &Rc<App>, picked: Option<(Ticks, Ticks)>) {
     right.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
     // ---- Captions
-    let captions_on = section_check("Captions", !settings.export_caption_files.is_empty() && !cues.is_empty());
+    let captions_on = section_check(
+        "Captions",
+        !settings.export_caption_files.is_empty() && !cues.is_empty(),
+    );
     captions_on.set_tooltip_text(Some("Save the caption text as subtitle files."));
     let caption_srt = gtk::CheckButton::with_label("SubRip (.srt)");
     let caption_vtt = gtk::CheckButton::with_label("WebVTT (.vtt)");
@@ -1081,13 +1097,13 @@ pub fn open_range(app: &Rc<App>, picked: Option<(Ticks, Ticks)>) {
     dialog.name.grab_focus();
 }
 
-
 /// Put the lists in order for what is chosen, starting from the saved choices.
 fn restore_choices(d: &Dialog, settings: &cutroom_core::settings::Settings) {
     // Size: starts on the project's own.
     refresh_resolutions(d);
     // Bit rate presets.
-    let preset = BitratePreset::from_id(&settings.export_quality).unwrap_or(BitratePreset::Recommended);
+    let preset =
+        BitratePreset::from_id(&settings.export_quality).unwrap_or(BitratePreset::Recommended);
     refresh_bitrate_labels(d, preset);
     // Codec, then the formats that hold it.
     let codec = VideoCodec::from_id(&settings.export_codec).unwrap_or(VideoCodec::H264);
@@ -1098,7 +1114,10 @@ fn restore_choices(d: &Dialog, settings: &cutroom_core::settings::Settings) {
     select(
         d,
         &d.channels,
-        Channels::ALL.iter().position(|c| *c == channels).unwrap_or(0) as u32,
+        Channels::ALL
+            .iter()
+            .position(|c| *c == channels)
+            .unwrap_or(0) as u32,
     );
     // The sound format always starts on AAC (the one that plays everywhere);
     // a preset or a choice made in this window lasts only for that export.
@@ -1140,7 +1159,8 @@ fn use_range(d: &Rc<Dialog>, start: Ticks, end: Ticks) {
 fn apply_preset(d: &Rc<Dialog>, p: &opts::SitePreset) {
     d.applying.set(true);
     d.video_on.set_active(!p.sound_only);
-    d.audio_on.set_active(p.sound_only || d.audio_on.is_active());
+    d.audio_on
+        .set_active(p.sound_only || d.audio_on.is_active());
     if !p.sound_only {
         // Shape, then the size in that shape.
         let shape = p.aspect.unwrap_or(d.aspects[0].1);
@@ -1153,14 +1173,21 @@ fn apply_preset(d: &Rc<Dialog>, p: &opts::SitePreset) {
         refresh_resolutions(d);
         if p.short_side > 0 {
             let list = d.resolutions.borrow().clone();
-            if let Some(i) = list.iter().position(|r| r.width.min(r.height) == p.short_side) {
+            if let Some(i) = list
+                .iter()
+                .position(|r| r.width.min(r.height) == p.short_side)
+            {
                 select(d, &d.size, i as u32);
             }
         }
         // Frame rate: the project's own unless the preset names one.
         let rate = p
             .fps
-            .and_then(|f| d.rates.iter().position(|r| (r.as_f64() - f64::from(f)).abs() < 0.01))
+            .and_then(|f| {
+                d.rates
+                    .iter()
+                    .position(|r| (r.as_f64() - f64::from(f)).abs() < 0.01)
+            })
             .unwrap_or(0);
         select(d, &d.rate, rate as u32);
         // Video format, file format, bit rate.
@@ -1177,7 +1204,10 @@ fn apply_preset(d: &Rc<Dialog>, p: &opts::SitePreset) {
     select(
         d,
         &d.channels,
-        Channels::ALL.iter().position(|c| *c == p.channels).unwrap_or(0) as u32,
+        Channels::ALL
+            .iter()
+            .position(|c| *c == p.channels)
+            .unwrap_or(0) as u32,
     );
     refresh_audio_formats(d, Some(p.audio_format));
     if let Some(i) = AUDIO_BITRATES.iter().position(|k| *k == p.audio_kbps) {
@@ -1247,7 +1277,11 @@ fn codecs_for(d: &Dialog, family: Option<&str>) -> Vec<VideoCodec> {
     let list: Vec<VideoCodec> = VideoCodec::ALL
         .iter()
         .copied()
-        .filter(|c| found.iter().any(|e| e.codec == *c && family.map_or(true, |f| e.family() == f)))
+        .filter(|c| {
+            found
+                .iter()
+                .any(|e| e.codec == *c && family.map_or(true, |f| e.family() == f))
+        })
         .collect();
     if list.is_empty() {
         VideoCodec::ALL.to_vec()
@@ -1298,11 +1332,18 @@ fn refresh_bitrate_labels(d: &Dialog, keep: BitratePreset) {
             if *p == BitratePreset::Custom {
                 p.name().to_string()
             } else {
-                format!("{} - {}", p.name(), opts::mbps(opts::video_kbps(codec, w, h, fps, *p)))
+                format!(
+                    "{} - {}",
+                    p.name(),
+                    opts::mbps(opts::video_kbps(codec, w, h, fps, *p))
+                )
             }
         })
         .collect();
-    let at = BitratePreset::ALL.iter().position(|p| *p == keep).unwrap_or(1) as u32;
+    let at = BitratePreset::ALL
+        .iter()
+        .position(|p| *p == keep)
+        .unwrap_or(1) as u32;
     set_items(d, &d.bitrate, &labels, at);
 }
 
@@ -1317,7 +1358,12 @@ fn chosen_resolution_or(d: &Dialog) -> (u32, u32) {
 
 /// The file formats that can hold the chosen video format (and are installed).
 fn refresh_formats(d: &Dialog, prefer: Option<Container>) {
-    let keep = prefer.or_else(|| d.containers.borrow().get(d.format.selected() as usize).copied());
+    let keep = prefer.or_else(|| {
+        d.containers
+            .borrow()
+            .get(d.format.selected() as usize)
+            .copied()
+    });
     let list: Vec<Container> = chosen_codec(d)
         .containers()
         .iter()
@@ -1335,7 +1381,12 @@ fn refresh_formats(d: &Dialog, prefer: Option<Container>) {
 /// The sound formats on offer: the ones the video file's format can carry
 /// when a video is made, otherwise all that are installed.
 fn refresh_audio_formats(d: &Dialog, prefer: Option<AudioFormat>) {
-    let keep = prefer.or_else(|| d.audio_formats.borrow().get(d.audio_format.selected() as usize).copied());
+    let keep = prefer.or_else(|| {
+        d.audio_formats
+            .borrow()
+            .get(d.audio_format.selected() as usize)
+            .copied()
+    });
     let allowed: Vec<AudioFormat> = if d.video_on.is_active() {
         chosen_container(d).audio_formats().to_vec()
     } else {
@@ -1409,9 +1460,9 @@ fn refresh_enabled(d: &Dialog) {
     }
     d.custom_kbps
         .set_visible(chosen_preset(d) == BitratePreset::Custom);
-    d.encoder.set_sensitive(video && !d.encoders.borrow().is_empty());
-    d.audio_bitrate
-        .set_sensitive(audio_format_is_lossy(d));
+    d.encoder
+        .set_sensitive(video && !d.encoders.borrow().is_empty());
+    d.audio_bitrate.set_sensitive(audio_format_is_lossy(d));
     let anything = video || audio || !caption_formats(d).is_empty();
     let video_ready = !video || (d.ready.get() && !d.encoders.borrow().is_empty());
     for w in &d.range_row {
@@ -1429,7 +1480,9 @@ fn audio_format_is_lossy(d: &Dialog) -> bool {
 fn set_section_sensitive(section: &gtk::Box, header: &gtk::CheckButton, on: bool) {
     let mut child = section.first_child();
     while let Some(w) = child {
-        if w.downcast_ref::<gtk::CheckButton>().is_none_or(|c| c != header) {
+        if w.downcast_ref::<gtk::CheckButton>()
+            .is_none_or(|c| c != header)
+        {
             w.set_sensitive(on);
         }
         child = w.next_sibling();
@@ -1466,14 +1519,25 @@ fn planned_files(d: &Dialog) -> Vec<(PathBuf, String)> {
             format!(
                 "video, {w} x {h}, {}, with {} sound",
                 chosen_codec(d).name(),
-                chosen_audio_format(d).label().split(' ').next().unwrap_or("")
+                chosen_audio_format(d)
+                    .label()
+                    .split(' ')
+                    .next()
+                    .unwrap_or("")
             ),
         ));
     }
     if d.audio_on.is_active() {
         out.push((
             audio_path(d),
-            format!("sound only, {}", chosen_audio_format(d).label().split(' ').next().unwrap_or("")),
+            format!(
+                "sound only, {}",
+                chosen_audio_format(d)
+                    .label()
+                    .split(' ')
+                    .next()
+                    .unwrap_or("")
+            ),
         ));
     }
     for f in caption_formats(d) {
@@ -1503,13 +1567,16 @@ fn update_summary(d: &Dialog) {
     } else {
         let mut text = String::from("This will make:");
         for (path, what) in &files {
-            let name = path.file_name().map_or(String::new(), |n| n.to_string_lossy().to_string());
+            let name = path
+                .file_name()
+                .map_or(String::new(), |n| n.to_string_lossy().to_string());
             text.push_str(&format!("\n{name}\n   {what}"));
         }
         text
     });
     let video_kbps = d.video_on.is_active().then(|| chosen_video_kbps(d));
-    let audio_kbps = (d.video_on.is_active() || d.audio_on.is_active()).then(|| chosen_audio_kbps(d));
+    let audio_kbps =
+        (d.video_on.is_active() || d.audio_on.is_active()).then(|| chosen_audio_kbps(d));
     let mut bytes = 0.0;
     if let Some(v) = video_kbps {
         bytes += opts::estimated_bytes(export_seconds(d), Some(v), audio_kbps);
@@ -1540,7 +1607,12 @@ fn find_encoders(app: &Rc<App>, dialog: &Rc<Dialog>) {
     dialog.search.set(generation);
     dialog.ready.set(false);
     dialog.encoder.set_sensitive(false);
-    set_items(dialog, &dialog.encoder, &["Looking for encoders...".to_string()], 0);
+    set_items(
+        dialog,
+        &dialog.encoder,
+        &["Looking for encoders...".to_string()],
+        0,
+    );
     refresh_enabled(dialog);
     let found: Arc<Mutex<Option<Vec<Encoder>>>> = Arc::new(Mutex::new(None));
     {
@@ -1608,7 +1680,13 @@ fn find_encoders(app: &Rc<App>, dialog: &Rc<Dialog>) {
 fn chosen_encoders(d: &Dialog) -> Vec<Encoder> {
     let codec = chosen_codec(d);
     let family = chosen_family(d);
-    let all: Vec<Encoder> = d.encoders.borrow().iter().filter(|e| e.codec == codec).copied().collect();
+    let all: Vec<Encoder> = d
+        .encoders
+        .borrow()
+        .iter()
+        .filter(|e| e.codec == codec)
+        .copied()
+        .collect();
     let mut list: Vec<Encoder> = all
         .iter()
         .filter(|e| family.map_or(true, |f| e.family() == f))
@@ -1616,7 +1694,11 @@ fn chosen_encoders(d: &Dialog) -> Vec<Encoder> {
         .collect();
     if family.is_some() {
         // If the kind picked fails, fall back to software rather than give up.
-        let soft: Vec<Encoder> = all.iter().filter(|e| !e.hardware && !list.contains(e)).copied().collect();
+        let soft: Vec<Encoder> = all
+            .iter()
+            .filter(|e| !e.hardware && !list.contains(e))
+            .copied()
+            .collect();
         list.extend(soft);
     }
     list
@@ -1687,7 +1769,11 @@ fn make_job(d: &Dialog, gpu: bool) -> Job {
         audio_kbps: chosen_audio_kbps(d),
         channels: chosen_channels(d),
         container: chosen_container(d),
-        encoders: if video { chosen_encoders(d) } else { Vec::new() },
+        encoders: if video {
+            chosen_encoders(d)
+        } else {
+            Vec::new()
+        },
         output: video.then(|| output_path(d)),
         audio_output: d.audio_on.is_active().then(|| audio_path(d)),
         range_start,
@@ -1701,7 +1787,9 @@ fn make_job(d: &Dialog, gpu: bool) -> Job {
 fn start_preview(d: &Rc<Dialog>) {
     let job = make_job(d, false);
     let (range_start, range_end, _) = chosen_range(d);
-    let last = range_end.unwrap_or_else(|| d.timeline.duration()).min(d.timeline.duration());
+    let last = range_end
+        .unwrap_or_else(|| d.timeline.duration())
+        .min(d.timeline.duration());
     // The playhead's picture, or the first one of the part when the playhead is outside it.
     let at = if d.playhead >= range_start && d.playhead < last {
         d.playhead
@@ -1734,8 +1822,10 @@ fn start_preview(d: &Rc<Dialog>) {
                     w as usize * 4,
                 );
                 d.preview.set_paintable(Some(&texture));
-                d.preview_note
-                    .set_text(&format!("The picture at {} on the timeline", clock(at.as_seconds_f64())));
+                d.preview_note.set_text(&format!(
+                    "The picture at {} on the timeline",
+                    clock(at.as_seconds_f64())
+                ));
             }
             None => d.preview_note.set_text("No preview picture could be made."),
         }
@@ -1774,8 +1864,15 @@ fn connect(app: &Rc<App>, d: &Rc<Dialog>) {
             }
         });
         let dropdowns = [
-            &d.aspect, &d.size, &d.bitrate, &d.codec, &d.format, &d.rate,
-            &d.audio_format, &d.audio_bitrate, &d.channels,
+            &d.aspect,
+            &d.size,
+            &d.bitrate,
+            &d.codec,
+            &d.format,
+            &d.rate,
+            &d.audio_format,
+            &d.audio_bitrate,
+            &d.channels,
         ];
         for dd in dropdowns {
             let d2 = d.clone();
@@ -1815,10 +1912,18 @@ fn connect(app: &Rc<App>, d: &Rc<Dialog>) {
             if d.busy.get() {
                 return;
             }
-            if chosen_preset(&d) == BitratePreset::Custom && dd.selected() as usize == BitratePreset::ALL.len() - 1 {
+            if chosen_preset(&d) == BitratePreset::Custom
+                && dd.selected() as usize == BitratePreset::ALL.len() - 1
+            {
                 // Start the custom number from what Recommended comes to.
                 let (w, h) = chosen_resolution(&d);
-                let start = opts::video_kbps(chosen_codec(&d), w, h, chosen_rate(&d).as_f64(), BitratePreset::Recommended);
+                let start = opts::video_kbps(
+                    chosen_codec(&d),
+                    w,
+                    h,
+                    chosen_rate(&d).as_f64(),
+                    BitratePreset::Recommended,
+                );
                 if d.custom_kbps.value() < 501.0 {
                     d.custom_kbps.set_value(f64::from(start));
                 }
@@ -1828,7 +1933,9 @@ fn connect(app: &Rc<App>, d: &Rc<Dialog>) {
     }
     {
         let d = d.clone();
-        d.custom_kbps.clone().connect_value_changed(move |_| update_summary(&d));
+        d.custom_kbps
+            .clone()
+            .connect_value_changed(move |_| update_summary(&d));
     }
     {
         let d = d.clone();
@@ -1878,7 +1985,14 @@ fn connect(app: &Rc<App>, d: &Rc<Dialog>) {
             refresh_all(&d);
         });
     }
-    for check in [&d.video_on, &d.audio_on, &d.captions_on, &d.caption_srt, &d.caption_vtt, &d.caption_ass] {
+    for check in [
+        &d.video_on,
+        &d.audio_on,
+        &d.captions_on,
+        &d.caption_srt,
+        &d.caption_vtt,
+        &d.caption_ass,
+    ] {
         let d = d.clone();
         check.connect_toggled(move |_| {
             if d.busy.get() {
@@ -1998,7 +2112,10 @@ fn begin(app: &Rc<App>, d: &Rc<Dialog>) {
     let existing: Vec<String> = planned_files(d)
         .into_iter()
         .filter(|(p, _)| p.exists())
-        .map(|(p, _)| p.file_name().map_or(String::new(), |n| n.to_string_lossy().to_string()))
+        .map(|(p, _)| {
+            p.file_name()
+                .map_or(String::new(), |n| n.to_string_lossy().to_string())
+        })
         .collect();
     if existing.is_empty() {
         start(app, d);
@@ -2029,7 +2146,10 @@ fn begin(app: &Rc<App>, d: &Rc<Dialog>) {
 
 /// What the window says about hardware acceleration from the last check.
 fn card_note(settings: &cutroom_core::settings::Settings) -> String {
-    match settings.graphics_card_available.or(settings.graphics_card_ok) {
+    match settings
+        .graphics_card_available
+        .or(settings.graphics_card_ok)
+    {
         Some(true) => "Available".into(),
         Some(false) => "Not available".into(),
         None => "Checking ...".into(),
@@ -2074,7 +2194,11 @@ fn check_card(app: &Rc<App>, button: &gtk::Button, note: &gtk::Label) {
             st.settings.graphics_card_checked = env!("CARGO_PKG_VERSION").to_string();
             st.save_settings();
         }
-        note.set_text(if report.available { "Available" } else { "Not available" });
+        note.set_text(if report.available {
+            "Available"
+        } else {
+            "Not available"
+        });
         button.set_sensitive(true);
         glib::ControlFlow::Break
     });
@@ -2102,7 +2226,11 @@ fn ass_style_for(
     style.bold = spec.bold;
     style.italic = spec.italic;
     style.text = [spec.color[0], spec.color[1], spec.color[2]];
-    style.outline = [spec.outline_color[0], spec.outline_color[1], spec.outline_color[2]];
+    style.outline = [
+        spec.outline_color[0],
+        spec.outline_color[1],
+        spec.outline_color[2],
+    ];
     style.outline_px = if spec.outline_on {
         (f64::from(spec.outline) / 1000.0 * size) as f32
     } else {
@@ -2167,13 +2295,17 @@ fn start(app: &Rc<App>, d: &Rc<Dialog>) {
         st.settings.export_audio = d.audio_on.is_active();
         st.settings.export_codec = chosen_codec(d).id().to_string();
         st.settings.export_container = chosen_container(d).id().to_string();
-        st.settings.export_audio_kbps = AUDIO_BITRATES
-            [(d.audio_bitrate.selected() as usize).min(AUDIO_BITRATES.len() - 1)];
+        st.settings.export_audio_kbps =
+            AUDIO_BITRATES[(d.audio_bitrate.selected() as usize).min(AUDIO_BITRATES.len() - 1)];
         st.settings.export_channels = chosen_channels(d).id().to_string();
         st.settings.export_fill = d.fit.selected() == 1;
         // Remember the caption files wanted even while Captions is switched off.
         let mut wanted = Vec::new();
-        for (check, id) in [(&d.caption_srt, "srt"), (&d.caption_vtt, "vtt"), (&d.caption_ass, "ass")] {
+        for (check, id) in [
+            (&d.caption_srt, "srt"),
+            (&d.caption_vtt, "vtt"),
+            (&d.caption_ass, "ass"),
+        ] {
             if check.is_active() && d.captions_on.is_active() {
                 wanted.push(id.to_string());
             }
@@ -2296,11 +2428,7 @@ fn start(app: &Rc<App>, d: &Rc<Dialog>) {
             Some(result) => {
                 d.running.borrow_mut().take();
                 // Which of the planned files really exist now.
-                let made: Vec<PathBuf> = planned
-                    .iter()
-                    .filter(|p| p.is_file())
-                    .cloned()
-                    .collect();
+                let made: Vec<PathBuf> = planned.iter().filter(|p| p.is_file()).cloned().collect();
                 finish(&app, &d, result, &made, &caption_problems);
                 glib::ControlFlow::Break
             }
@@ -2337,13 +2465,19 @@ fn finish(
             d.bar.set_text(Some("Done"));
             d.window.set_title(Some("Export finished"));
             d.note.set_text(&match report.elapsed {
-                e if e > Duration::ZERO => format!("Done\nTook {} (time elapsed)", elapsed_words(e.as_secs_f64())),
+                e if e > Duration::ZERO => format!(
+                    "Done\nTook {} (time elapsed)",
+                    elapsed_words(e.as_secs_f64())
+                ),
                 _ => "Done".to_string(),
             });
             log_line(d, "Saved:");
             for path in files.iter().filter(|p| p.is_file()) {
                 let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-                log_line(d, &format!("  {} ({})", path.display(), megabytes(size as f64)));
+                log_line(
+                    d,
+                    &format!("  {} ({})", path.display(), megabytes(size as f64)),
+                );
             }
             if report.frames > 0 {
                 log_line(d, &format!("{} frames, {}.", report.frames, report.encoder));
@@ -2351,7 +2485,10 @@ fn finish(
             if report.elapsed > Duration::ZERO {
                 log_line(
                     d,
-                    &format!("Took {} (time elapsed).", elapsed_words(report.elapsed.as_secs_f64())),
+                    &format!(
+                        "Took {} (time elapsed).",
+                        elapsed_words(report.elapsed.as_secs_f64())
+                    ),
                 );
             }
             for warning in report.warnings.iter().chain(caption_problems.iter()) {
@@ -2464,8 +2601,15 @@ mod tests {
         assert_eq!(style.text, [250, 240, 20]);
         // The caption's middle is 30% below the centre: 1536 px down; its
         // bottom edge about 46 px lower; the rest of the picture is the margin.
-        assert!((330..350).contains(&style.margin_bottom), "{}", style.margin_bottom);
+        assert!(
+            (330..350).contains(&style.margin_bottom),
+            "{}",
+            style.margin_bottom
+        );
         // No captions yet: a plain default look.
-        assert_eq!(ass_style_for(&None, 1080), cutroom_captions::srt::AssStyle::default());
+        assert_eq!(
+            ass_style_for(&None, 1080),
+            cutroom_captions::srt::AssStyle::default()
+        );
     }
 }

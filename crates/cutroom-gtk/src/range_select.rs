@@ -76,10 +76,19 @@ pub fn enter(app: &Rc<App>) {
         let spans: Vec<(Ticks, Ticks)> = session
             .selection()
             .into_iter()
-            .filter_map(|id| session.doc.timeline.find_clip(id).map(|(_, c)| (c.start, c.end())))
+            .filter_map(|id| {
+                session
+                    .doc
+                    .timeline
+                    .find_clip(id)
+                    .map(|(_, c)| (c.start, c.end()))
+            })
             .collect();
         let ten = Ticks(10 * TICKS_PER_SECOND);
-        match (spans.iter().map(|s| s.0).min(), spans.iter().map(|s| s.1).max()) {
+        match (
+            spans.iter().map(|s| s.0).min(),
+            spans.iter().map(|s| s.1).max(),
+        ) {
             (Some(a), Some(b)) if b > a => (a, b),
             _ => {
                 let a = session.playhead.min(duration);
@@ -95,7 +104,8 @@ pub fn enter(app: &Rc<App>) {
     {
         let mut st = app.state.borrow_mut();
         // Bring the part into view if it is off screen.
-        let visible = ((st.timeline_width - f64::from(HEADER_W)) / st.view.pixels_per_second).max(1.0);
+        let visible =
+            ((st.timeline_width - f64::from(HEADER_W)) / st.view.pixels_per_second).max(1.0);
         let (a, b) = (range.0.as_seconds_f64(), range.1.as_seconds_f64());
         if a < st.view.scroll_seconds || a > st.view.scroll_seconds + visible * 0.9 {
             st.view.scroll_seconds = (a - visible * 0.1).max(0.0);
@@ -282,13 +292,29 @@ fn set(cr: &cairo::Context, color: Rgb, alpha: f64) {
 fn pill(cr: &cairo::Context, x: f64, y: f64, w: f64, h: f64) {
     let r = h / 2.0;
     cr.new_sub_path();
-    cr.arc(x + w - r, y + r, r, -std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
-    cr.arc(x + r, y + r, r, std::f64::consts::FRAC_PI_2, 3.0 * std::f64::consts::FRAC_PI_2);
+    cr.arc(
+        x + w - r,
+        y + r,
+        r,
+        -std::f64::consts::FRAC_PI_2,
+        std::f64::consts::FRAC_PI_2,
+    );
+    cr.arc(
+        x + r,
+        y + r,
+        r,
+        std::f64::consts::FRAC_PI_2,
+        3.0 * std::f64::consts::FRAC_PI_2,
+    );
     cr.close_path();
 }
 
 fn centered(cr: &cairo::Context, s: &str, x: f64, y: f64, w: f64, h: f64, size: f64, color: Rgb) {
-    cr.select_font_face(crate::fonts::FAMILY, cairo::FontSlant::Normal, cairo::FontWeight::Bold);
+    cr.select_font_face(
+        crate::fonts::FAMILY,
+        cairo::FontSlant::Normal,
+        cairo::FontWeight::Bold,
+    );
     cr.set_font_size(size);
     let e = cr.text_extents(s).ok();
     let tw = e.map_or(0.0, |e| e.width());
@@ -353,20 +379,60 @@ pub fn paint(app: &App, cr: &cairo::Context, w: f64, h: f64, off: f64) {
     }
     // The buttons, and the length of the part.
     let [go, no] = buttons(view, &r, w, off);
-    let (gx, gy, gw) = (f64::from(go.left()), f64::from(go.top()), f64::from(go.width()));
+    let (gx, gy, gw) = (
+        f64::from(go.left()),
+        f64::from(go.top()),
+        f64::from(go.width()),
+    );
     pill(cr, gx, gy, gw, BUTTON_H);
     set(cr, theme::ACCENT, 1.0);
     let _ = cr.fill();
-    centered(cr, "Export range", gx, gy, gw, BUTTON_H, 12.0, (0.02, 0.1, 0.1));
-    let (nx, ny, nw) = (f64::from(no.left()), f64::from(no.top()), f64::from(no.width()));
+    centered(
+        cr,
+        "Export range",
+        gx,
+        gy,
+        gw,
+        BUTTON_H,
+        12.0,
+        (0.02, 0.1, 0.1),
+    );
+    let (nx, ny, nw) = (
+        f64::from(no.left()),
+        f64::from(no.top()),
+        f64::from(no.width()),
+    );
     pill(cr, nx, ny, nw, BUTTON_H);
     set(cr, (0.13, 0.14, 0.17), 0.96);
     let _ = cr.fill_preserve();
     set(cr, (1.0, 1.0, 1.0), 0.55);
     cr.set_line_width(1.0);
     let _ = cr.stroke();
-    centered(cr, "Cancel (Esc)", nx, ny, nw, BUTTON_H, 12.0, (1.0, 1.0, 1.0));
-    let label = format!("{} - {}  ({})", clock(r.start), clock(r.end), clock(r.end - r.start));
-    centered(cr, &label, gx, gy + BUTTON_H + 4.0, gx + gw + 8.0 + nw - gx, 18.0, 11.0, (1.0, 1.0, 1.0));
+    centered(
+        cr,
+        "Cancel (Esc)",
+        nx,
+        ny,
+        nw,
+        BUTTON_H,
+        12.0,
+        (1.0, 1.0, 1.0),
+    );
+    let label = format!(
+        "{} - {}  ({})",
+        clock(r.start),
+        clock(r.end),
+        clock(r.end - r.start)
+    );
+    centered(
+        cr,
+        &label,
+        gx,
+        gy + BUTTON_H + 4.0,
+        gx + gw + 8.0 + nw - gx,
+        18.0,
+        11.0,
+        (1.0, 1.0, 1.0),
+    );
     cr.restore().ok();
 }

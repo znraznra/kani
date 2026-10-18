@@ -799,17 +799,28 @@ mod tests {
             return;
         }
         let tmp = tempdir().unwrap();
-        let (video, out) = (tmp.path().join("v.webm"), tmp.path().join("out").join("v.mkv"));
+        let (video, out) = (
+            tmp.path().join("v.webm"),
+            tmp.path().join("out").join("v.mkv"),
+        );
         make_video(&video, 2);
         remux(&video, &out, &|_| {}).unwrap();
         assert!(out.is_file());
         assert!(!out.with_extension("part").exists());
         let (a, b) = (probe_file(&video).unwrap(), probe_file(&out).unwrap());
         assert!(b.probe.has_video && b.probe.has_audio);
-        assert_eq!((a.probe.width, a.probe.height), (b.probe.width, b.probe.height));
+        assert_eq!(
+            (a.probe.width, a.probe.height),
+            (b.probe.width, b.probe.height)
+        );
         let seconds = b.duration.unwrap().as_seconds_f64();
         assert!((seconds - 2.0).abs() < 0.3, "length {seconds}");
-        assert!(remux(&tmp.path().join("nope.ts"), &tmp.path().join("n.mkv"), &|_| {}).is_err());
+        assert!(remux(
+            &tmp.path().join("nope.ts"),
+            &tmp.path().join("n.mkv"),
+            &|_| {}
+        )
+        .is_err());
     }
 
     #[test]

@@ -80,8 +80,7 @@ pub struct Planned {
     pub needs: &'static str,
 }
 
-pub const PLANNED: &[Planned] = &[
-];
+pub const PLANNED: &[Planned] = &[];
 
 const fn b(
     key: &'static str,
@@ -341,9 +340,33 @@ pub const BINDINGS: &[Binding] = &[
     ),
     b("s", true, false, Save, "Save", Convention, true),
     b("e", true, false, Export, "Export the video", CapCut, false),
-    b("comma", true, false, ShowSettings, "Settings", Convention, true),
-    b("F11", false, false, PreviewFullscreen, "Full screen preview", Convention, false),
-    b("a", true, false, SelectAll, "Select every clip on the timeline", Convention, false),
+    b(
+        "comma",
+        true,
+        false,
+        ShowSettings,
+        "Settings",
+        Convention,
+        true,
+    ),
+    b(
+        "F11",
+        false,
+        false,
+        PreviewFullscreen,
+        "Full screen preview",
+        Convention,
+        false,
+    ),
+    b(
+        "a",
+        true,
+        false,
+        SelectAll,
+        "Select every clip on the timeline",
+        Convention,
+        false,
+    ),
     b(
         "x",
         true,
@@ -510,7 +533,11 @@ mod tests {
     #[test]
     fn ctrl_a_selects_everything_but_not_while_typing() {
         assert_eq!(lookup("a", true, false, false), Some(SelectAll));
-        assert_eq!(lookup("a", true, false, true), None, "Ctrl+A in a text box selects the text");
+        assert_eq!(
+            lookup("a", true, false, true),
+            None,
+            "Ctrl+A in a text box selects the text"
+        );
         assert!(PLANNED.iter().all(|p| !p.keys.is_empty()));
     }
 
@@ -519,7 +546,11 @@ mod tests {
         assert_eq!(lookup("e", true, false, false), Some(Export));
         assert_eq!(lookup("e", false, false, false), None);
         assert_eq!(lookup("x", true, true, false), Some(ExportRange));
-        assert_eq!(lookup("x", true, false, false), Some(Cut), "Ctrl+X stays Cut");
+        assert_eq!(
+            lookup("x", true, false, false),
+            Some(Cut),
+            "Ctrl+X stays Cut"
+        );
     }
 
     #[test]

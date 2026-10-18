@@ -306,7 +306,11 @@ mod tests {
         assert_eq!(s.autosave_minutes, 10, "the interval is kept");
         s.autosave_enabled = true;
         s.autosave_minutes = 0;
-        assert_eq!(s.autosave_every(), 0, "an old file saying 0 still means off");
+        assert_eq!(
+            s.autosave_every(),
+            0,
+            "an old file saying 0 still means off"
+        );
     }
 
     #[test]
@@ -392,7 +396,10 @@ mod tests {
         s.graphics_card_checked = "0.5.15".into();
         assert!(s.use_graphics_card());
         assert!(!s.graphics_card_needs_check("0.5.15"));
-        assert!(s.graphics_card_needs_check("0.5.16"), "checked again after an update");
+        assert!(
+            s.graphics_card_needs_check("0.5.16"),
+            "checked again after an update"
+        );
         s.graphics_card_ok = Some(false);
         assert!(!s.use_graphics_card());
         s.export_graphics_card = "on".into();

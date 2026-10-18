@@ -107,6 +107,14 @@ Info tab > "Project settings" opens a window with two tabs, staged Save/Cancel:
 
 Color space is stored in the project only; colour-managed rendering is Phase 9. Format and name changes are not undoable. The media panel's "Import options" fold-out was removed as redundant.
 
+## 0.5.31 changes
+
+- Playback > **Check hardware decoding** > Test on a video...: decodes a real file with and without the graphics chip and reports the
+  decoders used, speed and processor time (also in the media right-click menu).
+- Changing the **Proxy files** or **Render cache** folder in Project settings moves this project's existing proxies and waveform
+  caches there (nothing is left behind or made twice; a file already in the new folder is kept and the old copy removed).
+- Preview compositing on the graphics chip no longer makes the window wait for each picture.
+
 ## 0.5.30 changes
 
 - The **Proxy files** and **Render cache** folders moved from the Info tab into **Project settings > Performance**

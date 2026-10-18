@@ -112,7 +112,9 @@ impl Mapper {
         let edge = |from: P, to: P, out: &mut Vec<P>| {
             for i in 0..n {
                 let t = i as f32 / n as f32;
-                if let Some(p) = self.point(from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t) {
+                if let Some(p) =
+                    self.point(from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
+                {
                     out.push(p);
                 }
             }
@@ -135,7 +137,10 @@ mod tests {
         let tl = m.point(0.0, 0.0).unwrap();
         let br = m.point(1.0, 1.0).unwrap();
         assert!((tl.0 - 50.0).abs() < 1e-3 && tl.1.abs() < 1e-3, "{tl:?}");
-        assert!((br.0 - 150.0).abs() < 1e-3 && (br.1 - 100.0).abs() < 1e-3, "{br:?}");
+        assert!(
+            (br.0 - 150.0).abs() < 1e-3 && (br.1 - 100.0).abs() < 1e-3,
+            "{br:?}"
+        );
     }
 
     #[test]
@@ -156,7 +161,10 @@ mod tests {
         for (u, v) in [(0.1, 0.2), (0.9, 0.3), (0.5, 0.5), (0.2, 0.95)] {
             let at = m.plain(u, v).unwrap();
             let back = m.unplain(at.0, at.1).unwrap();
-            assert!((back.0 - u).abs() < 1e-3 && (back.1 - v).abs() < 1e-3, "{u},{v} -> {back:?}");
+            assert!(
+                (back.0 - u).abs() < 1e-3 && (back.1 - v).abs() < 1e-3,
+                "{u},{v} -> {back:?}"
+            );
         }
     }
 

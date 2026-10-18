@@ -763,7 +763,15 @@ fn paint_replace_ghost(
         Ok(()) => "Replace".to_string(),
         Err(why) => why.clone(),
     };
-    text(cr, &label, x, top + f64::from(ROW_H) / 2.0 + 4.0, 12.0, (1.0, 1.0, 1.0), true);
+    text(
+        cr,
+        &label,
+        x,
+        top + f64::from(ROW_H) / 2.0 + 4.0,
+        12.0,
+        (1.0, 1.0, 1.0),
+        true,
+    );
 }
 
 fn paint_ghost(
@@ -1587,32 +1595,34 @@ fn drop_library_media(app: &Rc<App>, media: MediaId, canvas: Rect, pos: Pos2) {
             }
             replaced = true;
         } else {
-        match target {
-            Some(target) if target.valid => match target.new_track {
-                Some(at) => {
-                    session.add_media_on_new_track(
-                        media,
-                        target.new_kind,
-                        at == NewTrackAt::Top,
-                        target.start,
-                    );
-                }
-                None => {
-                    session.add_media_at(media, target.track, target.start);
-                }
-            },
-            Some(target) if target.wrong_kind => {
-                session.status = Some(match session.media_kind_of(media).track_kind() {
-                    TrackKind::Audio => "Audio goes on an audio track".into(),
-                    TrackKind::Video if session.media_kind_of(media) == MediaKind::Video => {
-                        "This video has no sound, so it can't go on an audio track".into()
+            match target {
+                Some(target) if target.valid => match target.new_track {
+                    Some(at) => {
+                        session.add_media_on_new_track(
+                            media,
+                            target.new_kind,
+                            at == NewTrackAt::Top,
+                            target.start,
+                        );
                     }
-                    TrackKind::Video => "Pictures go on a video track".into(),
-                });
+                    None => {
+                        session.add_media_at(media, target.track, target.start);
+                    }
+                },
+                Some(target) if target.wrong_kind => {
+                    session.status = Some(match session.media_kind_of(media).track_kind() {
+                        TrackKind::Audio => "Audio goes on an audio track".into(),
+                        TrackKind::Video if session.media_kind_of(media) == MediaKind::Video => {
+                            "This video has no sound, so it can't go on an audio track".into()
+                        }
+                        TrackKind::Video => "Pictures go on a video track".into(),
+                    });
+                }
+                Some(_) => {
+                    session.status = Some("Clips can't overlap, or the track is locked".into())
+                }
+                None => session.status = Some("Drop media onto a track".into()),
             }
-            Some(_) => session.status = Some("Clips can't overlap, or the track is locked".into()),
-            None => session.status = Some("Drop media onto a track".into()),
-        }
         }
         st.dragging_media = None;
     }

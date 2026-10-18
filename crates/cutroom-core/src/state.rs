@@ -235,6 +235,38 @@ pub enum SessionError {
     Edit(#[from] EditError),
 }
 
+/// What moving a project's files to a new storage folder did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct StorageMove {
+    /// Files carried to the new folder.
+    pub moved: usize,
+    /// Files the new folder already had (the old copy was removed).
+    pub already_there: usize,
+    /// Files that could not be moved (they stay where they were).
+    pub failed: usize,
+}
+
+/// Move one file. `Ok(true)` moved, `Ok(false)` the destination already had
+/// one (so the source is removed rather than duplicated).
+fn move_file(from: &Path, to: &Path) -> std::io::Result<bool> {
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if to.is_file() {
+        std::fs::remove_file(from)?;
+        return Ok(false);
+    }
+    if std::fs::rename(from, to).is_err() {
+        // Another drive: copy, then remove the original.
+        std::fs::copy(from, to)?;
+        if let Err(e) = std::fs::remove_file(from) {
+            let _ = std::fs::remove_file(to);
+            return Err(e);
+        }
+    }
+    Ok(true)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageKind {
     Proxy,
@@ -511,7 +543,9 @@ impl Session {
 
     /// Add a guide (kept in the project). Returns its index.
     pub fn add_guide(&mut self, vertical: bool, pos: i32) -> usize {
-        self.doc.guides.push(cutroom_project::Guide { vertical, pos });
+        self.doc
+            .guides
+            .push(cutroom_project::Guide { vertical, pos });
         self.mark_dirty();
         self.doc.guides.len() - 1
     }
@@ -548,13 +582,36 @@ impl Session {
         Ok(copied)
     }
 
-    pub fn set_storage_dir(&mut self, which: StorageKind, dir: Option<&Path>) {
+    /// Point the proxies or the render cache at another folder, and take this
+    /// project's existing files along so nothing is left behind or made twice.
+    pub fn set_storage_dir(&mut self, which: StorageKind, dir: Option<&Path>) -> StorageMove {
+        let ids: Vec<MediaId> = self.doc.media.iter().map(|m| m.id).collect();
+        let path_of = |s: &Session, id: MediaId| match which {
+            StorageKind::Proxy => s.proxy_path(id),
+            StorageKind::Cache => s.waveform_cache_path(id),
+        };
+        let before: Vec<Option<PathBuf>> = ids.iter().map(|&id| path_of(self, id)).collect();
         let value = dir.map(|d| d.to_string_lossy().into_owned());
         match which {
             StorageKind::Proxy => self.doc.storage.proxy_dir = value,
             StorageKind::Cache => self.doc.storage.cache_dir = value,
         }
         self.mark_dirty();
+        let mut report = StorageMove::default();
+        for (id, old) in ids.iter().zip(before) {
+            let (Some(old), Some(new)) = (old, path_of(self, *id)) else {
+                continue;
+            };
+            if old == new || !old.is_file() {
+                continue;
+            }
+            match move_file(&old, &new) {
+                Ok(true) => report.moved += 1,
+                Ok(false) => report.already_there += 1,
+                Err(_) => report.failed += 1,
+            }
+        }
+        report
     }
 
     // ----- editing ---------------------------------------------------------
@@ -1608,9 +1665,8 @@ impl Session {
     ) -> Option<ClipId> {
         let free_track = {
             let tl = &self.doc.timeline;
-            let usable = |t: &&cutroom_timeline::Track| {
-                t.kind == kind && !t.locked && !is_caption_track(t)
-            };
+            let usable =
+                |t: &&cutroom_timeline::Track| t.kind == kind && !t.locked && !is_caption_track(t);
             prefer
                 .and_then(|id| tl.track(id))
                 .filter(usable)
@@ -2424,7 +2480,10 @@ impl Session {
                 id
             }
             None => {
-                let track = self.doc.timeline.new_track(TrackKind::Video, CAPTIONS_TRACK);
+                let track = self
+                    .doc
+                    .timeline
+                    .new_track(TrackKind::Video, CAPTIONS_TRACK);
                 let id = track.id;
                 let index = new_track_index(&self.doc.timeline, TrackKind::Video, true);
                 steps.push(Edit::InsertTrack { index, track });
@@ -2507,7 +2566,9 @@ impl Session {
 
     /// The look of the first caption (its text style and where it sits), for
     /// caption files that carry a style.
-    pub fn caption_look(&self) -> Option<(cutroom_timeline::TextSpec, cutroom_timeline::Transform)> {
+    pub fn caption_look(
+        &self,
+    ) -> Option<(cutroom_timeline::TextSpec, cutroom_timeline::Transform)> {
         let mut clips: Vec<_> = self
             .doc
             .timeline
@@ -2708,7 +2769,16 @@ impl Session {
         let duration = self.media_duration(media);
         if self.doc.timeline.track(track).is_some_and(is_caption_track) {
             // Only captions live there: the file goes to another track instead.
-            return self.place_spec_with(media, Ticks::ZERO, duration, kind, None, start, Vec::new(), None);
+            return self.place_spec_with(
+                media,
+                Ticks::ZERO,
+                duration,
+                kind,
+                None,
+                start,
+                Vec::new(),
+                None,
+            );
         }
         let clip = self
             .doc
@@ -3256,6 +3326,35 @@ mod tests {
             session.folder.proxy_dir(&session.doc),
             session.folder.root().join("proxies")
         );
+    }
+
+    #[test]
+    fn changing_the_proxy_folder_takes_the_existing_proxies_along() {
+        let (tmp, mut session) = new_session();
+        let id = import_one(&tmp, &mut session, "a.mp4");
+        let old = session.proxy_path(id).unwrap();
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, b"proxy").unwrap();
+        let scratch = tmp.path().join("scratch");
+        let report = session.set_storage_dir(StorageKind::Proxy, Some(&scratch));
+        assert_eq!(report.moved, 1);
+        assert!(!old.exists());
+        let new = session.proxy_path(id).unwrap();
+        assert!(new.starts_with(&scratch));
+        assert_eq!(std::fs::read(&new).unwrap(), b"proxy");
+        // The same folder again: nothing to do.
+        let report = session.set_storage_dir(StorageKind::Proxy, Some(&scratch));
+        assert_eq!(report, StorageMove::default());
+        // A proxy already waiting in the new place is not duplicated.
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, b"older").unwrap();
+        let report = session.set_storage_dir(StorageKind::Proxy, None);
+        assert_eq!(
+            (report.moved, report.already_there, report.failed),
+            (0, 1, 0)
+        );
+        assert_eq!(std::fs::read(&old).unwrap(), b"older");
+        assert!(!new.exists(), "the extra copy is gone");
     }
 
     #[test]
@@ -4088,7 +4187,10 @@ mod tests {
         let placed = session
             .add_media_at(media, captions, Ticks::from_seconds_f64(9.0))
             .unwrap();
-        assert_ne!(session.doc.timeline.find_clip(placed).unwrap().0.id, captions);
+        assert_ne!(
+            session.doc.timeline.find_clip(placed).unwrap().0.id,
+            captions
+        );
         // A text clip cannot be moved there.
         let (_, clip) = session.doc.timeline.find_clip(text).unwrap();
         assert!(!session.exec(Edit::SetClip {
@@ -4130,7 +4232,10 @@ mod tests {
         assert!(session.replace_clip_media(clip, long, Ticks::from_seconds_f64(30.0)));
         let after = session.doc.timeline.find_clip(clip).unwrap().1.clone();
         assert_eq!(after.media, long);
-        assert_eq!((after.start, after.duration), (before.start, before.duration));
+        assert_eq!(
+            (after.start, after.duration),
+            (before.start, before.duration)
+        );
         assert_eq!(
             after.source_in,
             Ticks::from_seconds_f64(14.0),
@@ -4788,9 +4893,22 @@ mod tests {
         t.warp.mesh[10] = 200;
         assert!(session.edit_transform(id, t));
         let clip = session.doc.timeline.find_clip(id).unwrap().1;
-        assert!(clip.transform.warp.is_identity(), "the clip's own value is kept");
-        assert_eq!(clip.transform_at(start + Ticks::from_seconds_f64(1.0)).warp.pin[2], -400);
-        assert_eq!(clip.transform_at(start + Ticks::from_seconds_f64(0.5)).warp.pin[2], -200);
+        assert!(
+            clip.transform.warp.is_identity(),
+            "the clip's own value is kept"
+        );
+        assert_eq!(
+            clip.transform_at(start + Ticks::from_seconds_f64(1.0))
+                .warp
+                .pin[2],
+            -400
+        );
+        assert_eq!(
+            clip.transform_at(start + Ticks::from_seconds_f64(0.5))
+                .warp
+                .pin[2],
+            -200
+        );
         assert_eq!(clip.transform_at(start).warp.mesh[10], 0);
         // Reset the bend on its own: skew stays.
         let mut skew = session.transform_at_playhead(id).unwrap();
@@ -4799,11 +4917,23 @@ mod tests {
         assert!(session.reset_props(id, &Prop::WARP));
         let clip = session.doc.timeline.find_clip(id).unwrap().1;
         assert!(clip.transform.warp.is_identity());
-        assert!(!clip.keyframes.iter().any(|k| matches!(k.prop, Prop::Warp(_))));
-        assert_eq!(clip.transform_at(start).skew_x, 120, "skew untouched by a bend reset");
+        assert!(!clip
+            .keyframes
+            .iter()
+            .any(|k| matches!(k.prop, Prop::Warp(_))));
+        assert_eq!(
+            clip.transform_at(start).skew_x,
+            120,
+            "skew untouched by a bend reset"
+        );
         session.undo();
         let clip = session.doc.timeline.find_clip(id).unwrap().1;
-        assert!(clip.keyframes.iter().any(|k| matches!(k.prop, Prop::Warp(_))), "one undo step");
+        assert!(
+            clip.keyframes
+                .iter()
+                .any(|k| matches!(k.prop, Prop::Warp(_))),
+            "one undo step"
+        );
     }
 
     #[test]

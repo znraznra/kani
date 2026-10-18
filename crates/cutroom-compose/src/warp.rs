@@ -70,10 +70,18 @@ impl Bend {
             let cj = ((b * CELLS as f32).floor().max(0.0) as usize).min(CELLS - 1);
             let (s, t) = (a * CELLS as f32 - ci as f32, b * CELLS as f32 - cj as f32);
             let at = |i: usize, j: usize| mesh[j * SIDE + i];
-            let (p00, p10, p01, p11) = (at(ci, cj), at(ci + 1, cj), at(ci, cj + 1), at(ci + 1, cj + 1));
+            let (p00, p10, p01, p11) = (
+                at(ci, cj),
+                at(ci + 1, cj),
+                at(ci, cj + 1),
+                at(ci + 1, cj + 1),
+            );
             let top = (p00.0 + (p10.0 - p00.0) * s, p00.1 + (p10.1 - p00.1) * s);
             let bottom = (p01.0 + (p11.0 - p01.0) * s, p01.1 + (p11.1 - p01.1) * s);
-            p = (top.0 + (bottom.0 - top.0) * t, top.1 + (bottom.1 - top.1) * t);
+            p = (
+                top.0 + (bottom.0 - top.0) * t,
+                top.1 + (bottom.1 - top.1) * t,
+            );
         }
         if let Some((m, _)) = &self.pin {
             p = apply(m, p)?;
@@ -206,7 +214,12 @@ fn mesh_back(mesh: &[P; SIDE * SIDE], p: P) -> Option<P> {
     for cj in 0..CELLS {
         for ci in 0..CELLS {
             let at = |i: usize, j: usize| mesh[j * SIDE + i];
-            let (a, b, c, d) = (at(ci, cj), at(ci + 1, cj), at(ci + 1, cj + 1), at(ci, cj + 1));
+            let (a, b, c, d) = (
+                at(ci, cj),
+                at(ci + 1, cj),
+                at(ci + 1, cj + 1),
+                at(ci, cj + 1),
+            );
             // Quick no: outside the patch's bounding box.
             let (lo_x, hi_x) = (
                 a.0.min(b.0).min(c.0).min(d.0),
@@ -376,8 +389,12 @@ pub fn bend_frame(frame: &Frame, pin: &[f32; 8], mesh: &[f32; SIDE * SIDE * 2]) 
                             }
                         } else {
                             let top = (p00.0 + (p10.0 - p00.0) * fx, p00.1 + (p10.1 - p00.1) * fx);
-                            let bottom = (p01.0 + (p11.0 - p01.0) * fx, p01.1 + (p11.1 - p01.1) * fx);
-                            (top.0 + (bottom.0 - top.0) * fy, top.1 + (bottom.1 - top.1) * fy)
+                            let bottom =
+                                (p01.0 + (p11.0 - p01.0) * fx, p01.1 + (p11.1 - p01.1) * fx);
+                            (
+                                top.0 + (bottom.0 - top.0) * fy,
+                                top.1 + (bottom.1 - top.1) * fy,
+                            )
                         }
                     }
                     _ => match source(x_i, y_i) {
@@ -434,7 +451,10 @@ mod tests {
         let f = b.forward(1.0, 0.0).unwrap();
         assert!((f.0 - 0.8).abs() < 1e-4 && f.1.abs() < 1e-4, "{f:?}");
         let back = b.unpin(f.0, f.1).unwrap();
-        assert!((back.0 - 1.0).abs() < 1e-3 && back.1.abs() < 1e-3, "{back:?}");
+        assert!(
+            (back.0 - 1.0).abs() < 1e-3 && back.1.abs() < 1e-3,
+            "{back:?}"
+        );
     }
 
     #[test]
@@ -486,15 +506,28 @@ mod tests {
         let mut rgba = Vec::new();
         for _y in 0..40 {
             for x in 0..40 {
-                rgba.extend_from_slice(if x < 20 { &[255, 0, 0, 255] } else { &[0, 0, 255, 255] });
+                rgba.extend_from_slice(if x < 20 {
+                    &[255, 0, 0, 255]
+                } else {
+                    &[0, 0, 255, 255]
+                });
             }
         }
-        let frame = Frame { width: 40, height: 40, rgba };
+        let frame = Frame {
+            width: 40,
+            height: 40,
+            rgba,
+        };
         let pin = [0.0, 0.0, -0.3, 0.0, 0.0, 0.0, 0.0, 0.0];
         let out = bend_frame(&frame, &pin, &[0.0; 32]).unwrap();
         let at = |x: u32, y: u32| {
             let o = ((y * out.width + x) * 4) as usize;
-            [out.rgba[o], out.rgba[o + 1], out.rgba[o + 2], out.rgba[o + 3]]
+            [
+                out.rgba[o],
+                out.rgba[o + 1],
+                out.rgba[o + 2],
+                out.rgba[o + 3],
+            ]
         };
         let (cx, cy) = (out.width / 2, out.height / 2);
         // Left of the middle is still red, right still blue, both solid.
@@ -532,7 +565,11 @@ mod tests {
             mesh[10] = 0.15;
             let mut pin = [0.0f32; 8];
             pin[2] = -0.2;
-            for (name, p, m) in [("mesh", [0.0f32; 8], mesh), ("pin", pin, [0.0f32; 32]), ("both", pin, mesh)] {
+            for (name, p, m) in [
+                ("mesh", [0.0f32; 8], mesh),
+                ("pin", pin, [0.0f32; 32]),
+                ("both", pin, mesh),
+            ] {
                 let t = std::time::Instant::now();
                 for _ in 0..5 {
                     let _ = bend_frame(&f, &p, &m);

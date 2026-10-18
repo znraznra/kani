@@ -62,7 +62,7 @@ pub struct EditorUi {
     categories: Vec<gtk::ToggleButton>,
     library_stack: gtk::Stack,
     planned_title: gtk::Label,
-    text_list: gtk::Box,
+    pub(crate) text_list: gtk::Box,
     pub captions: Rc<crate::captions_ui::Panel>,
     planned_text: gtk::Label,
     media_views: gtk::Stack,
@@ -624,10 +624,7 @@ pub fn build(app: &Rc<App>) -> EditorUi {
         });
     }
     toolbar.append(&snap);
-    let scrub = icons::toggle(
-        icons::SCRUB_SOUND,
-        "Play sound while dragging the playhead",
-    );
+    let scrub = icons::toggle(icons::SCRUB_SOUND, "Play sound while dragging the playhead");
     scrub.set_active(app.state.borrow().settings.scrub_audio);
     {
         let app = app.clone();
@@ -1074,7 +1071,7 @@ pub fn on_tick(app: &Rc<App>) {
 }
 
 /// The Text category: one button per built-in style.
-fn fill_text_styles(app: &Rc<App>) {
+pub(crate) fn fill_text_styles(app: &Rc<App>) {
     let ui = &app.ui().editor;
     clear_box(&ui.text_list);
     let hint = gtk::Label::new(Some("Click a style to add text at the playhead."));
@@ -1108,6 +1105,7 @@ fn fill_text_styles(app: &Rc<App>) {
         });
         ui.text_list.append(&button);
     }
+    crate::text_ui::fill_saved_styles(app, &ui.text_list);
 }
 
 pub fn refresh_library(app: &Rc<App>) {
@@ -1140,7 +1138,14 @@ pub fn refresh_library(app: &Rc<App>) {
 
     let (mode, items): (
         ViewMode,
-        Vec<(MediaId, String, MediaKind, bool, Option<std::path::PathBuf>, bool)>,
+        Vec<(
+            MediaId,
+            String,
+            MediaKind,
+            bool,
+            Option<std::path::PathBuf>,
+            bool,
+        )>,
     ) = {
         let st = app.state.borrow();
         let Some(session) = st.session.as_ref() else {
@@ -1422,7 +1427,9 @@ fn media_card(
 fn proxy_badge() -> gtk::Label {
     let badge = gtk::Label::new(Some("Proxy"));
     badge.add_css_class("cc-proxy-badge");
-    badge.set_tooltip_text(Some("A proxy has been made for this file; the preview plays it"));
+    badge.set_tooltip_text(Some(
+        "A proxy has been made for this file; the preview plays it",
+    ));
     badge.set_widget_name("proxy-badge");
     badge
 }
