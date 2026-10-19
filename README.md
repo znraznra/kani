@@ -225,6 +225,8 @@ chosen one fails during the export, the next one is tried. Needs GStreamer's `x2
 3. Projects are folders the user chooses; media paths are relative and `/`-separated so projects move between OSes.
 4. Editing behaviour lives in `cutroom-core` and is tested without a window; the GTK crate is a thin layer.
 5. Anything slow (probing, thumbnails, autosave) runs off the UI thread.
+6. Code for one operating system is built only for that system (`#[cfg(windows)]`, `#[cfg(not(windows))]`,
+   `#[cfg(target_os = "linux")]`), never left in the other builds with its warnings silenced.
 
 ## Tools
 
