@@ -41,6 +41,8 @@ fn extract() -> Option<PathBuf> {
 }
 
 /// The fontconfig file that adds `dir` to whatever fonts the system already has.
+/// (Not needed on Windows, where the font is registered with the system instead.)
+#[cfg_attr(windows, allow(dead_code))]
 pub fn fontconfig_xml(dir: &str, base: Option<&str>) -> String {
     let base = base.unwrap_or("/etc/fonts/fonts.conf");
     format!(
