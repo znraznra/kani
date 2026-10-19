@@ -478,6 +478,12 @@ pub fn working_encoders(codec: VideoCodec) -> &'static [Encoder] {
             .into_iter()
             .filter(|e| {
                 let t = std::time::Instant::now();
+                crate::startup::step(&format!(
+                    "testing {} encoder {} ({})",
+                    codec.name(),
+                    e.label,
+                    e.element
+                ));
                 let ok = probe(*e);
                 eprintln!(
                     "kani: tested {} encoder {}: {} ({:.1} s)",

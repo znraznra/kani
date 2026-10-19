@@ -107,6 +107,10 @@ Info tab > "Project settings" opens a window with two tabs, staged Save/Cancel:
 
 Color space is stored in the project only; colour-managed rendering is Phase 9. Format and name changes are not undoable. The media panel's "Import options" fold-out was removed as redundant.
 
+## 0.5.36 changes
+
+- Advanced > **Start in safe mode**: no hardware decoding, no graphics-chip compositing, no automatic graphics-card check, window drawn by the processor. Also turns on by itself for one start after Kani did not close properly.
+
 ## 0.5.34 changes
 
 - Playback > **Sound output > Play a test tone**: plays a short tone through the output the preview uses.

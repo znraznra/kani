@@ -347,6 +347,17 @@ defaults. Everything else is listed and disabled until its phase. See [docs/SETT
 Windows is parked at a checkpoint (0.5.35): it builds, imports, previews and plays sound. The open items, by phase,
 are in [docs/WINDOWS_CHECKPOINT.md](docs/WINDOWS_CHECKPOINT.md).
 
+**A Kani that carries its own prerequisites (0.5.36):** after `cargo build --release -p cutroom-gtk`, run
+`powershell -ExecutionPolicy Bypass -File tools\windows\package.ps1`. It makes `dist\Kani` (bin\kani.exe with every DLL,
+all GStreamer plug-ins, image loaders, schemas and icons) and `dist\Kani-windows.zip`. `bin\kani.exe` recognises that
+layout and uses only those copies, so it runs the same from a shortcut or on a PC with nothing installed.
+
+**Safe mode and the start-up log (0.5.36):** each start writes its steps to `logs/startup.log` in the settings folder
+(Windows: `%APPDATA%\Kani\config\logs\startup.log`), flushed at once, so after a hard freeze the last line shows how far
+it got. If Kani did not close properly last time, it starts in safe mode: no hardware decoding, no graphics-chip
+compositing, no automatic graphics-card check, and GTK drawn by the processor (`GSK_RENDERER=cairo`). `KANI_SAFE=1`
+or Settings > Advanced > Start in safe mode does the same on purpose.
+
 ## Roadmap
 
 | Phase | Deliverable |

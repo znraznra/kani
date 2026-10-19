@@ -239,8 +239,10 @@ pub fn run_check(path: &Path, hw_setting: bool, progress: &AtomicU32) -> Report 
         installed: installed_hardware_decoders(),
         ..Report::default()
     };
+    crate::startup::step("hardware decoding check: chip run");
     apply(true);
     report.hardware = decode_run(path, progress, 0);
+    crate::startup::step("hardware decoding check: processor run");
     apply(false);
     report.software = decode_run(path, progress, 500);
     apply(hw_setting);

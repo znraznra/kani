@@ -768,7 +768,7 @@ pub fn open_range(app: &Rc<App>, picked: Option<(Ticks, Ticks)>) {
         let (app, note) = (app.clone(), gpu_note.clone());
         gpu_button.connect_clicked(move |button| check_card(&app, button, &note));
     }
-    if settings.graphics_card_needs_check(env!("CARGO_PKG_VERSION")) {
+    if settings.graphics_card_needs_check(env!("CARGO_PKG_VERSION")) && !crate::startup::safe() {
         check_card(app, &gpu_button, &gpu_note);
     }
 

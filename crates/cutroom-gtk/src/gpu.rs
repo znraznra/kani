@@ -46,6 +46,7 @@ fn gradient(shift: usize) -> Arc<Frame> {
 }
 
 pub fn test() -> GpuReport {
+    crate::startup::step("graphics-card compositing test starting");
     let (width, height) = (1080u32, 1920u32);
     let mut details = Vec::new();
     let mut card = match GpuCompositor::new(width, height) {

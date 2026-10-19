@@ -408,6 +408,9 @@ impl Player {
     }
 
     fn load(&mut self, target: &Target, play: bool) {
+        if self.loads == 0 {
+            crate::startup::step(&format!("preview: first file opened ({})", target.uri));
+        }
         self.loads += 1;
         self.clear_frame();
         self.preloaded_at = None;

@@ -33,6 +33,7 @@ mod replace_ui;
 mod sample;
 mod settings_ui;
 mod sound;
+mod startup;
 mod strips;
 mod text_render;
 mod text_ui;
@@ -68,19 +69,52 @@ fn activate(application: &gtk::Application, files: Vec<PathBuf>) {
             }
             None => {
                 icon::install_as_default();
-                *slot.borrow_mut() = Some(app::App::new(application, files));
+                startup::step("building the window");
+                let app = app::App::new(application, files);
+                startup::step("window built");
+                {
+                    let note = |w: &gtk::ApplicationWindow| {
+                        let renderer = w
+                            .renderer()
+                            .map(|r| r.type_().name().to_string())
+                            .unwrap_or_else(|| "?".into());
+                        startup::step(&format!("window on screen, drawn by {renderer}"));
+                    };
+                    if app.window.is_mapped() {
+                        note(&app.window);
+                    } else {
+                        app.window.connect_map(move |w| note(w));
+                    }
+                }
+                *slot.borrow_mut() = Some(app);
             }
         }
     });
 }
 
 fn main() -> glib::ExitCode {
+    // Before anything else: bundled prerequisites, safe mode, the start-up trace.
+    {
+        let config = cutroom_platform::AppPaths::detect().map(|p| p.config_dir);
+        let safe_setting = config
+            .as_deref()
+            .map(cutroom_core::settings::Settings::load)
+            .is_some_and(|s| s.safe_mode);
+        startup::prepare(config.as_deref(), safe_setting);
+    }
     // Before GTK starts, so the toolkit sees the bundled typeface.
     fonts::install();
+    startup::step("starting GStreamer");
     if let Err(e) = gst::init() {
         eprintln!("Could not start GStreamer: {e}");
+        startup::step(&format!("GStreamer did not start: {e}"));
         return glib::ExitCode::FAILURE;
     }
+    startup::step(&format!(
+        "{} started, {} plug-ins",
+        gst::version_string(),
+        gst::Registry::get().plugins().len()
+    ));
     // The picture sink that draws video inside a GTK widget is built into Kani.
     if let Err(e) = gstgtk4::plugin_register_static() {
         eprintln!("Could not register the GTK video sink: {e}");
@@ -94,5 +128,8 @@ fn main() -> glib::ExitCode {
         let paths = files.iter().filter_map(|f| f.path()).collect();
         activate(a, paths);
     });
-    application.run()
+    startup::step("starting GTK");
+    let code = application.run();
+    startup::clean_exit();
+    code
 }

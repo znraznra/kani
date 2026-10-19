@@ -827,6 +827,16 @@ fn build(app: &Rc<App>, initial: Settings, tab: Option<&str>) {
         &restore,
         Some("Puts every setting in this window back to how Kani starts. Nothing changes until you press Save."),
     ));
+    let safe = switch(draft.borrow().safe_mode);
+    {
+        let draft = draft.clone();
+        safe.connect_active_notify(move |s| draft.borrow_mut().safe_mode = s.is_active());
+    }
+    advanced.append(&row(
+        "Start in safe mode",
+        &safe,
+        Some("From the next start: no hardware video decoding, no graphics-chip compositing, no automatic graphics-card check, and the window drawn by the processor. Kani also starts this way by itself after it did not close properly. Each start writes logs/startup.log in the settings folder."),
+    ));
     separator(&advanced);
     planned_row(
         &advanced,
@@ -1044,6 +1054,7 @@ fn apply(app: &Rc<App>, new: &Settings) {
         s.preview_resolution = new.preview_resolution.clone();
         s.preview_on_gpu = new.preview_on_gpu;
         s.scrub_audio = new.scrub_audio;
+        s.safe_mode = new.safe_mode;
         st.save_settings();
     }
     if theme_changed {

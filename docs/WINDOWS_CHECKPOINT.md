@@ -15,6 +15,14 @@ GTK 4.24 + GStreamer 1.28.7 from MSYS2, built with `cargo run` (not the setup sc
 * **Preview sound (fixed in 0.5.34):** Kani picks the sound output itself (WASAPI, then DirectSound) and
   falls back instead of muting. Settings > Playback > Play a test tone works, and projects play with sound.
 
+## 2026-10-19: system freeze on the Dell
+
+Starting `target\release\kani.exe` directly (not through `cargo run`) froze the whole PC to a black screen: a
+graphics-driver lock-up. Cause not known yet. 0.5.36 adds: a start-up log flushed to disk at every step
+(`%APPDATA%\Kani\config\logs\startup.log`), automatic safe mode after a start that did not end properly (no hardware
+decoding, no graphics-chip compositing, no automatic graphics-card check, GTK drawn by the processor), `KANI_SAFE=1`,
+and `tools\windows\package.ps1`, which makes a self-contained `dist\Kani` folder that runs without MSYS2.
+
 ## Open, by phase
 
 | Phase | Item |
@@ -23,6 +31,7 @@ GTK 4.24 + GStreamer 1.28.7 from MSYS2, built with `cargo run` (not the setup sc
 | 3 | Startup check that warns when GStreamer has no decoders or no sound output (instead of everything failing at once). |
 | 4/5 | Graphics-chip compositing: EGL is normally absent on Windows, so preview and export fall back to the processor; a Direct3D/ANGLE path is untried. |
 | 5 | Export with NVENC (`nvh264enc` / `nvh265enc`), Quick Sync, D3D12 encoders; real-time numbers on the Dell. |
+| 3/4 | Find what froze the PC: startup.log after the freeze; then safe mode on/off one item at a time. |
 | 11 | Windows build docs for the MSVC + MSYS2 route (LLVM, LIBCLANG_PATH, CMake, plugin packages, clearing the registry cache), the setup script tested, the exe icon embedded, an installer. |
 
 ## To resume

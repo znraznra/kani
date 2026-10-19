@@ -50,6 +50,7 @@ fn work(jobs: Receiver<Job>, replies: Sender<Reply>) {
     while let Ok(job) = jobs.recv() {
         if card.is_none() || size != job.size {
             card = None; // the old one goes before the new one starts
+            crate::startup::step("preview: opening the graphics chip (EGL)");
             match GpuCompositor::new(job.size.0, job.size.1) {
                 Ok(c) => {
                     eprintln!(

@@ -115,6 +115,9 @@ pub struct Settings {
     pub preview_on_gpu: bool,
     /// Play a short piece of sound while the playhead is dragged.
     pub scrub_audio: bool,
+    /// Start without hardware decoding, graphics-chip compositing or GPU
+    /// drawing (for machines where the graphics driver misbehaves).
+    pub safe_mode: bool,
     /// Preview view aids.
     pub show_rulers: bool,
     pub show_grid: bool,
@@ -163,6 +166,7 @@ impl Default for Settings {
             preview_resolution: "standard".into(),
             preview_on_gpu: false,
             scrub_audio: true,
+            safe_mode: false,
             show_rulers: false,
             show_grid: false,
             show_guides: true,

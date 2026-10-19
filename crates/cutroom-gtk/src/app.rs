@@ -217,6 +217,11 @@ impl App {
         start_timer(&app);
 
         app.refresh_home_entries();
+        if let Some(why) = crate::startup::safe_reason() {
+            app.set_status(format!(
+                "{why}: no hardware decoding or graphics-chip drawing this time. The start-up log is in the settings folder (logs/startup.log)."
+            ));
+        }
         app.refresh();
         app.window.present();
         if !startup_files.is_empty() {
@@ -252,6 +257,14 @@ impl App {
                 s.scrub_audio,
             )
         };
+        // Safe mode keeps the graphics driver out of it (see startup.rs).
+        let safe = crate::startup::safe();
+        let (hw, gpu) = (hw && !safe, gpu && !safe);
+        crate::startup::step(&format!(
+            "playback: hardware decoding {}, preview compositing on the graphics chip {}",
+            if hw { "on" } else { "off" },
+            if gpu { "on" } else { "off" }
+        ));
         crate::hwdecode::apply(hw);
         self.preview.borrow_mut().configure(edge, scrub, gpu);
     }
