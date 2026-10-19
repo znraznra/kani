@@ -19,4 +19,4 @@ pub use media::{
     AudioOutput, Decoder, DecoderFactory, DecoderOptions, Encoder, EncoderConfig, EncoderFactory,
     MediaError, PixelFormat, VideoFrame, VideoInfo,
 };
-pub use paths::AppPaths;
+pub use paths::{move_settings, portable_dir, AppPaths};

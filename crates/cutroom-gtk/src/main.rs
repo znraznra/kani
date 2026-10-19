@@ -92,15 +92,43 @@ fn activate(application: &gtk::Application, files: Vec<PathBuf>) {
     });
 }
 
+/// Windows: settings from earlier versions move out of AppData to the
+/// portable folder beside the program. Returns what happened, for the log.
+#[cfg(windows)]
+fn move_old_settings(paths: Option<&cutroom_platform::AppPaths>) -> Vec<String> {
+    let Some(p) = paths else { return Vec::new() };
+    p.old_settings_dirs()
+        .into_iter()
+        .map(
+            |old| match cutroom_platform::move_settings(&old, &p.config_dir) {
+                Ok(n) => format!(
+                    "moved {n} item(s) of earlier settings from {} to {}",
+                    old.display(),
+                    p.config_dir.display()
+                ),
+                Err(e) => format!("could not move {}: {e}", old.display()),
+            },
+        )
+        .collect()
+}
+
+/// Elsewhere the settings stay in the system's usual place.
+#[cfg(not(windows))]
+fn move_old_settings(_paths: Option<&cutroom_platform::AppPaths>) -> Vec<String> {
+    Vec::new()
+}
+
 fn main() -> glib::ExitCode {
     // Before anything else: bundled prerequisites, safe mode, the start-up trace.
     {
-        let config = cutroom_platform::AppPaths::detect().map(|p| p.config_dir);
+        let paths = cutroom_platform::AppPaths::detect();
+        let moved = move_old_settings(paths.as_ref());
+        let config = paths.map(|p| p.config_dir);
         let safe_setting = config
             .as_deref()
             .map(cutroom_core::settings::Settings::load)
             .is_some_and(|s| s.safe_mode);
-        startup::prepare(config.as_deref(), safe_setting);
+        startup::prepare(config.as_deref(), safe_setting, &moved);
     }
     // Before GTK starts, so the toolkit sees the bundled typeface.
     fonts::install();

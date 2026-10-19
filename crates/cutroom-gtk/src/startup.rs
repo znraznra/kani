@@ -26,6 +26,20 @@ static SAFE: AtomicBool = AtomicBool::new(false);
 static TRACE: Mutex<Option<(File, Instant)>> = Mutex::new(None);
 static LOCK: Mutex<Option<PathBuf>> = Mutex::new(None);
 static REASON: Mutex<Option<String>> = Mutex::new(None);
+static DATA: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Where Kani writes files it can make again (the extracted font, icons).
+/// On Windows that is the portable data folder beside the program, so nothing
+/// goes to AppData or the user's Temp folder; elsewhere the system's temp folder.
+pub fn cache_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(d) = DATA.lock().ok().and_then(|d| d.clone()) {
+            return d.join("cache");
+        }
+    }
+    std::env::temp_dir()
+}
 
 /// Is this run in safe mode?
 pub fn safe() -> bool {
@@ -126,10 +140,13 @@ fn use_bundle(root: &Path, data: &Path) {
 }
 
 /// Run first thing in `main`, before GStreamer or GTK start.
-pub fn prepare(config_dir: Option<&Path>, safe_setting: bool) {
+pub fn prepare(config_dir: Option<&Path>, safe_setting: bool, moved: &[String]) {
     let data = config_dir
         .map(Path::to_path_buf)
         .unwrap_or_else(std::env::temp_dir);
+    if let Ok(mut d) = DATA.lock() {
+        *d = Some(data.clone());
+    }
     let _ = std::fs::create_dir_all(data.join("logs"));
     if let Ok(file) = File::create(data.join("logs").join("startup.log")) {
         if let Ok(mut t) = TRACE.lock() {
@@ -142,6 +159,16 @@ pub fn prepare(config_dir: Option<&Path>, safe_setting: bool) {
         std::env::consts::OS,
         std::env::consts::ARCH
     ));
+    step(&format!("Kani's own files are kept in {}", data.display()));
+    for m in moved {
+        step(m);
+    }
+    // GStreamer's list of plug-ins goes there too, not to AppData.
+    #[cfg(windows)]
+    set_if_unset(
+        "GST_REGISTRY_1_0",
+        &data.join(format!("gst-registry-{}.bin", env!("CARGO_PKG_VERSION"))),
+    );
     if let Ok(exe) = std::env::current_exe() {
         match bundle_root(&exe) {
             Some(root) => {

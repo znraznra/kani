@@ -28,7 +28,7 @@ pub const FAMILY: &str = "Inter";
 
 /// Write the font files to a per-version folder (once) and return it.
 fn extract() -> Option<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("kani-fonts-{}", env!("CARGO_PKG_VERSION")));
+    let dir = crate::startup::cache_dir().join(format!("kani-fonts-{}", env!("CARGO_PKG_VERSION")));
     fs::create_dir_all(&dir).ok()?;
     for (name, bytes) in FILES {
         let path = dir.join(name);

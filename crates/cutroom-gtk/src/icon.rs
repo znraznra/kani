@@ -77,7 +77,8 @@ fn install_launcher() {
 /// folder (and a temporary theme as a fallback), with a launcher entry so the
 /// taskbar shows it too.
 pub fn install_as_default() {
-    let root = std::env::temp_dir().join(format!("kani-icons-{}", env!("CARGO_PKG_VERSION")));
+    let root =
+        crate::startup::cache_dir().join(format!("kani-icons-{}", env!("CARGO_PKG_VERSION")));
     write_theme(&root);
     #[cfg(target_os = "linux")]
     install_launcher();

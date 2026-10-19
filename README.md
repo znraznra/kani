@@ -354,8 +354,13 @@ are in [docs/WINDOWS_CHECKPOINT.md](docs/WINDOWS_CHECKPOINT.md).
 all GStreamer plug-ins, image loaders, schemas and icons) and `dist\Kani-windows.zip`. `bin\kani.exe` recognises that
 layout and uses only those copies, so it runs the same from a shortcut or on a PC with nothing installed.
 
+**Portable on Windows (0.5.37):** Kani keeps its settings, saved styles, speech models, logs and caches beside the
+program, never in AppData: `dist\Kani\data` for a packaged copy, `kani-data` next to `kani.exe` otherwise
+(`KANI_DATA_DIR` picks another folder). Settings an earlier version left in `%APPDATA%\Kani` are moved over on the
+first start and the AppData folder is removed. Projects stay where you keep them (default `Documents\Kani`).
+
 **Safe mode and the start-up log (0.5.36):** each start writes its steps to `logs/startup.log` in the settings folder
-(Windows: `%APPDATA%\Kani\config\logs\startup.log`), flushed at once, so after a hard freeze the last line shows how far
+(Windows: `data\logs\startup.log beside the program`), flushed at once, so after a hard freeze the last line shows how far
 it got. If Kani did not close properly last time, it starts in safe mode: no hardware decoding, no graphics-chip
 compositing, no automatic graphics-card check, and GTK drawn by the processor (`GSK_RENDERER=cairo`). `KANI_SAFE=1`
 or Settings > Advanced > Start in safe mode does the same on purpose.

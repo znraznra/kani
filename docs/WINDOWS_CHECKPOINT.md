@@ -19,7 +19,7 @@ GTK 4.24 + GStreamer 1.28.7 from MSYS2, built with `cargo run` (not the setup sc
 
 Starting `target\release\kani.exe` directly (not through `cargo run`) froze the whole PC to a black screen: a
 graphics-driver lock-up. Cause not known yet. 0.5.36 adds: a start-up log flushed to disk at every step
-(`%APPDATA%\Kani\config\logs\startup.log`), automatic safe mode after a start that did not end properly (no hardware
+(`data\logs\startup.log beside the program`), automatic safe mode after a start that did not end properly (no hardware
 decoding, no graphics-chip compositing, no automatic graphics-card check, GTK drawn by the processor), `KANI_SAFE=1`,
 and `tools\windows\package.ps1`, which makes a self-contained `dist\Kani` folder that runs without MSYS2.
 

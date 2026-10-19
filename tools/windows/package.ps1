@@ -113,8 +113,9 @@ foreach ($theme in @("Adwaita", "hicolor")) {
 @"
 Kani $((Get-Item $Exe).VersionInfo.ProductVersion)
 Start bin\kani.exe (make a shortcut to it if you like). Everything it needs is in this folder.
+Kani is portable: its settings, logs and caches live in the data folder here, never in AppData.
 If Kani ever closes badly, it starts in safe mode the next time (no hardware decoding,
-no graphics-chip drawing). Start-up steps are logged to %APPDATA%\Kani\config\logs\startup.log.
+no graphics-chip drawing). Start-up steps are logged to data\logs\startup.log.
 "@ | Set-Content -Encoding UTF8 "$Out\README.txt"
 
 if ($Missing.Count -gt 0) {
